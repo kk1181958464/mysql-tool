@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__filesystem__directory_tree",
+      "mcp__filesystem__list_directory_with_sizes",
+      "mcp__filesystem__read_text_file",
+      "mcp__context7__resolve-library-id",
+      "mcp__filesystem__list_directory"
+    ]
+  }
+}
