@@ -16,9 +16,19 @@ win:
   executableName: mysql-connection-tool
   target:
     - nsis
+    - portable
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   oneClick: false
   allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+mac:
+  target:
+    - dmg
+linux:
+  target:
+    - AppImage
+    - deb
