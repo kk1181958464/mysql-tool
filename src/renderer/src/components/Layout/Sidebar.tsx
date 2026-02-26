@@ -3,7 +3,6 @@ import { Input, Tooltip } from '../ui'
 import {
   MenuFoldOutlined,
   PlusOutlined,
-  DatabaseOutlined,
   SearchOutlined,
   LinkOutlined,
   DisconnectOutlined,
@@ -14,6 +13,7 @@ import {
   LoadingOutlined,
   FolderAddOutlined,
 } from '@ant-design/icons'
+import logoImg from '../../assets/logo.png'
 import { useAppStore } from '../../stores/app.store'
 import { useConnection } from '../../hooks/useConnection'
 import { useConnectionStore } from '../../stores/connection.store'
@@ -137,7 +137,7 @@ export default function Sidebar() {
       {/* Header */}
       <div className="sidebar-header">
         <div className="app-logo">
-          <DatabaseOutlined />
+          <img src={logoImg} alt="MySQL Tool Logo" className="app-logo-img" />
           <span>MySQL Tool</span>
         </div>
         <div style={{ flex: 1 }} />

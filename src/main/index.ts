@@ -15,6 +15,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     backgroundColor: isDark ? '#171c28' : '#f5f7fa',
+    icon: path.join(__dirname, '../../resources/icon.png'),
     frame: false,
     transparent: false,
     thickFrame: false,
