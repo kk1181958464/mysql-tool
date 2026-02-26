@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useLayoutEffect } from 'react'
 import { Tree, Empty, Modal, Button, Select } from './ui'
 import {
   DatabaseOutlined,
@@ -45,6 +45,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
   const [contextMenu, setContextMenu] = useState<{ key: string; x: number; y: number } | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<{ dbName: string } | null>(null)
   const [deleteTableConfirm, setDeleteTableConfirm] = useState<{ dbName: string; tableName: string } | null>(null)
   const [truncateConfirm, setTruncateConfirm] = useState<{ dbName: string; tableName: string } | null>(null)
@@ -84,6 +85,26 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       document.removeEventListener('scroll', handleScroll, true)
     }
   }, [])
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return
+
+    const menuEl = contextMenuRef.current
+    const rect = menuEl.getBoundingClientRect()
+    let nextX = contextMenu.x
+    let nextY = contextMenu.y
+
+    if (rect.right > window.innerWidth - 8) {
+      nextX = Math.max(8, window.innerWidth - rect.width - 8)
+    }
+    if (rect.bottom > window.innerHeight - 8) {
+      nextY = Math.max(8, window.innerHeight - rect.height - 8)
+    }
+
+    if (nextX !== contextMenu.x || nextY !== contextMenu.y) {
+      setContextMenu({ ...contextMenu, x: nextX, y: nextY })
+    }
+  }, [contextMenu])
 
   // 当连接成功且没有数据库列表时，触发加载
   useEffect(() => {
@@ -666,6 +687,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         />
         {contextMenu && (
           <div
+            ref={contextMenuRef}
             className="context-menu"
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onClick={() => setContextMenu(null)}

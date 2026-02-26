@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
 import { Input, Tooltip } from '../ui'
 import {
   MenuFoldOutlined,
@@ -32,6 +32,7 @@ export default function Sidebar() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; conn: ConnectionConfig } | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const [connectingIds, setConnectingIds] = useState<Set<string>>(new Set())
   const [showCreateDb, setShowCreateDb] = useState(false)
   const [createDbConnId, setCreateDbConnId] = useState<string | null>(null)
@@ -56,6 +57,26 @@ export default function Sidebar() {
       document.removeEventListener('scroll', handleScroll, true)
     }
   }, [])
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return
+
+    const menuEl = contextMenuRef.current
+    const rect = menuEl.getBoundingClientRect()
+    let nextX = contextMenu.x
+    let nextY = contextMenu.y
+
+    if (rect.right > window.innerWidth - 8) {
+      nextX = Math.max(8, window.innerWidth - rect.width - 8)
+    }
+    if (rect.bottom > window.innerHeight - 8) {
+      nextY = Math.max(8, window.innerHeight - rect.height - 8)
+    }
+
+    if (nextX !== contextMenu.x || nextY !== contextMenu.y) {
+      setContextMenu({ ...contextMenu, x: nextX, y: nextY })
+    }
+  }, [contextMenu])
 
   // 搜索防抖 200ms
   useEffect(() => {
@@ -205,7 +226,7 @@ export default function Sidebar() {
 
       {/* Context Menu */}
       {contextMenu && (
-        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
+        <div className="context-menu" ref={contextMenuRef} style={{ left: contextMenu.x, top: contextMenu.y }}>
           {connectionStatuses[contextMenu.conn.id]?.connected ? (
             <div className="context-menu-item" onClick={() => handleMenuAction('disconnect')}>
               <DisconnectOutlined /> 断开连接
