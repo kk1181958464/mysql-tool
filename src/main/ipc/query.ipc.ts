@@ -106,6 +106,7 @@ function ensureSemicolons(sql: string): string {
   return out.join('')
 }
 
+
 export function registerQueryIPC() {
   ipcMain.handle(IPC.QUERY_EXECUTE, async (_e, connectionId: string, sql: string, database?: string) => {
     return queryExecutor.execute(connectionId, sql, database)

@@ -45,6 +45,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const [importMsg, setImportMsg] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const dragCounter = useRef(0)
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const pendingImport = useRef<string | null>(null)
 
   const readFile = (file: File): Promise<string> => new Promise((resolve, reject) => {
@@ -53,6 +54,24 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     r.onerror = () => reject(new Error('文件读取失败'))
     r.readAsText(file, 'utf-8')
   })
+
+  const toSqlLiteral = (v: any): string => {
+    if (v === null || v === undefined) return 'NULL'
+    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL'
+    if (typeof v === 'bigint') return v.toString()
+    if (typeof v === 'boolean') return v ? '1' : '0'
+    const raw = (typeof v === 'object') ? JSON.stringify(v) : String(v)
+    const s = raw
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\u0000/g, '\\0')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\u0008/g, '\\b')
+      .replace(/\t/g, '\\t')
+      .replace(/\u001a/g, '\\Z')
+    return `'${s}'`
+  }
 
   const executeSqlContent = async (content: string) => {
     pendingImport.current = content
@@ -268,14 +287,41 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       }
       case 'exportAll': {
         const names = [...selectedTables]
-        const parts: string[] = []
+        const out: string[] = []
+        out.push('SET NAMES utf8mb4;')
+        out.push('SET FOREIGN_KEY_CHECKS = 0;')
+        out.push('')
+
         for (const n of names) {
           try {
             const ddl = await api.meta.tableDDL(connectionId, database, n)
-            parts.push((typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || '')
+            const ddlSql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
+            out.push('-- ----------------------------')
+            out.push(`-- Table structure for \`${n}\``)
+            out.push('-- ----------------------------')
+            out.push(`DROP TABLE IF EXISTS \`${n}\`;`)
+            out.push(`${ddlSql};`)
+            out.push('')
+
+            out.push('-- ----------------------------')
+            out.push(`-- Records of \`${n}\``)
+            out.push('-- ----------------------------')
+
+            const dataResult = await api.query.execute(connectionId, `SELECT * FROM \`${database}\`.\`${n}\``, database)
+            const rows = dataResult.rows || []
+            if (rows.length) {
+              for (const row of rows) {
+                const cols = Object.keys(row).map(c => `\`${c}\``).join(', ')
+                const vals = Object.values(row).map(v => toSqlLiteral(v)).join(', ')
+                out.push(`INSERT INTO \`${n}\` (${cols}) VALUES (${vals});`)
+              }
+            }
+            out.push('')
           } catch (e: any) { alert(e.message || '导出失败'); return }
         }
-        setExportSql({ tableName: names.length > 1 ? database : names[0], sql: parts.join('\n\n-- ----------------------------\n\n'), includeData: true })
+
+        out.push('SET FOREIGN_KEY_CHECKS = 1;')
+        setExportSql({ tableName: names.length > 1 ? database : names[0], sql: out.join('\n'), includeData: true })
         break
       }
     }
@@ -338,28 +384,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
 
   const handleDownloadSql = async () => {
     if (!exportSql) return
-    let fullSql = exportSql.sql
-    if (exportSql.includeData) {
-      const names = [...selectedTables]
-      const parts: string[] = []
-      for (const n of names) {
-        try {
-          const ddl = await api.meta.tableDDL(connectionId, database, n)
-          let sql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
-          const dataResult = await api.query.execute(connectionId, `SELECT * FROM \`${database}\`.\`${n}\``, database)
-          if (dataResult.rows?.length) {
-            const cols = Object.keys(dataResult.rows[0])
-            const values = dataResult.rows.map((row: any) =>
-              '(' + cols.map((c: string) => { const v = row[c]; if (v === null) return 'NULL'; if (typeof v === 'number') return v; return `'${String(v).replace(/'/g, "''")}'` }).join(', ') + ')'
-            ).join(',\n')
-            sql += `\n\nINSERT INTO \`${n}\` (\`${cols.join('`, `')}\`) VALUES\n${values};`
-          }
-          parts.push(sql)
-        } catch (e: any) { alert(e.message || '导出失败'); return }
-      }
-      fullSql = parts.join('\n\n-- ----------------------------\n\n')
-    }
-    const blob = new Blob([fullSql], { type: 'text/plain;charset=utf-8' })
+    const blob = new Blob([exportSql.sql], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -381,6 +406,24 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     const status = tableStatus.find(s => s.name === t.name)
     return { ...t, ...status }
   }).filter(t => !filter || t.name.toLowerCase().includes(filter.toLowerCase()))
+
+  // Ctrl/Cmd + A：对象页全选所有表
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return
+      const active = document.activeElement as HTMLElement | null
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
+      const root = rootRef.current
+      // 仅在对象页可见时生效（标签隐藏时 offsetParent 为 null）
+      if (!root || root.offsetParent === null) return
+      e.preventDefault()
+      const all = mergedTables.map(t => t.name)
+      setSelectedTables(new Set(all))
+      if (all.length) lastClickedRef.current = all[all.length - 1]
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [mergedTables])
 
   const formatSize = (bytes: number) => {
     if (!bytes) return '-'
@@ -410,7 +453,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   ]
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: 12, position: 'relative' }}
+    <div ref={rootRef} style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: 12, position: 'relative' }}
       onDragOver={(e) => e.preventDefault()}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}

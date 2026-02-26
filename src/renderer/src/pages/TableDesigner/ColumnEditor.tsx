@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState, useRef, useCallback, useEffect } from 'react'
 import { Button, Input, Select, Checkbox, Space } from '../../components/ui'
 import { PlusOutlined, DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined, KeyOutlined } from '@ant-design/icons'
 import type { ColumnDesign } from '../../../../shared/types/table-design'
@@ -14,6 +14,11 @@ const TYPES = [
 interface Props {
   columns: ColumnDesign[]
   onChange: (columns: ColumnDesign[]) => void
+}
+
+type RowSelectState = {
+  anchor: number | null
+  selected: Set<number>
 }
 
 const emptyCol: ColumnDesign = {
@@ -45,8 +50,10 @@ const defaultWidths = [200, 120, 70, 60, 70, 80, 200]
 
 export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
+  const [rowSelect, setRowSelect] = useState<RowSelectState>({ anchor: null, selected: new Set() })
   const [colWidths, setColWidths] = useState<number[]>(defaultWidths)
   const resizing = useRef<{ index: number; startX: number; startWidth: number } | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
 
   const selectedCol = selectedIndex !== null ? columns[selectedIndex] : null
 
@@ -88,13 +95,64 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
     update(selectedIndex, field, value)
   }
 
+  const handleRowSelect = (index: number, e: React.MouseEvent) => {
+    const isShift = e.shiftKey
+    const isCtrl = e.ctrlKey || e.metaKey
+    setRowSelect(prev => {
+      const next = new Set(prev.selected)
+      if (isShift && prev.anchor !== null) {
+        const [start, end] = prev.anchor < index ? [prev.anchor, index] : [index, prev.anchor]
+        for (let i = start; i <= end; i++) next.add(i)
+        return { anchor: prev.anchor, selected: next }
+      }
+      if (isCtrl) {
+        if (next.has(index)) next.delete(index)
+        else next.add(index)
+        return { anchor: index, selected: next }
+      }
+      return { anchor: index, selected: new Set([index]) }
+    })
+    setSelectedIndex(index)
+  }
+
+  // Ctrl/Cmd + A：在字段表格内全选所有列
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return
+      const active = document.activeElement as HTMLElement | null
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
+      const root = rootRef.current
+      // 仅在当前编辑器可见时生效
+      if (!root || root.offsetParent === null) return
+      e.preventDefault()
+      const all = new Set(columns.map((_, i) => i))
+      setRowSelect({ anchor: columns.length ? 0 : null, selected: all })
+      setSelectedIndex(columns.length ? 0 : null)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [columns])
+
   const add = () => {
     onChange([...columns, { ...emptyCol }])
-    setSelectedIndex(columns.length)
+    const idx = columns.length
+    setSelectedIndex(idx)
+    setRowSelect({ anchor: idx, selected: new Set([idx]) })
   }
 
   const remove = (index: number) => {
     onChange(columns.filter((_, i) => i !== index))
+    setRowSelect(prev => {
+      const next = new Set<number>()
+      prev.selected.forEach((i) => {
+        if (i === index) return
+        next.add(i > index ? i - 1 : i)
+      })
+      let anchor = prev.anchor
+      if (anchor === index) anchor = null
+      else if (anchor !== null && anchor > index) anchor = anchor - 1
+      return { anchor, selected: next }
+    })
     if (selectedIndex === index) setSelectedIndex(null)
     else if (selectedIndex !== null && selectedIndex > index) setSelectedIndex(selectedIndex - 1)
   }
@@ -105,6 +163,16 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
     const next = [...columns]
     ;[next[index], next[target]] = [next[target], next[index]]
     onChange(next)
+    setRowSelect(prev => {
+      const selected = new Set<number>()
+      prev.selected.forEach((i) => {
+        if (i === index) selected.add(target)
+        else if (i === target) selected.add(index)
+        else selected.add(i)
+      })
+      const anchor = prev.anchor === index ? target : prev.anchor === target ? index : prev.anchor
+      return { anchor, selected }
+    })
     setSelectedIndex(target)
   }
 
@@ -134,7 +202,7 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
   const headers = ['名称', '类型', '长度', '小数', '不是Null', '键', '注释']
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* 工具栏 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexShrink: 0 }}>
         <Button size="small" icon={<PlusOutlined />} onClick={add}>添加字段</Button>
@@ -174,10 +242,10 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
                 style={{
                   display: 'flex',
                   borderBottom: '1px solid var(--border)',
-                  background: selectedIndex === i ? 'var(--accent-bg)' : 'transparent',
+                  background: rowSelect.selected.has(i) ? 'var(--accent-bg)' : 'transparent',
                   cursor: 'pointer',
                 }}
-                onClick={() => setSelectedIndex(i)}
+                onClick={(e) => handleRowSelect(i, e)}
               >
                 <div style={{ width: colWidths[0], minWidth: colWidths[0], padding: '4px 6px' }}>
                   <Input size="small" value={col.name} onChange={(e) => update(i, 'name', e.target.value)} onBlur={() => handleNameBlur(i)} style={{ width: '100%' }} onClick={(e) => e.stopPropagation()} />

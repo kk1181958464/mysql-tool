@@ -200,6 +200,7 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(100)
+  const [jumpPage, setJumpPage] = useState('')
   const [where, setWhere] = useState('')
   const [orderBy] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set())
@@ -213,6 +214,7 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
   const [error, setError] = useState('')
   const [pendingChanges, setPendingChanges] = useState<Map<string, Record<string, unknown>>>(new Map())
   const [cellContextMenu, setCellContextMenu] = useState<{ x: number; y: number; rowKey: string; colName: string; record: Record<string, unknown> } | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
 
   const fetchData = useCallback(async () => {
     if (!connectionId || !database || !table) return
@@ -242,6 +244,7 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
 
   const pk = result?.columns.find((c) => c.primaryKey)
   const pkCol = pk?.name || '_rowIndex'
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
   const allRowKeys = [...(result?.rows.map((r, i) => String(r[pkCol] ?? i)) || []), ...newRows.map(r => String(r._newKey))]
 
   const handleDelete = async () => {
@@ -390,29 +393,75 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
     if (!cellContextMenu) return
     const { rowKey, colName, record } = cellContextMenu
     setCellContextMenu(null)
+
+    // 若勾选了多行，则按多行执行；否则按当前右键行执行
+    const selectedKeys = selectedRowKeys.size > 0 ? [...selectedRowKeys] : [rowKey]
+    const allRows = [...(result?.rows.map((r, i) => ({ ...r, _rowIndex: i })) || []), ...newRows]
+    const rowsByKey = new Map<string, Record<string, unknown>>()
+    allRows.forEach((r, i) => rowsByKey.set(String(r._newKey ?? r[pkCol] ?? i), r))
+
     switch (action) {
-      case 'copyInsert':
-        await navigator.clipboard.writeText(generateInsertSQL(record))
+      case 'copyInsert': {
+        const sql = selectedKeys
+          .map(k => rowsByKey.get(k))
+          .filter(Boolean)
+          .map(r => generateInsertSQL(r!))
+          .join('\n')
+        await navigator.clipboard.writeText(sql)
         break
-      case 'copyUpdate':
-        await navigator.clipboard.writeText(generateUpdateSQL(record))
+      }
+      case 'copyUpdate': {
+        const sql = selectedKeys
+          .map(k => rowsByKey.get(k))
+          .filter(Boolean)
+          .map(r => generateUpdateSQL(r!))
+          .join('\n')
+        await navigator.clipboard.writeText(sql)
         break
+      }
       case 'setEmpty':
-        handleCellChange(rowKey, colName, '')
+        for (const k of selectedKeys) handleCellChange(k, colName, '')
         break
       case 'setNull':
-        handleCellChange(rowKey, colName, null)
+        for (const k of selectedKeys) handleCellChange(k, colName, null)
         break
-      case 'deleteRow':
-        if (pk) {
+      case 'deleteRow': {
+        const newKeys = selectedKeys.filter(k => k.startsWith('_new_'))
+        const dbKeys = selectedKeys.filter(k => !k.startsWith('_new_'))
+        if (newKeys.length > 0) {
+          setNewRows(prev => prev.filter(r => !newKeys.includes(String(r._newKey))))
+        }
+        if (dbKeys.length > 0 && pk) {
           try {
-            await api.data.delete(connectionId, database, table, { [pk.name]: rowKey })
+            for (const key of dbKeys) {
+              await api.data.delete(connectionId, database, table, { [pk.name]: key })
+            }
             fetchData()
           } catch (e: any) { setError(e.message || '删除失败') }
         }
+        setSelectedRowKeys(new Set())
         break
+      }
     }
   }
+
+  // Ctrl/Cmd + A：数据详情页全选所有复选框行（用于批量删除/导出）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return
+      const active = document.activeElement as HTMLElement | null
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
+      const root = rootRef.current
+      if (!root || root.offsetParent === null) return
+      if (allRowKeys.length === 0) return
+      e.preventDefault()
+      setSelectedRowKeys(new Set(allRowKeys))
+      setSelectedCells(new Set())
+      lastCheckedRef.current = allRowKeys[allRowKeys.length - 1] || null
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [allRowKeys])
 
   // checkbox 列 + 数据列
   const allChecked = allRowKeys.length > 0 && allRowKeys.every(k => selectedRowKeys.has(k))
@@ -490,7 +539,7 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
   const columns = [checkboxCol, ...dataCols]
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
+    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
       <Space style={{ marginBottom: 8 }}>
         <Input
           prefix={<FilterOutlined />}
@@ -539,30 +588,62 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
       </div>
 
       <div style={{ padding: '8px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-        <span style={{ color: 'var(--text-muted)' }}>共 {totalCount} 行 {(pendingChanges.size > 0 || newRows.length > 0) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length} 行 (Ctrl+S)</span>}</span>
+        <span style={{ color: 'var(--text-muted)' }}>共 {totalCount} 行，共 {totalPages} 页 {(pendingChanges.size > 0 || newRows.length > 0) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length} 行 (Ctrl+S)</span>}</span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button className="ui-btn ui-btn-default" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</button>
-          <span>{page} / {Math.ceil(totalCount / pageSize) || 1}</span>
-          <button className="ui-btn ui-btn-default" disabled={page >= Math.ceil(totalCount / pageSize)} onClick={() => setPage(page + 1)}>下一页</button>
+          <span>{page} / {totalPages}</span>
+          <button className="ui-btn ui-btn-default" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>下一页</button>
+          <span style={{ color: 'var(--text-muted)' }}>跳转到</span>
+          <Input
+            value={jumpPage}
+            onChange={(e) => setJumpPage(e.target.value.replace(/\D/g, ''))}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const n = Number(jumpPage)
+                if (!Number.isFinite(n) || n < 1) return
+                setPage(Math.min(totalPages, n))
+              }
+            }}
+            style={{ width: 64 }}
+            placeholder="页码"
+          />
+          <button
+            className="ui-btn ui-btn-default"
+            onClick={() => {
+              const n = Number(jumpPage)
+              if (!Number.isFinite(n) || n < 1) return
+              setPage(Math.min(totalPages, n))
+            }}
+          >
+            跳转
+          </button>
         </div>
       </div>
 
       {/* 单元格右键菜单 */}
-      {cellContextMenu && (
+      {cellContextMenu && (() => {
+        const count = selectedRowKeys.size > 0 ? selectedRowKeys.size : 1
+        const suffix = count > 1 ? `(${count})` : ''
+        return (
         <div
           className="context-menu"
           style={{ left: cellContextMenu.x, top: cellContextMenu.y }}
           onClick={() => setCellContextMenu(null)}
         >
-          <div className="context-menu-item" onClick={() => handleContextAction('copyInsert')}>复制为 INSERT</div>
-          <div className="context-menu-item" onClick={() => handleContextAction('copyUpdate')}>复制为 UPDATE</div>
+          <div className="context-menu-item" onClick={() => handleContextAction('copyInsert')}>复制为 INSERT{suffix}</div>
+          <div className="context-menu-item" onClick={() => handleContextAction('copyUpdate')}>复制为 UPDATE{suffix}</div>
+          {count <= 1 && (
+            <>
+              <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+              <div className="context-menu-item" onClick={() => handleContextAction('setEmpty')}>设为空字符串</div>
+              <div className="context-menu-item" onClick={() => handleContextAction('setNull')}>设为 NULL</div>
+            </>
+          )}
           <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
-          <div className="context-menu-item" onClick={() => handleContextAction('setEmpty')}>设为空字符串</div>
-          <div className="context-menu-item" onClick={() => handleContextAction('setNull')}>设为 NULL</div>
-          <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
-          <div className="context-menu-item danger" onClick={() => handleContextAction('deleteRow')}><DeleteOutlined /> 删除此行</div>
+          <div className="context-menu-item danger" onClick={() => handleContextAction('deleteRow')}><DeleteOutlined /> 删除行{suffix}</div>
         </div>
-      )}
+        )
+      })()}
 
       <DataExport open={exportOpen} onClose={() => setExportOpen(false)} connectionId={connectionId} database={database} table={table} />
     </div>
