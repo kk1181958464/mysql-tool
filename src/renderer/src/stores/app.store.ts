@@ -1,13 +1,14 @@
 import { create } from 'zustand'
 import { api } from '../utils/ipc'
+import {
+  HEARTBEAT_SETTING_KEY,
+  TABLE_ROWS_PER_PAGE_SETTING_KEY,
+  normalizeHeartbeatSeconds,
+  normalizeTableRowsPerPage,
+} from '../../../shared/constants'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 type ResolvedTheme = 'light' | 'dark'
-
-const HEARTBEAT_KEY = 'heartbeatIntervalSeconds'
-const HEARTBEAT_DEFAULT_SECONDS = 20
-const HEARTBEAT_MIN_SECONDS = 5
-const HEARTBEAT_MAX_SECONDS = 120
 
 const getSystemTheme = (): ResolvedTheme =>
   window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
@@ -15,16 +16,10 @@ const getSystemTheme = (): ResolvedTheme =>
 const resolveTheme = (mode: ThemeMode): ResolvedTheme =>
   mode === 'system' ? getSystemTheme() : mode
 
-function normalizeHeartbeatInterval(raw: unknown): number {
-  const num = Number(raw)
-  if (!Number.isFinite(num)) return HEARTBEAT_DEFAULT_SECONDS
-  const rounded = Math.round(num)
-  return Math.min(HEARTBEAT_MAX_SECONDS, Math.max(HEARTBEAT_MIN_SECONDS, rounded))
-}
-
 const savedThemeMode = (localStorage.getItem('themeMode') as ThemeMode) || 'system'
 const savedAccentColor = localStorage.getItem('accentColor') || ''
-const savedHeartbeatInterval = normalizeHeartbeatInterval(localStorage.getItem(HEARTBEAT_KEY))
+const savedHeartbeatInterval = normalizeHeartbeatSeconds(localStorage.getItem(HEARTBEAT_SETTING_KEY))
+const savedRowsPerPage = normalizeTableRowsPerPage(localStorage.getItem(TABLE_ROWS_PER_PAGE_SETTING_KEY))
 
 interface AppState {
   sidebarCollapsed: boolean
@@ -33,11 +28,13 @@ interface AppState {
   resolvedTheme: ResolvedTheme
   accentColor: string
   heartbeatIntervalSeconds: number
+  rowsPerPage: number
   toggleSidebar: () => void
   setSelectedDatabase: (db: string | null) => void
   setThemeMode: (mode: ThemeMode) => void
   setAccentColor: (color: string) => void
   setHeartbeatIntervalSeconds: (seconds: number) => Promise<void>
+  setRowsPerPage: (value: number) => Promise<void>
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -47,6 +44,7 @@ export const useAppStore = create<AppState>((set) => ({
   resolvedTheme: resolveTheme(savedThemeMode),
   accentColor: savedAccentColor,
   heartbeatIntervalSeconds: savedHeartbeatInterval,
+  rowsPerPage: savedRowsPerPage,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setSelectedDatabase: (selectedDatabase) => set({ selectedDatabase }),
   setThemeMode: (mode) => {
@@ -58,34 +56,61 @@ export const useAppStore = create<AppState>((set) => ({
     set({ accentColor: color })
   },
   setHeartbeatIntervalSeconds: async (seconds) => {
-    const normalized = normalizeHeartbeatInterval(seconds)
-    localStorage.setItem(HEARTBEAT_KEY, String(normalized))
+    const normalized = normalizeHeartbeatSeconds(seconds)
+    localStorage.setItem(HEARTBEAT_SETTING_KEY, String(normalized))
     set({ heartbeatIntervalSeconds: normalized })
     try {
-      await api.store.saveSettings(HEARTBEAT_KEY, String(normalized))
+      await api.store.saveSettings(HEARTBEAT_SETTING_KEY, String(normalized))
     } catch (error) {
       console.warn('[app.store] save heartbeat setting failed', error)
+    }
+  },
+  setRowsPerPage: async (value) => {
+    const normalized = normalizeTableRowsPerPage(value)
+    localStorage.setItem(TABLE_ROWS_PER_PAGE_SETTING_KEY, String(normalized))
+    set({ rowsPerPage: normalized })
+    try {
+      await api.store.saveSettings(TABLE_ROWS_PER_PAGE_SETTING_KEY, String(normalized))
+    } catch (error) {
+      console.warn('[app.store] save rows per page setting failed', error)
     }
   },
 }))
 
 void (async () => {
   try {
-    const saved = await api.store.getSettings(HEARTBEAT_KEY)
+    const saved = await api.store.getSettings(HEARTBEAT_SETTING_KEY)
     if (saved === null) {
       await useAppStore.getState().setHeartbeatIntervalSeconds(savedHeartbeatInterval)
-      return
-    }
+    } else {
+      const normalized = normalizeHeartbeatSeconds(saved)
+      localStorage.setItem(HEARTBEAT_SETTING_KEY, String(normalized))
+      useAppStore.setState({ heartbeatIntervalSeconds: normalized })
 
-    const normalized = normalizeHeartbeatInterval(saved)
-    localStorage.setItem(HEARTBEAT_KEY, String(normalized))
-    useAppStore.setState({ heartbeatIntervalSeconds: normalized })
-
-    if (String(normalized) !== saved) {
-      await api.store.saveSettings(HEARTBEAT_KEY, String(normalized))
+      if (String(normalized) !== saved) {
+        await api.store.saveSettings(HEARTBEAT_SETTING_KEY, String(normalized))
+      }
     }
   } catch (error) {
     console.warn('[app.store] load heartbeat setting failed', error)
+  }
+
+  try {
+    const saved = await api.store.getSettings(TABLE_ROWS_PER_PAGE_SETTING_KEY)
+    if (saved === null) {
+      await useAppStore.getState().setRowsPerPage(savedRowsPerPage)
+      return
+    }
+
+    const normalized = normalizeTableRowsPerPage(saved)
+    localStorage.setItem(TABLE_ROWS_PER_PAGE_SETTING_KEY, String(normalized))
+    useAppStore.setState({ rowsPerPage: normalized })
+
+    if (String(normalized) !== saved) {
+      await api.store.saveSettings(TABLE_ROWS_PER_PAGE_SETTING_KEY, String(normalized))
+    }
+  } catch (error) {
+    console.warn('[app.store] load rows per page setting failed', error)
   }
 })()
 

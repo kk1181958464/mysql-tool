@@ -43,6 +43,9 @@ export interface ElectronAPI {
     insert(connId: string, db: string, table: string, data: Record<string, any>): Promise<any>
     update(connId: string, db: string, table: string, data: Record<string, any>, where: Record<string, any>): Promise<any>
     delete(connId: string, db: string, table: string, where: Record<string, any>): Promise<any>
+    batchInsert(connId: string, db: string, table: string, rows: Record<string, unknown>[]): Promise<any>
+    batchUpdate(connId: string, db: string, table: string, items: Array<{ data: Record<string, unknown>; where: Record<string, unknown> }>): Promise<any>
+    batchDelete(connId: string, db: string, table: string, wheres: Record<string, unknown>[]): Promise<any>
   }
   importExport: {
     importFile(connId: string, db: string, table: string, filePath: string, options?: any): Promise<{ imported: number }>
@@ -69,6 +72,7 @@ export interface ElectronAPI {
     createTrigger(connId: string, db: string, sql: string): Promise<void>
     createEvent(connId: string, db: string, sql: string): Promise<void>
     drop(connId: string, db: string, type: string, name: string): Promise<void>
+    execRoutine(connId: string, db: string, name: string, type: 'PROCEDURE' | 'FUNCTION', params: string[]): Promise<{ rows: unknown[] }>
   }
   store: {
     getHistory(connectionId: string, limit?: number): Promise<QueryHistoryItem[]>

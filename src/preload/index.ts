@@ -42,6 +42,9 @@ const api: ElectronAPI = {
     insert: (connId, db, table, data) => ipcRenderer.invoke(IPC.DATA_INSERT, connId, db, table, data),
     update: (connId, db, table, data, where) => ipcRenderer.invoke(IPC.DATA_UPDATE, connId, db, table, data, where),
     delete: (connId, db, table, where) => ipcRenderer.invoke(IPC.DATA_DELETE, connId, db, table, where),
+    batchInsert: (connId, db, table, rows) => ipcRenderer.invoke(IPC.DATA_BATCH_INSERT, connId, db, table, rows),
+    batchUpdate: (connId, db, table, items) => ipcRenderer.invoke(IPC.DATA_BATCH_UPDATE, connId, db, table, items),
+    batchDelete: (connId, db, table, wheres) => ipcRenderer.invoke(IPC.DATA_BATCH_DELETE, connId, db, table, wheres),
   },
   importExport: {
     importFile: (connId, db, table, filePath, options) => ipcRenderer.invoke(IPC.IMPORT_FILE, connId, db, table, filePath, options),
@@ -68,6 +71,7 @@ const api: ElectronAPI = {
     createTrigger: (connId, db, sql) => ipcRenderer.invoke(IPC.OBJECT_CREATE_TRIGGER, connId, db, sql),
     createEvent: (connId, db, sql) => ipcRenderer.invoke(IPC.OBJECT_CREATE_EVENT, connId, db, sql),
     drop: (connId, db, type, name) => ipcRenderer.invoke(IPC.OBJECT_DROP, connId, db, type, name),
+    execRoutine: (connId, db, name, type, params) => ipcRenderer.invoke(IPC.OBJECT_EXEC_ROUTINE, connId, db, name, type, params),
   },
   store: {
     getHistory: (connectionId, limit) => ipcRenderer.invoke(IPC.STORE_GET_HISTORY, connectionId, limit),
@@ -84,7 +88,7 @@ const api: ElectronAPI = {
     readFile: (filePath) => ipcRenderer.invoke('dialog:readFile', filePath),
   },
   onImportProgress: (cb: (data: { current: number; total: number; fail: number }) => void) => {
-    const handler = (_: any, data: any) => cb(data)
+    const handler = (_event: Electron.IpcRendererEvent, data: { current: number; total: number; fail: number }) => cb(data)
     ipcRenderer.on('import:progress', handler)
     return () => ipcRenderer.removeListener('import:progress', handler)
   },
@@ -94,7 +98,7 @@ const api: ElectronAPI = {
     close: () => ipcRenderer.send('win:close'),
     isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
     onMaximized: (cb: (maximized: boolean) => void) => {
-      const handler = (_: any, v: boolean) => cb(v)
+      const handler = (_event: Electron.IpcRendererEvent, v: boolean) => cb(v)
       ipcRenderer.on('win:maximized', handler)
       return () => ipcRenderer.removeListener('win:maximized', handler)
     },

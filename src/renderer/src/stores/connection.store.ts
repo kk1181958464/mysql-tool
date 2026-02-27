@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import type { ConnectionConfig, ConnectionStatus, ConnectionSavePayload } from '../../../shared/types/connection'
 import { api } from '../utils/ipc'
 import { useDatabaseStore } from './database.store'
+import { useTabStore } from './tab.store'
+import { requestTabCloseGuard } from './tab-close-guard'
 
 interface ConnectionState {
   connections: ConnectionConfig[]
@@ -63,6 +65,15 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   },
 
   disconnect: async (id) => {
+    const tabStore = useTabStore.getState()
+    const relatedTabs = tabStore.getTabsByConnection(id)
+
+    if (relatedTabs.length > 0) {
+      const canClose = await requestTabCloseGuard(relatedTabs)
+      if (!canClose) return
+      tabStore.removeTabsByIds(relatedTabs.map((tab) => tab.id))
+    }
+
     await api.connection.disconnect(id)
     set((s) => {
       const statuses = { ...s.connectionStatuses }

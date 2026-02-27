@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons'
 import Editor, { loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
+import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import { ResultPanel } from './ResultPanel'
 import { SnippetManager } from './SnippetManager'
 import { useTabStore, QueryTab } from '../../stores/tab.store'
@@ -15,6 +16,17 @@ import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+
+// QueryEditor 首次加载时再初始化 Monaco，避免主入口首包引入
+if (!(self as any).__MYSQL_TOOL_MONACO_READY__) {
+  ;(self as any).MonacoEnvironment = {
+    getWorker() {
+      return new editorWorker()
+    }
+  }
+  loader.config({ monaco })
+  ;(self as any).__MYSQL_TOOL_MONACO_READY__ = true
+}
 
 // SQL 关键字
 const SQL_KEYWORDS = [
@@ -32,6 +44,43 @@ const SQL_KEYWORDS = [
 // 全局存储表和字段信息
 let globalTables: string[] = []
 let globalColumns: Map<string, string[]> = new Map()
+
+const COLUMN_LOAD_LIMIT = 20
+const COLUMN_LOAD_CONCURRENCY = 4
+const COLUMN_LOAD_TIMEOUT_MS = 5000
+
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('load columns timeout')), timeoutMs)
+    promise
+      .then((value) => {
+        clearTimeout(timer)
+        resolve(value)
+      })
+      .catch((err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
+  })
+}
+
+const runWithConcurrency = async <T,>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> => {
+  if (!items.length) return
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = cursor
+      cursor += 1
+      if (index >= items.length) break
+      await worker(items[index])
+    }
+  })
+  await Promise.allSettled(workers)
+}
 
 // 获取光标前的上下文
 const getContext = (textBefore: string): 'select' | 'from' | 'where' | 'join' | 'set' | 'other' => {
@@ -198,24 +247,50 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
   useEffect(() => {
     registerSqlCompletion()
 
-    if (!activeConnectionId || !selectedDatabase) return
+    if (!activeConnectionId || !selectedDatabase) {
+      updateCompletionData([], new Map())
+      return
+    }
+
     const key = `${activeConnectionId}:${selectedDatabase}`
     const tableList = tables[key] || []
     const tableNames = tableList.map(t => t.name)
-
-    // 获取所有表的字段
     const columnsMap = new Map<string, string[]>()
+    let canceled = false
+
+    // 基础补全优先可用
+    updateCompletionData(tableNames, columnsMap)
+
     const loadColumns = async () => {
-      for (const t of tableList.slice(0, 20)) { // 限制前20个表
+      const targets = tableList.slice(0, COLUMN_LOAD_LIMIT)
+
+      await runWithConcurrency(targets, COLUMN_LOAD_CONCURRENCY, async (t) => {
+        if (canceled) return
         try {
-          const cols = await api.meta.columns(activeConnectionId, selectedDatabase, t.name)
+          const cols = await withTimeout(
+            api.meta.columns(activeConnectionId, selectedDatabase, t.name),
+            COLUMN_LOAD_TIMEOUT_MS
+          )
+          if (canceled) return
           columnsMap.set(t.name, cols.map(c => c.name))
-        } catch {}
+          updateCompletionData(tableNames, new Map(columnsMap))
+        } catch {
+          // 单表失败不阻断整体补全
+        }
+      })
+
+      if (!canceled) {
+        updateCompletionData(tableNames, new Map(columnsMap))
       }
-      updateCompletionData(tableNames, columnsMap)
     }
+
     loadColumns()
+
+    return () => {
+      canceled = true
+    }
   }, [activeConnectionId, selectedDatabase, tables])
+
 
   const handleEditorMount = (editor: any) => {
     editorRef.current = editor

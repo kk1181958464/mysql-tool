@@ -54,6 +54,19 @@ export function registerAllIPC() {
     try { await conn.query(`USE \`${db}\``); await conn.query(`DROP ${type} IF EXISTS \`${name}\``) } finally { conn.release() }
   })
 
+  ipcMain.handle(IPC.OBJECT_EXEC_ROUTINE, async (_e, connId: string, db: string, name: string, type: 'PROCEDURE' | 'FUNCTION', params: string[]) => {
+    const conn = await connectionManager.getConnection(connId)
+    try {
+      await conn.query(`USE \`${db}\``)
+      const placeholders = params.map(() => '?').join(', ')
+      const sql = type === 'FUNCTION'
+        ? `SELECT \`${name}\`(${placeholders}) AS result`
+        : `CALL \`${name}\`(${placeholders})`
+      const [rows] = await conn.query(sql, params)
+      return { rows: rows as unknown[] }
+    } finally { conn.release() }
+  })
+
   // Store operations
   ipcMain.handle(IPC.STORE_GET_HISTORY, async (_e, connectionId: string, limit?: number) => localStore.queryHistory.getByConnection(connectionId, limit))
   ipcMain.handle(IPC.STORE_SAVE_HISTORY, async (_e, item) => localStore.queryHistory.save(item))

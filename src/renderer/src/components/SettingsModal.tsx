@@ -4,6 +4,16 @@ import { SunOutlined, MoonOutlined, LaptopOutlined, ExportOutlined, ImportOutlin
 import { useAppStore } from '../stores/app.store'
 import { useConnectionStore } from '../stores/connection.store'
 import { api } from '../utils/ipc'
+import {
+  HEARTBEAT_DEFAULT_SECONDS,
+  HEARTBEAT_MAX_SECONDS,
+  HEARTBEAT_MIN_SECONDS,
+  TABLE_ROWS_PER_PAGE_DEFAULT,
+  TABLE_ROWS_PER_PAGE_MAX,
+  TABLE_ROWS_PER_PAGE_MIN,
+  normalizeHeartbeatSeconds,
+  normalizeTableRowsPerPage,
+} from '../../../shared/constants'
 
 const ACCENT_COLORS = [
   { label: '蓝色', value: '' },
@@ -16,20 +26,9 @@ const ACCENT_COLORS = [
   { label: '黄色', value: '#eab308' },
 ]
 
-const HEARTBEAT_MIN_SECONDS = 5
-const HEARTBEAT_MAX_SECONDS = 120
-const HEARTBEAT_DEFAULT_SECONDS = 20
-
 interface Props {
   open: boolean
   onClose: () => void
-}
-
-function normalizeHeartbeat(raw: unknown): number {
-  const value = Number(raw)
-  if (!Number.isFinite(value)) return HEARTBEAT_DEFAULT_SECONDS
-  const rounded = Math.round(value)
-  return Math.min(HEARTBEAT_MAX_SECONDS, Math.max(HEARTBEAT_MIN_SECONDS, rounded))
 }
 
 export default function SettingsModal({ open, onClose }: Props) {
@@ -40,18 +39,22 @@ export default function SettingsModal({ open, onClose }: Props) {
     setAccentColor,
     heartbeatIntervalSeconds,
     setHeartbeatIntervalSeconds,
+    rowsPerPage,
+    setRowsPerPage,
   } = useAppStore()
   const [msg, setMsg] = useState('')
   const [heartbeatInput, setHeartbeatInput] = useState(String(heartbeatIntervalSeconds))
+  const [rowsPerPageInput, setRowsPerPageInput] = useState(String(rowsPerPage))
 
   useEffect(() => {
     if (open) {
       setHeartbeatInput(String(heartbeatIntervalSeconds))
+      setRowsPerPageInput(String(rowsPerPage))
     }
-  }, [open, heartbeatIntervalSeconds])
+  }, [open, heartbeatIntervalSeconds, rowsPerPage])
 
   const applyHeartbeat = async (raw: string) => {
-    const normalized = normalizeHeartbeat(raw)
+    const normalized = normalizeHeartbeatSeconds(raw)
     setHeartbeatInput(String(normalized))
 
     if (normalized !== Number(raw)) {
@@ -65,6 +68,24 @@ export default function SettingsModal({ open, onClose }: Props) {
       }
     } catch (e: any) {
       setMsg('✗ ' + (e.message || '心跳时间保存失败'))
+    }
+  }
+
+  const applyRowsPerPage = async (raw: string) => {
+    const normalized = normalizeTableRowsPerPage(raw)
+    setRowsPerPageInput(String(normalized))
+
+    if (normalized !== Number(raw)) {
+      setMsg(`⚠ 每页行数已自动修正为 ${normalized}（允许范围 ${TABLE_ROWS_PER_PAGE_MIN}-${TABLE_ROWS_PER_PAGE_MAX}）`)
+    }
+
+    try {
+      await setRowsPerPage(normalized)
+      if (normalized === Number(raw)) {
+        setMsg('✓ 每页行数已保存')
+      }
+    } catch (e: any) {
+      setMsg('✗ ' + (e.message || '每页行数保存失败'))
     }
   }
 
@@ -84,6 +105,7 @@ export default function SettingsModal({ open, onClose }: Props) {
         themeMode,
         accentColor,
         heartbeatIntervalSeconds,
+        rowsPerPage,
       }
       await api.dialog.writeFile(filePath, JSON.stringify(data, null, 2))
       setMsg('✓ 导出成功')
@@ -111,7 +133,10 @@ export default function SettingsModal({ open, onClose }: Props) {
       if (data.themeMode) setThemeMode(data.themeMode)
       if (data.accentColor !== undefined) setAccentColor(data.accentColor)
       if (data.heartbeatIntervalSeconds !== undefined) {
-        await setHeartbeatIntervalSeconds(normalizeHeartbeat(data.heartbeatIntervalSeconds))
+        await setHeartbeatIntervalSeconds(normalizeHeartbeatSeconds(data.heartbeatIntervalSeconds))
+      }
+      if (data.rowsPerPage !== undefined) {
+        await setRowsPerPage(normalizeTableRowsPerPage(data.rowsPerPage))
       }
       await useConnectionStore.getState().loadConnections()
       setMsg(`✓ 导入成功，共 ${data.connections?.length || 0} 个连接`)
@@ -187,6 +212,43 @@ export default function SettingsModal({ open, onClose }: Props) {
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
             无响应不一定是连接挂掉，也可能是数据库负载、锁等待或网络抖动导致。系统会先尝试探测并重建连接。
+          </div>
+        </div>
+
+        {/* 每页行数设置 */}
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>数据表每页展示行数</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="number"
+              min={TABLE_ROWS_PER_PAGE_MIN}
+              max={TABLE_ROWS_PER_PAGE_MAX}
+              step={1}
+              value={rowsPerPageInput}
+              onChange={(e) => setRowsPerPageInput(e.target.value)}
+              onBlur={() => applyRowsPerPage(rowsPerPageInput)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  void applyRowsPerPage(rowsPerPageInput)
+                }
+              }}
+              style={{
+                width: 140,
+                height: 32,
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                padding: '0 10px',
+                outline: 'none',
+              }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              默认 {TABLE_ROWS_PER_PAGE_DEFAULT}，范围 {TABLE_ROWS_PER_PAGE_MIN}-{TABLE_ROWS_PER_PAGE_MAX}
+            </span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            建议不要长期设置过大，避免渲染卡顿。
           </div>
         </div>
 

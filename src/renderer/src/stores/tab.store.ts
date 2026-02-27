@@ -28,6 +28,7 @@ export interface QueryTab extends BaseTab {
 export interface DataTab extends BaseTab {
   type: 'data'
   table: string
+  isDirty: boolean
 }
 
 // 表设计标签
@@ -59,6 +60,8 @@ interface TabState {
   // 通用操作
   setActiveTab: (id: string) => void
   removeTab: (id: string) => void
+  removeTabsByIds: (ids: string[]) => void
+  getTabsByConnection: (connectionId: string) => Tab[]
   updateTabTitle: (id: string, title: string) => void
 
   // 查询标签操作
@@ -70,6 +73,7 @@ interface TabState {
 
   // 数据浏览标签操作
   addDataTab: (connectionId: string, database: string, table: string) => void
+  setDataDirty: (id: string, dirty: boolean) => void
 
   // 表设计标签操作
   addDesignTab: (connectionId: string, database: string, table?: string | null) => void
@@ -102,6 +106,24 @@ export const useTabStore = create<TabState>((set, get) => ({
       }
       return { tabs, activeTabId }
     })
+  },
+
+  removeTabsByIds: (ids) => {
+    if (ids.length === 0) return
+    const idSet = new Set(ids)
+    set((s) => {
+      const tabs = s.tabs.filter((t) => !idSet.has(t.id))
+      let activeTabId = s.activeTabId
+      if (activeTabId && idSet.has(activeTabId)) {
+        const activeIndex = s.tabs.findIndex((t) => t.id === activeTabId)
+        activeTabId = tabs[Math.min(activeIndex, tabs.length - 1)]?.id ?? null
+      }
+      return { tabs, activeTabId }
+    })
+  },
+
+  getTabsByConnection: (connectionId) => {
+    return get().tabs.filter((t) => t.connectionId === connectionId)
   },
 
   updateTabTitle: (id, title) => {
@@ -176,8 +198,15 @@ export const useTabStore = create<TabState>((set, get) => ({
       connectionId,
       database,
       table,
+      isDirty: false,
     }
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: id }))
+  },
+
+  setDataDirty: (id, isDirty) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === id && t.type === 'data' ? { ...t, isDirty } : t)),
+    }))
   },
 
   // 表设计标签

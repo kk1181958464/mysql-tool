@@ -3,28 +3,17 @@ import type { ConnectionConfig, ConnectionStatus } from '../../shared/types/conn
 import { createTunnel } from './ssh-tunnel'
 import * as localStore from './local-store'
 import * as logger from '../utils/logger'
+import { HEARTBEAT_SETTING_KEY, HEARTBEAT_DEFAULT_SECONDS, normalizeHeartbeatSeconds } from '../../shared/constants'
 
 const pools = new Map<string, mysql.Pool>()
 const tunnels = new Map<string, { close: () => void }>()
 const connectionConfigs = new Map<string, ConnectionConfig>()
-
-const HEARTBEAT_SETTING_KEY = 'heartbeatIntervalSeconds'
-const HEARTBEAT_DEFAULT_SECONDS = 20
-const HEARTBEAT_MIN_SECONDS = 5
-const HEARTBEAT_MAX_SECONDS = 120
 
 let heartbeatIntervalSeconds = HEARTBEAT_DEFAULT_SECONDS
 let heartbeatTimer: NodeJS.Timeout | null = null
 let heartbeatRunning = false
 
 type ConnectionLikeError = Error & { code?: string; errno?: number }
-
-function normalizeHeartbeatSeconds(raw: unknown): number {
-  const value = Number(raw)
-  if (!Number.isFinite(value)) return HEARTBEAT_DEFAULT_SECONDS
-  const rounded = Math.round(value)
-  return Math.min(HEARTBEAT_MAX_SECONDS, Math.max(HEARTBEAT_MIN_SECONDS, rounded))
-}
 
 function getHeartbeatTimerDelayMs(): number {
   return heartbeatIntervalSeconds * 1000

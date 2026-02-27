@@ -4,11 +4,19 @@ import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined } from '@ant
 import { api } from '../../utils/ipc'
 import type { QueryResult, ColumnInfo } from '../../../../shared/types/query'
 import { DataExport } from './DataExport'
+import { useAppStore } from '../../stores/app.store'
+import { useTabStore } from '../../stores/tab.store'
 
 interface Props {
+  tabId: string
   connectionId: string
   database: string
   table: string
+}
+
+interface KeysetCursor {
+  firstPk: unknown
+  lastPk: unknown
 }
 
 // duck typing 检测 Date（IPC序列化后 instanceof 可能失效）
@@ -195,11 +203,12 @@ const EditableCell: React.FC<{
   )
 }, (prev, next) => prev.value === next.value && prev.isSelected === next.isSelected && prev.isFocused === next.isFocused && prev.colType === next.colType)
 
-export const TableData: React.FC<Props> = ({ connectionId, database, table }) => {
+export const TableData: React.FC<Props> = ({ tabId, connectionId, database, table }) => {
   const [result, setResult] = useState<QueryResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
-  const [pageSize] = useState(100)
+  const rowsPerPage = useAppStore((s) => s.rowsPerPage)
+  const setDataDirty = useTabStore((s) => s.setDataDirty)
   const [jumpPage, setJumpPage] = useState('')
   const [where, setWhere] = useState('')
   const [orderBy] = useState('')
@@ -215,37 +224,127 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
   const [pendingChanges, setPendingChanges] = useState<Map<string, Record<string, unknown>>>(new Map())
   const [cellContextMenu, setCellContextMenu] = useState<{ x: number; y: number; rowKey: string; colName: string; record: Record<string, unknown> } | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const countCacheRef = useRef<Map<string, { count: number; ts: number }>>(new Map())
+  const [cursor, setCursor] = useState<KeysetCursor | null>(null)
+  const [hasNextPage, setHasNextPage] = useState(false)
+  const [lastQueryMode, setLastQueryMode] = useState<'keyset' | 'offset'>('offset')
 
-  const fetchData = useCallback(async () => {
+  const countCacheKey = useMemo(
+    () => `${connectionId}|${database}|${table}|${where.trim()}`,
+    [connectionId, database, table, where]
+  )
+
+  const isDirty = pendingChanges.size > 0 || newRows.length > 0
+
+  useEffect(() => {
+    setDataDirty(tabId, isDirty)
+  }, [tabId, isDirty, setDataDirty])
+
+  useEffect(() => {
+    return () => {
+      setDataDirty(tabId, false)
+    }
+  }, [tabId, setDataDirty])
+
+  const fetchData = useCallback(async (
+    action: 'reset' | 'next' | 'prev' = 'reset',
+    forceRefreshCount = false,
+    fallbackPage?: number
+  ) => {
     if (!connectionId || !database || !table) return
     setLoading(true)
     setError('')
     try {
-      const offset = (page - 1) * pageSize
+      const pkColumn = result?.columns.find((c) => c.primaryKey)?.name
+      const keysetEnabled = Boolean(pkColumn && !orderBy && action !== 'reset')
+      const whereParts: string[] = []
+      if (where.trim()) whereParts.push(`(${where})`)
+
       let sql = `SELECT * FROM \`${table}\``
-      if (where.trim()) sql += ` WHERE ${where}`
-      if (orderBy) sql += ` ORDER BY ${orderBy}`
-      sql += ` LIMIT ${pageSize} OFFSET ${offset}`
-      const res = await api.query.execute(connectionId, sql, database)
-      setResult(res)
+
+      if (keysetEnabled && action !== 'reset' && cursor) {
+        const op = action === 'next' ? '>' : '<'
+        const anchor = action === 'next' ? cursor.lastPk : cursor.firstPk
+        whereParts.push(`\`${pkColumn}\` ${op} ${escSQL(anchor)}`)
+      }
+
+      if (whereParts.length > 0) {
+        sql += ` WHERE ${whereParts.join(' AND ')}`
+      }
+
+      if (keysetEnabled) {
+        sql += ` ORDER BY \`${pkColumn}\` ${action === 'prev' ? 'DESC' : 'ASC'}`
+      } else if (orderBy) {
+        sql += ` ORDER BY ${orderBy}`
+      }
+
+      if (!keysetEnabled) {
+        const pageValue = fallbackPage ?? page
+        const offset = (pageValue - 1) * rowsPerPage
+        sql += ` LIMIT ${rowsPerPage} OFFSET ${offset}`
+      } else {
+        sql += ` LIMIT ${rowsPerPage}`
+      }
 
       let countSql = `SELECT COUNT(*) as cnt FROM \`${table}\``
       if (where.trim()) countSql += ` WHERE ${where}`
-      const countRes = await api.query.execute(connectionId, countSql, database)
-      setTotalCount(Number(countRes.rows[0]?.cnt ?? 0))
+
+      const cache = countCacheRef.current
+      const cachedCount = !forceRefreshCount ? cache.get(countCacheKey) : undefined
+
+      const [res, countValue] = await Promise.all([
+        api.query.execute(connectionId, sql, database),
+        cachedCount
+          ? Promise.resolve(cachedCount.count)
+          : api.query.execute(connectionId, countSql, database).then((countRes) => {
+            const count = Number(countRes.rows[0]?.cnt ?? 0)
+            cache.set(countCacheKey, { count, ts: Date.now() })
+            return count
+          })
+      ])
+
+      if (keysetEnabled && action === 'prev') {
+        res.rows = [...res.rows].reverse()
+      }
+
+      const pkAfterQuery = res.columns.find((c) => c.primaryKey)?.name
+      const rows = res.rows || []
+      if (pkAfterQuery && rows.length > 0) {
+        setCursor({
+          firstPk: rows[0][pkAfterQuery],
+          lastPk: rows[rows.length - 1][pkAfterQuery]
+        })
+      } else {
+        setCursor(null)
+      }
+
+      setHasNextPage(rows.length === rowsPerPage)
+      setLastQueryMode(pkAfterQuery && !orderBy ? 'keyset' : 'offset')
+      setResult(res)
+      setTotalCount(countValue)
     } catch (e: any) {
       setError(e.message || '查询失败')
     } finally {
       setLoading(false)
     }
-  }, [connectionId, database, table, page, pageSize, where, orderBy])
+  }, [connectionId, database, table, page, rowsPerPage, where, orderBy, countCacheKey, result?.columns, cursor])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => {
+    setPage(1)
+    setJumpPage('')
+    setCursor(null)
+    setHasNextPage(false)
+    fetchData('reset')
+  }, [connectionId, database, table, where, rowsPerPage])
 
   const pk = result?.columns.find((c) => c.primaryKey)
   const pkCol = pk?.name || '_rowIndex'
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
+  const totalPages = Math.max(1, Math.ceil(totalCount / rowsPerPage))
   const allRowKeys = [...(result?.rows.map((r, i) => String(r[pkCol] ?? i)) || []), ...newRows.map(r => String(r._newKey))]
+
+  const invalidateCountCache = useCallback(() => {
+    countCacheRef.current.delete(countCacheKey)
+  }, [countCacheKey])
 
   const handleDelete = async () => {
     if (selectedRowKeys.size === 0) return
@@ -258,10 +357,14 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
     }
     if (dbKeys.length > 0 && pk) {
       try {
-        for (const key of dbKeys) {
-          await api.data.delete(connectionId, database, table, { [pk.name]: key })
-        }
-        fetchData()
+        await api.data.batchDelete(
+          connectionId,
+          database,
+          table,
+          dbKeys.map((key) => ({ [pk.name]: key }))
+        )
+        invalidateCountCache()
+        fetchData('reset', true)
       } catch (e: any) {
         setError(e.message || '删除失败')
       }
@@ -319,30 +422,37 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
     try {
       // 保存修改行
       if (hasUpdates) {
-        for (const [rowKey, changes] of pendingChanges) {
-          await api.data.update(connectionId, database, table, changes, { [pk!.name]: rowKey })
-        }
+        const updateItems = Array.from(pendingChanges.entries()).map(([rowKey, changes]) => ({
+          data: changes,
+          where: { [pk!.name]: rowKey }
+        }))
+        await api.data.batchUpdate(connectionId, database, table, updateItems)
         setPendingChanges(new Map())
       }
       // 保存新增行
       if (hasInserts) {
         const cols = result?.columns || []
-        for (const row of newRows) {
+        const rows = newRows.map((row) => {
           const data: Record<string, unknown> = {}
           for (const col of cols) {
             if (col.autoIncrement) continue
             data[col.name] = row[col.name] ?? null
           }
-          await api.data.insert(connectionId, database, table, data)
+          return data
+        })
+        if (rows.length > 0) {
+          await api.data.batchInsert(connectionId, database, table, rows)
         }
         setNewRows([])
       }
-      fetchData()
+      invalidateCountCache()
+      fetchData('reset', true)
+      setDataDirty(tabId, false)
     } catch (e: any) {
       setError(e.message || '保存失败')
     }
     setLoading(false)
-  }, [pk, pendingChanges, newRows, result?.columns, connectionId, database, table, fetchData])
+  }, [pk, pendingChanges, newRows, result?.columns, connectionId, database, table, fetchData, invalidateCountCache])
 
   // Ctrl+S 保存
   useEffect(() => {
@@ -433,10 +543,14 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
         }
         if (dbKeys.length > 0 && pk) {
           try {
-            for (const key of dbKeys) {
-              await api.data.delete(connectionId, database, table, { [pk.name]: key })
-            }
-            fetchData()
+            await api.data.batchDelete(
+              connectionId,
+              database,
+              table,
+              dbKeys.map((key) => ({ [pk.name]: key }))
+            )
+            invalidateCountCache()
+            fetchData('reset', true)
           } catch (e: any) { setError(e.message || '删除失败') }
         }
         setSelectedRowKeys(new Set())
@@ -537,6 +651,7 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
   })) || [], [result?.columns, pkCol, pendingChanges, selectedCells, handleCellChange, handleCellSelect])
 
   const columns = [checkboxCol, ...dataCols]
+  const isKeysetMode = lastQueryMode === 'keyset' && Boolean(pk)
 
   return (
     <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
@@ -546,7 +661,7 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
           placeholder="WHERE 条件..."
           value={where}
           onChange={(e) => setWhere(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && (setPage(1), fetchData())}
+          onKeyDown={(e) => e.key === 'Enter' && (setPage(1), setCursor(null), fetchData('reset'))}
           style={{ width: 300 }}
         />
         <Button size="small" disabled={newRows.length > 0} onClick={() => {
@@ -588,20 +703,48 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
       </div>
 
       <div style={{ padding: '8px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-        <span style={{ color: 'var(--text-muted)' }}>共 {totalCount} 行，共 {totalPages} 页 {(pendingChanges.size > 0 || newRows.length > 0) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length} 行 (Ctrl+S)</span>}</span>
+        <span style={{ color: 'var(--text-muted)' }}>
+          共 {totalCount} 行
+          {isKeysetMode ? `，当前第 ${page} 页（游标翻页）` : `，共 ${totalPages} 页`}
+          {(pendingChanges.size > 0 || newRows.length > 0) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length} 行 (Ctrl+S)</span>}
+        </span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="ui-btn ui-btn-default" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</button>
-          <span>{page} / {totalPages}</span>
-          <button className="ui-btn ui-btn-default" disabled={page >= totalPages} onClick={() => setPage(page + 1)}>下一页</button>
+          <button
+            className="ui-btn ui-btn-default"
+            disabled={loading || page <= 1}
+            onClick={() => {
+              if (loading || page <= 1) return
+              setPage((prev) => Math.max(1, prev - 1))
+              fetchData(isKeysetMode ? 'prev' : 'reset', false, Math.max(1, page - 1))
+            }}
+          >
+            上一页
+          </button>
+          <span>{isKeysetMode ? page : `${page} / ${totalPages}`}</span>
+          <button
+            className="ui-btn ui-btn-default"
+            disabled={loading || (isKeysetMode ? !hasNextPage : page >= totalPages)}
+            onClick={() => {
+              if (loading || (isKeysetMode ? !hasNextPage : page >= totalPages)) return
+              const nextPage = page + 1
+              setPage(nextPage)
+              fetchData(isKeysetMode ? 'next' : 'reset', false, nextPage)
+            }}
+          >
+            下一页
+          </button>
           <span style={{ color: 'var(--text-muted)' }}>跳转到</span>
           <Input
             value={jumpPage}
+            disabled={isKeysetMode}
             onChange={(e) => setJumpPage(e.target.value.replace(/\D/g, ''))}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 const n = Number(jumpPage)
                 if (!Number.isFinite(n) || n < 1) return
-                setPage(Math.min(totalPages, n))
+                const targetPage = Math.min(totalPages, n)
+                setPage(targetPage)
+                fetchData('reset', false, targetPage)
               }
             }}
             style={{ width: 64 }}
@@ -609,10 +752,13 @@ export const TableData: React.FC<Props> = ({ connectionId, database, table }) =>
           />
           <button
             className="ui-btn ui-btn-default"
+            disabled={isKeysetMode}
             onClick={() => {
               const n = Number(jumpPage)
               if (!Number.isFinite(n) || n < 1) return
-              setPage(Math.min(totalPages, n))
+              const targetPage = Math.min(totalPages, n)
+              setPage(targetPage)
+              fetchData('reset', false, targetPage)
             }}
           >
             跳转

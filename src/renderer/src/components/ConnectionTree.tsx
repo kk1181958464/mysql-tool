@@ -62,7 +62,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   // 加载数据库备注
   useEffect(() => {
-    api.store.getSettings('db-remarks').then((v: any) => {
+    api.store.getSettings('db-remarks').then((v) => {
       if (v) try { setDbRemarks(JSON.parse(v)) } catch {}
     })
   }, [])

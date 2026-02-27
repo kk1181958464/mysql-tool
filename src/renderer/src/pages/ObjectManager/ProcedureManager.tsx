@@ -18,7 +18,7 @@ const ProcedureManager: React.FC = () => {
   const [viewSql, setViewSql] = useState<string | null>(null)
   const [execTarget, setExecTarget] = useState<ProcedureInfo | null>(null)
   const [execParams, setExecParams] = useState<Record<string, string>>({})
-  const [execResult, setExecResult] = useState<any>(null)
+  const [execResult, setExecResult] = useState<{ rows: unknown[] } | null>(null)
   const [form, setForm] = useState({ name: '', type: 'PROCEDURE' as 'PROCEDURE' | 'FUNCTION', params: [] as ParamDef[], returns: '', body: '' })
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
@@ -52,7 +52,7 @@ const ProcedureManager: React.FC = () => {
       await api.object.createProcedure(connId, db, sql)
       setSuccess('保存成功'); setTimeout(() => setSuccess(null), 2000)
       setModalOpen(false); load()
-    } catch (e: any) { setError(e.message || '保存失败') }
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : '保存失败') }
   }
 
   const openExec = (p: ProcedureInfo) => { setExecTarget(p); setExecParams({}); setExecResult(null); setExecModal(true) }
@@ -60,11 +60,10 @@ const ProcedureManager: React.FC = () => {
   const executeProc = async () => {
     if (!connId || !db || !execTarget) return
     try {
-      const params = Object.values(execParams).map((v) => `'${v.replace(/'/g, "\\'")}'`).join(', ')
-      const sql = execTarget.type === 'FUNCTION' ? `SELECT \`${execTarget.name}\`(${params}) AS result` : `CALL \`${execTarget.name}\`(${params})`
-      const res = await api.query.execute(connId, sql, db)
+      const params = parseParamNames(execTarget.paramList).map((name) => execParams[name] || '')
+      const res = await api.object.execRoutine(connId, db, execTarget.name, execTarget.type as 'PROCEDURE' | 'FUNCTION', params)
       setExecResult(res)
-    } catch (e: any) { setError(e.message || '执行失败') }
+    } catch (e: unknown) { setError(e instanceof Error ? e.message : '执行失败') }
   }
 
   const drop = async (name: string, type: string) => { await api.object.drop(connId!, db!, type, name); load() }
@@ -78,7 +77,7 @@ const ProcedureManager: React.FC = () => {
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '定义者', dataIndex: 'definer', key: 'definer', width: 160 },
     { title: '创建时间', dataIndex: 'created', key: 'created', width: 170 },
-    { title: '操作', key: 'action', width: 220, render: (_: any, r: ProcedureInfo) => (
+    { title: '操作', key: 'action', width: 220, render: (_value: unknown, r: ProcedureInfo) => (
       <Space>
         <Button size="small" icon={<EyeOutlined />} onClick={() => setViewSql(r.body)}>查看</Button>
         <Button size="small" icon={<PlayCircleOutlined />} onClick={() => openExec(r)}>执行</Button>

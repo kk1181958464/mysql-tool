@@ -43,7 +43,7 @@ const DataBrowser: React.FC<Props> = ({ tabId }) => {
         <Tabs
           defaultActiveKey="data"
           items={[
-            { key: 'data', label: '数据', children: <TableData key={refreshKey} connectionId={tab.connectionId} database={tab.database} table={tab.table} /> },
+            { key: 'data', label: '数据', children: <TableData key={refreshKey} tabId={tab.id} connectionId={tab.connectionId} database={tab.database} table={tab.table} /> },
             { key: 'structure', label: '结构', children: <TableStructure key={refreshKey} connectionId={tab.connectionId} database={tab.database} table={tab.table} /> },
           ]}
           style={{ height: '100%' }}
