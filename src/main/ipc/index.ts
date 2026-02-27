@@ -60,7 +60,16 @@ export function registerAllIPC() {
   ipcMain.handle(IPC.STORE_GET_SNIPPETS, async () => localStore.snippets.getAll())
   ipcMain.handle(IPC.STORE_SAVE_SNIPPET, async (_e, snippet) => localStore.snippets.save(snippet))
   ipcMain.handle(IPC.STORE_GET_SETTINGS, async (_e, key: string) => localStore.settings.get(key))
-  ipcMain.handle(IPC.STORE_SAVE_SETTINGS, async (_e, key: string, value: string) => localStore.settings.set(key, value))
+  ipcMain.handle(IPC.STORE_SAVE_SETTINGS, async (_e, key: string, value: string) => {
+    localStore.settings.set(key, value)
+
+    if (key === 'heartbeatIntervalSeconds') {
+      const effective = connectionManager.updateHeartbeatInterval(Number(value))
+      if (String(effective) !== value) {
+        localStore.settings.set(key, String(effective))
+      }
+    }
+  })
 
   // Dialog
   ipcMain.handle('dialog:saveFile', async (_e, options: { defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => {

@@ -4,12 +4,24 @@ import type {
   ViewInfo, ProcedureInfo, TriggerInfo, EventInfo, ObjectSearchResult
 } from '../../shared/types/metadata'
 
+async function runQuery(conn: any, sql: string, db?: string): Promise<any[]> {
+  if (db) await conn.query(`USE \`${db}\``)
+  const [rows] = await conn.query(sql)
+  return rows as any[]
+}
+
 async function query(connId: string, sql: string, db?: string): Promise<any[]> {
-  const conn = await connectionManager.getConnection(connId)
+  let conn = await connectionManager.ensureConnection(connId)
   try {
-    if (db) await conn.query(`USE \`${db}\``)
-    const [rows] = await conn.query(sql)
-    return rows as any[]
+    return await runQuery(conn, sql, db)
+  } catch (err: any) {
+    if (!connectionManager.isConnectionLostError(err)) {
+      throw err
+    }
+
+    try { conn.destroy() } catch { conn.release() }
+    conn = await connectionManager.ensureConnection(connId)
+    return await runQuery(conn, sql, db)
   } finally {
     conn.release()
   }

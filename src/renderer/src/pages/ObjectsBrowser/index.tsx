@@ -143,7 +143,12 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       setTableStatus(status || [])
     } catch (e: any) {
       console.error('loadTableStatus error:', e)
-      setError(e.message || '加载失败')
+      const rawMessage = e?.message || '加载失败'
+      const lower = String(rawMessage).toLowerCase()
+      const isConnLost = lower.includes('connection lost')
+        || lower.includes('server closed the connection')
+        || lower.includes('连接已失效')
+      setError(isConnLost ? '连接已失效，请点击刷新或重新连接后重试' : rawMessage)
     }
     setLoading(false)
   }

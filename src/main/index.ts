@@ -48,6 +48,7 @@ function createWindow() {
 app.whenReady().then(() => {
   logger.info('App starting...')
   localStore.init()
+  connectionManager.initializeHeartbeatInterval()
   registerAllIPC()
 
   // Window control IPC

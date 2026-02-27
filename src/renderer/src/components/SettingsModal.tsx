@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Modal, Button } from './ui'
 import { SunOutlined, MoonOutlined, LaptopOutlined, ExportOutlined, ImportOutlined } from '@ant-design/icons'
 import { useAppStore } from '../stores/app.store'
@@ -16,14 +16,57 @@ const ACCENT_COLORS = [
   { label: '黄色', value: '#eab308' },
 ]
 
+const HEARTBEAT_MIN_SECONDS = 5
+const HEARTBEAT_MAX_SECONDS = 120
+const HEARTBEAT_DEFAULT_SECONDS = 20
+
 interface Props {
   open: boolean
   onClose: () => void
 }
 
+function normalizeHeartbeat(raw: unknown): number {
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return HEARTBEAT_DEFAULT_SECONDS
+  const rounded = Math.round(value)
+  return Math.min(HEARTBEAT_MAX_SECONDS, Math.max(HEARTBEAT_MIN_SECONDS, rounded))
+}
+
 export default function SettingsModal({ open, onClose }: Props) {
-  const { themeMode, setThemeMode, accentColor, setAccentColor } = useAppStore()
+  const {
+    themeMode,
+    setThemeMode,
+    accentColor,
+    setAccentColor,
+    heartbeatIntervalSeconds,
+    setHeartbeatIntervalSeconds,
+  } = useAppStore()
   const [msg, setMsg] = useState('')
+  const [heartbeatInput, setHeartbeatInput] = useState(String(heartbeatIntervalSeconds))
+
+  useEffect(() => {
+    if (open) {
+      setHeartbeatInput(String(heartbeatIntervalSeconds))
+    }
+  }, [open, heartbeatIntervalSeconds])
+
+  const applyHeartbeat = async (raw: string) => {
+    const normalized = normalizeHeartbeat(raw)
+    setHeartbeatInput(String(normalized))
+
+    if (normalized !== Number(raw)) {
+      setMsg(`⚠ 心跳时间已自动修正为 ${normalized} 秒（允许范围 ${HEARTBEAT_MIN_SECONDS}-${HEARTBEAT_MAX_SECONDS}）`)
+    }
+
+    try {
+      await setHeartbeatIntervalSeconds(normalized)
+      if (normalized === Number(raw)) {
+        setMsg('✓ 心跳时间已保存')
+      }
+    } catch (e: any) {
+      setMsg('✗ ' + (e.message || '心跳时间保存失败'))
+    }
+  }
 
   const handleExport = async () => {
     const filePath = await api.dialog.saveFile({
@@ -40,6 +83,7 @@ export default function SettingsModal({ open, onClose }: Props) {
         remarks: remarks ? JSON.parse(remarks) : {},
         themeMode,
         accentColor,
+        heartbeatIntervalSeconds,
       }
       await api.dialog.writeFile(filePath, JSON.stringify(data, null, 2))
       setMsg('✓ 导出成功')
@@ -47,6 +91,7 @@ export default function SettingsModal({ open, onClose }: Props) {
       setMsg('✗ ' + (e.message || '导出失败'))
     }
   }
+
   const handleImport = async () => {
     const filePath = await api.dialog.openFile({
       filters: [{ name: 'JSON', extensions: ['json'] }],
@@ -65,6 +110,9 @@ export default function SettingsModal({ open, onClose }: Props) {
       }
       if (data.themeMode) setThemeMode(data.themeMode)
       if (data.accentColor !== undefined) setAccentColor(data.accentColor)
+      if (data.heartbeatIntervalSeconds !== undefined) {
+        await setHeartbeatIntervalSeconds(normalizeHeartbeat(data.heartbeatIntervalSeconds))
+      }
       await useConnectionStore.getState().loadConnections()
       setMsg(`✓ 导入成功，共 ${data.connections?.length || 0} 个连接`)
     } catch (e: any) {
@@ -91,6 +139,7 @@ export default function SettingsModal({ open, onClose }: Props) {
             ))}
           </div>
         </div>
+
         {/* 主题色 */}
         <div>
           <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>主题色</div>
@@ -101,6 +150,43 @@ export default function SettingsModal({ open, onClose }: Props) {
                 background: c.value || '#3b82f6', cursor: 'pointer', transition: 'all 0.15s',
               }} />
             ))}
+          </div>
+        </div>
+
+        {/* 心跳设置 */}
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>心跳时间（秒）</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="number"
+              min={HEARTBEAT_MIN_SECONDS}
+              max={HEARTBEAT_MAX_SECONDS}
+              step={1}
+              value={heartbeatInput}
+              onChange={(e) => setHeartbeatInput(e.target.value)}
+              onBlur={() => applyHeartbeat(heartbeatInput)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  void applyHeartbeat(heartbeatInput)
+                }
+              }}
+              style={{
+                width: 140,
+                height: 32,
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                padding: '0 10px',
+                outline: 'none',
+              }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              建议 {HEARTBEAT_MIN_SECONDS}-{HEARTBEAT_MAX_SECONDS} 秒，默认 {HEARTBEAT_DEFAULT_SECONDS} 秒
+            </span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            无响应不一定是连接挂掉，也可能是数据库负载、锁等待或网络抖动导致。系统会先尝试探测并重建连接。
           </div>
         </div>
 
@@ -116,7 +202,7 @@ export default function SettingsModal({ open, onClose }: Props) {
             </Button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>导出/导入连接信息、数据库备注、主题设置</div>
-          {msg && <div style={{ fontSize: 12, marginTop: 6, color: msg.startsWith('✓') ? 'var(--success)' : 'var(--error)' }}>{msg}</div>}
+          {msg && <div style={{ fontSize: 12, marginTop: 6, color: msg.startsWith('✓') ? 'var(--success)' : msg.startsWith('⚠') ? 'var(--warning, #f59e0b)' : 'var(--error)' }}>{msg}</div>}
         </div>
       </div>
     </Modal>

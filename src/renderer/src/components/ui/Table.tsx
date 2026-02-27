@@ -91,7 +91,7 @@ export function Table<T extends Record<string, any>>({
           <thead>
             <tr>
               {columns.map((col) => (
-                <th key={col.key} style={{ position: 'relative' }}>
+                <th key={col.key} style={{ position: 'sticky', top: 0 }}>
                   {col.title}
                   {resizable && (
                     <span
