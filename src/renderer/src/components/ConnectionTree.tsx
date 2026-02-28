@@ -113,6 +113,20 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     }
   }, [activeConnectionId, isConnected])
 
+  // 切换连接时，重置树展开/选中状态，避免复用上一个连接的展开节点
+  useEffect(() => {
+    setExpandedKeys([])
+    setSelectedKeys([])
+  }, [activeConnectionId])
+
+  // 连接断开时也重置展开状态；重连后默认保持折叠
+  useEffect(() => {
+    if (!isConnected) {
+      setExpandedKeys([])
+      setSelectedKeys([])
+    }
+  }, [activeConnectionId, isConnected])
+
   const treeData: TreeNode[] = useMemo(() => {
     return dbs.map((db) => {
       const dbKey = `db:${db.name}`
