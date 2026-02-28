@@ -23,6 +23,19 @@ export function normalizeTableRowsPerPage(raw: unknown): number {
   return Math.min(TABLE_ROWS_PER_PAGE_MAX, Math.max(TABLE_ROWS_PER_PAGE_MIN, rounded))
 }
 
+// Pagination mode
+export const PAGINATION_MODE_SETTING_KEY = 'paginationMode'
+export type PaginationMode = 'auto' | 'cursor' | 'offset'
+export const PAGINATION_MODE_DEFAULT: PaginationMode = 'auto'
+
+export function normalizePaginationMode(raw: unknown): PaginationMode {
+  const value = String(raw ?? '').trim().toLowerCase()
+  if (value === 'cursor' || value === 'offset' || value === 'auto') {
+    return value
+  }
+  return PAGINATION_MODE_DEFAULT
+}
+
 // Heartbeat
 export const HEARTBEAT_SETTING_KEY = 'heartbeatIntervalSeconds'
 export const HEARTBEAT_DEFAULT_SECONDS = 20

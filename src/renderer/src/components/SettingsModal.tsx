@@ -12,7 +12,9 @@ import {
   TABLE_ROWS_PER_PAGE_MAX,
   TABLE_ROWS_PER_PAGE_MIN,
   normalizeHeartbeatSeconds,
+  normalizePaginationMode,
   normalizeTableRowsPerPage,
+  type PaginationMode,
 } from '../../../shared/constants'
 
 const ACCENT_COLORS = [
@@ -24,6 +26,12 @@ const ACCENT_COLORS = [
   { label: '青色', value: '#06b6d4' },
   { label: '红色', value: '#ef4444' },
   { label: '黄色', value: '#eab308' },
+]
+
+const PAGINATION_MODE_OPTIONS: { value: PaginationMode; label: string; desc: string }[] = [
+  { value: 'auto', label: '自动', desc: '按条件自动切换游标/偏移分页' },
+  { value: 'cursor', label: '游标', desc: '优先游标分页；条件不足时回退偏移分页' },
+  { value: 'offset', label: '偏移', desc: '固定使用偏移分页，支持页码跳转' },
 ]
 
 interface Props {
@@ -41,6 +49,8 @@ export default function SettingsModal({ open, onClose }: Props) {
     setHeartbeatIntervalSeconds,
     rowsPerPage,
     setRowsPerPage,
+    paginationMode,
+    setPaginationMode,
   } = useAppStore()
   const [msg, setMsg] = useState('')
   const [heartbeatInput, setHeartbeatInput] = useState(String(heartbeatIntervalSeconds))
@@ -106,6 +116,7 @@ export default function SettingsModal({ open, onClose }: Props) {
         accentColor,
         heartbeatIntervalSeconds,
         rowsPerPage,
+        paginationMode,
       }
       await api.dialog.writeFile(filePath, JSON.stringify(data, null, 2))
       setMsg('✓ 导出成功')
@@ -137,6 +148,9 @@ export default function SettingsModal({ open, onClose }: Props) {
       }
       if (data.rowsPerPage !== undefined) {
         await setRowsPerPage(normalizeTableRowsPerPage(data.rowsPerPage))
+      }
+      if (data.paginationMode !== undefined) {
+        await setPaginationMode(normalizePaginationMode(data.paginationMode))
       }
       await useConnectionStore.getState().loadConnections()
       setMsg(`✓ 导入成功，共 ${data.connections?.length || 0} 个连接`)
@@ -249,6 +263,35 @@ export default function SettingsModal({ open, onClose }: Props) {
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
             建议不要长期设置过大，避免渲染卡顿。
+          </div>
+        </div>
+
+        {/* 分页模式设置 */}
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>分页模式</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {PAGINATION_MODE_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => void setPaginationMode(option.value)}
+                style={{
+                  flex: 1,
+                  padding: '8px 0',
+                  border: `1px solid ${paginationMode === option.value ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 6,
+                  background: paginationMode === option.value ? 'var(--accent-bg)' : 'transparent',
+                  color: paginationMode === option.value ? 'var(--accent)' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+                title={option.desc}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+            自动模式会按条件自动切换：满足主键且无排序时使用游标分页，否则使用偏移分页。
           </div>
         </div>
 

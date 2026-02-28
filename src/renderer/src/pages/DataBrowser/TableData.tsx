@@ -6,6 +6,7 @@ import type { QueryResult, ColumnInfo } from '../../../../shared/types/query'
 import { DataExport } from './DataExport'
 import { useAppStore } from '../../stores/app.store'
 import { useTabStore } from '../../stores/tab.store'
+import type { PaginationMode } from '../../../../shared/constants'
 
 interface Props {
   tabId: string
@@ -17,6 +18,14 @@ interface Props {
 interface KeysetCursor {
   firstPk: unknown
   lastPk: unknown
+}
+
+type EffectivePagination = 'keyset' | 'offset'
+
+const PAGINATION_MODE_LABEL: Record<PaginationMode, string> = {
+  auto: '自动',
+  cursor: '游标',
+  offset: '偏移',
 }
 
 // duck typing 检测 Date（IPC序列化后 instanceof 可能失效）
@@ -208,6 +217,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
   const rowsPerPage = useAppStore((s) => s.rowsPerPage)
+  const paginationMode = useAppStore((s) => s.paginationMode)
   const setDataDirty = useTabStore((s) => s.setDataDirty)
   const [jumpPage, setJumpPage] = useState('')
   const [where, setWhere] = useState('')
@@ -227,7 +237,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const countCacheRef = useRef<Map<string, { count: number; ts: number }>>(new Map())
   const [cursor, setCursor] = useState<KeysetCursor | null>(null)
   const [hasNextPage, setHasNextPage] = useState(false)
-  const [lastQueryMode, setLastQueryMode] = useState<'keyset' | 'offset'>('offset')
+  const [lastQueryMode, setLastQueryMode] = useState<EffectivePagination>('offset')
+  const [paginationFallbackHint, setPaginationFallbackHint] = useState('')
 
   const countCacheKey = useMemo(
     () => `${connectionId}|${database}|${table}|${where.trim()}`,
@@ -256,13 +267,30 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setError('')
     try {
       const pkColumn = result?.columns.find((c) => c.primaryKey)?.name
-      const keysetEnabled = Boolean(pkColumn && !orderBy && action !== 'reset')
+      const canUseKeyset = Boolean(pkColumn && !orderBy)
+      const wantsKeyset = paginationMode === 'cursor' || (paginationMode === 'auto' && action !== 'reset')
+
+      let effectiveMode: EffectivePagination = wantsKeyset && canUseKeyset ? 'keyset' : 'offset'
+
+      if (paginationMode === 'cursor' && effectiveMode === 'offset') {
+        const reason = orderBy
+          ? '当前存在排序条件，已回退为偏移分页'
+          : '当前条件不满足游标分页，已回退为偏移分页'
+        setPaginationFallbackHint(reason)
+      } else {
+        setPaginationFallbackHint('')
+      }
+
+      if (effectiveMode === 'keyset' && action !== 'reset' && !cursor) {
+        effectiveMode = 'offset'
+      }
+
       const whereParts: string[] = []
       if (where.trim()) whereParts.push(`(${where})`)
 
       let sql = `SELECT * FROM \`${table}\``
 
-      if (keysetEnabled && action !== 'reset' && cursor) {
+      if (effectiveMode === 'keyset' && action !== 'reset' && cursor && pkColumn) {
         const op = action === 'next' ? '>' : '<'
         const anchor = action === 'next' ? cursor.lastPk : cursor.firstPk
         whereParts.push(`\`${pkColumn}\` ${op} ${escSQL(anchor)}`)
@@ -272,13 +300,13 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         sql += ` WHERE ${whereParts.join(' AND ')}`
       }
 
-      if (keysetEnabled) {
+      if (effectiveMode === 'keyset' && pkColumn) {
         sql += ` ORDER BY \`${pkColumn}\` ${action === 'prev' ? 'DESC' : 'ASC'}`
       } else if (orderBy) {
         sql += ` ORDER BY ${orderBy}`
       }
 
-      if (!keysetEnabled) {
+      if (effectiveMode === 'offset') {
         const pageValue = fallbackPage ?? page
         const offset = (pageValue - 1) * rowsPerPage
         sql += ` LIMIT ${rowsPerPage} OFFSET ${offset}`
@@ -303,13 +331,13 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           })
       ])
 
-      if (keysetEnabled && action === 'prev') {
+      if (effectiveMode === 'keyset' && action === 'prev') {
         res.rows = [...res.rows].reverse()
       }
 
       const pkAfterQuery = res.columns.find((c) => c.primaryKey)?.name
       const rows = res.rows || []
-      if (pkAfterQuery && rows.length > 0) {
+      if (effectiveMode === 'keyset' && pkAfterQuery && rows.length > 0) {
         setCursor({
           firstPk: rows[0][pkAfterQuery],
           lastPk: rows[rows.length - 1][pkAfterQuery]
@@ -319,7 +347,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
 
       setHasNextPage(rows.length === rowsPerPage)
-      setLastQueryMode(pkAfterQuery && !orderBy ? 'keyset' : 'offset')
+      setLastQueryMode(effectiveMode)
       setResult(res)
       setTotalCount(countValue)
     } catch (e: any) {
@@ -327,15 +355,16 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     } finally {
       setLoading(false)
     }
-  }, [connectionId, database, table, page, rowsPerPage, where, orderBy, countCacheKey, result?.columns, cursor])
+  }, [connectionId, database, table, page, rowsPerPage, where, orderBy, countCacheKey, result?.columns, cursor, paginationMode])
 
   useEffect(() => {
     setPage(1)
     setJumpPage('')
     setCursor(null)
     setHasNextPage(false)
+    setPaginationFallbackHint('')
     fetchData('reset')
-  }, [connectionId, database, table, where, rowsPerPage])
+  }, [connectionId, database, table, where, rowsPerPage, paginationMode])
 
   const pk = result?.columns.find((c) => c.primaryKey)
   const pkCol = pk?.name || '_rowIndex'
@@ -651,7 +680,9 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   })) || [], [result?.columns, pkCol, pendingChanges, selectedCells, handleCellChange, handleCellSelect])
 
   const columns = [checkboxCol, ...dataCols]
-  const isKeysetMode = lastQueryMode === 'keyset' && Boolean(pk)
+  const isKeysetMode = lastQueryMode === 'keyset'
+  const configuredModeLabel = PAGINATION_MODE_LABEL[paginationMode]
+  const effectiveModeLabel = lastQueryMode === 'keyset' ? '游标' : '偏移'
 
   return (
     <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
@@ -706,6 +737,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         <span style={{ color: 'var(--text-muted)' }}>
           共 {totalCount} 行
           {isKeysetMode ? `，当前第 ${page} 页（游标翻页）` : `，共 ${totalPages} 页`}
+          {`，配置模式：${configuredModeLabel}，实际模式：${effectiveModeLabel}`}
+          {paginationFallbackHint && <span style={{ color: 'var(--warning, #f59e0b)' }}>（{paginationFallbackHint}）</span>}
           {(pendingChanges.size > 0 || newRows.length > 0) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length} 行 (Ctrl+S)</span>}
         </span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -733,36 +766,42 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           >
             下一页
           </button>
-          <span style={{ color: 'var(--text-muted)' }}>跳转到</span>
-          <Input
-            value={jumpPage}
-            disabled={isKeysetMode}
-            onChange={(e) => setJumpPage(e.target.value.replace(/\D/g, ''))}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                const n = Number(jumpPage)
-                if (!Number.isFinite(n) || n < 1) return
-                const targetPage = Math.min(totalPages, n)
-                setPage(targetPage)
-                fetchData('reset', false, targetPage)
-              }
-            }}
-            style={{ width: 64 }}
-            placeholder="页码"
-          />
-          <button
-            className="ui-btn ui-btn-default"
-            disabled={isKeysetMode}
-            onClick={() => {
-              const n = Number(jumpPage)
-              if (!Number.isFinite(n) || n < 1) return
-              const targetPage = Math.min(totalPages, n)
-              setPage(targetPage)
-              fetchData('reset', false, targetPage)
-            }}
-          >
-            跳转
-          </button>
+          {isKeysetMode ? (
+            <span style={{ color: 'var(--text-muted)' }}>游标分页不支持跳转页码</span>
+          ) : (
+            <>
+              <span style={{ color: 'var(--text-muted)' }}>跳转到</span>
+              <Input
+                value={jumpPage}
+                onChange={(e) => setJumpPage(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const n = Number(jumpPage)
+                    if (!Number.isFinite(n) || n < 1) return
+                    const targetPage = Math.min(totalPages, n)
+                    setPage(targetPage)
+                    setCursor(null)
+                    fetchData('reset', false, targetPage)
+                  }
+                }}
+                style={{ width: 64 }}
+                placeholder="页码"
+              />
+              <button
+                className="ui-btn ui-btn-default"
+                onClick={() => {
+                  const n = Number(jumpPage)
+                  if (!Number.isFinite(n) || n < 1) return
+                  const targetPage = Math.min(totalPages, n)
+                  setPage(targetPage)
+                  setCursor(null)
+                  fetchData('reset', false, targetPage)
+                }}
+              >
+                跳转
+              </button>
+            </>
+          )}
         </div>
       </div>
 
