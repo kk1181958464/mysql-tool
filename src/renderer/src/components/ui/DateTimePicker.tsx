@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 interface Props {
   value?: string // 'YYYY-MM-DD' or 'YYYY-MM-DD HH:mm:ss'
   dateOnly?: boolean
-  anchorRect?: { left: number; top: number; bottom: number } // 锚点位置
+  anchorRect?: { left: number; right?: number; top: number; bottom: number } // 锚点位置
   onConfirm: (val: string) => void
   onCancel: () => void
 }
@@ -12,6 +12,8 @@ interface Props {
 const pad2 = (n: number) => n.toString().padStart(2, '0')
 const DAYS = ['日', '一', '二', '三', '四', '五', '六']
 const MONTHS = Array.from({ length: 12 }, (_, i) => i)
+const DATETIME_PICKER_WIDTH = 280
+const DATETIME_PICKER_Z_INDEX = 950
 
 function parseDateStr(s: string | undefined): { y: number; m: number; d: number; h: number; mi: number; se: number } {
   const now = new Date()
@@ -45,11 +47,15 @@ export function DateTimePicker({ value, dateOnly, anchorRect, onConfirm, onCance
 
   // 点击外部关闭
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
+    const handler = (e: MouseEvent | PointerEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) onCancel()
     }
-    setTimeout(() => document.addEventListener('mousedown', handler), 0)
-    return () => document.removeEventListener('mousedown', handler)
+    window.addEventListener('pointerdown', handler, true)
+    document.addEventListener('mousedown', handler, true)
+    return () => {
+      window.removeEventListener('pointerdown', handler, true)
+      document.removeEventListener('mousedown', handler, true)
+    }
   }, [onCancel])
 
   const daysInMonth = getDaysInMonth(year, month)
@@ -73,9 +79,14 @@ export function DateTimePicker({ value, dateOnly, anchorRect, onConfirm, onCance
 
   const S: Record<string, React.CSSProperties> = {
     panel: {
-      position: 'fixed', zIndex: 9999, background: 'var(--bg-surface)', border: '1px solid var(--border)',
-      borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.3)', padding: 8, width: 260, userSelect: 'none',
-      left: anchorRect?.left ?? 0,
+      position: 'fixed', zIndex: DATETIME_PICKER_Z_INDEX, background: 'var(--bg-surface)', border: '1px solid var(--border)',
+      borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.3)', padding: 8, width: DATETIME_PICKER_WIDTH, userSelect: 'none',
+      left: (() => {
+        if (!anchorRect) return 0
+        const anchorRight = anchorRect.right ?? anchorRect.left
+        const preferredLeft = anchorRight - DATETIME_PICKER_WIDTH
+        return Math.min(Math.max(8, preferredLeft), Math.max(8, window.innerWidth - DATETIME_PICKER_WIDTH - 8))
+      })(),
       top: (() => {
         if (!anchorRect) return 0
         const panelH = dateOnly ? 280 : 320

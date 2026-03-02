@@ -39,8 +39,9 @@ interface Props {
 export default function ConnectionTree({ filterText = '' }: Props) {
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId)
   const connectionStatuses = useConnectionStore((s) => s.connectionStatuses)
-  const { databases, tables, loadDatabases, loadTables, loadingDatabases } = useDatabaseStore()
-  const { addDataTab, addDesignTab, addQueryTab, addObjectsTab, renameTable: renameTableInTabs, tabs: mainTabs, setActiveTab } = useTabStore()
+  const { databases, tables, databaseOpenStates, loadDatabases, loadTables, loadingDatabases, isDatabaseOpen, setDatabaseOpen, resetDatabaseOpenStates } = useDatabaseStore()
+  const { addDataTab, addDesignTab, addQueryTab, addObjectsTab, renameTable: renameTableInTabs, tabs: mainTabs, removeTabsByIds, clearQueryDatabaseByConnectionAndDb } = useTabStore()
+  const selectedDatabase = useAppStore((s) => s.selectedDatabase)
   const setSelectedDatabase = useAppStore((s) => s.setSelectedDatabase)
   const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
@@ -59,6 +60,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const exportCancelledRef = useRef(false)
   const [dbRemarks, setDbRemarks] = useState<Record<string, string>>({})
   const [remarkEdit, setRemarkEdit] = useState<{ dbName: string; value: string } | null>(null)
+  const [closeDbConfirm, setCloseDbConfirm] = useState<{ dbName: string; tabIdsToClose: string[]; dirtyCount: number } | null>(null)
 
   // 加载数据库备注
   useEffect(() => {
@@ -76,13 +78,20 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   // 点击外部或滚动时关闭右键菜单
   useEffect(() => {
-    const handleClick = () => setContextMenu(null)
+    const handlePointerDownCapture = () => setContextMenu(null)
     const handleScroll = () => setContextMenu(null)
-    document.addEventListener('click', handleClick)
+    const handleGlobalClose = () => setContextMenu(null)
+    window.addEventListener('pointerdown', handlePointerDownCapture, true)
+    document.addEventListener('mousedown', handlePointerDownCapture, true)
     document.addEventListener('scroll', handleScroll, true)
+    window.addEventListener('app:close-context-menus', handleGlobalClose as EventListener)
+    document.addEventListener('app:close-context-menus', handleGlobalClose as EventListener)
     return () => {
-      document.removeEventListener('click', handleClick)
+      window.removeEventListener('pointerdown', handlePointerDownCapture, true)
+      document.removeEventListener('mousedown', handlePointerDownCapture, true)
       document.removeEventListener('scroll', handleScroll, true)
+      window.removeEventListener('app:close-context-menus', handleGlobalClose as EventListener)
+      document.removeEventListener('app:close-context-menus', handleGlobalClose as EventListener)
     }
   }, [])
 
@@ -117,6 +126,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   useEffect(() => {
     setExpandedKeys([])
     setSelectedKeys([])
+    setSelectedDatabase(null)
+    resetDatabaseOpenStates()
   }, [activeConnectionId])
 
   // 连接断开时也重置展开状态；重连后默认保持折叠
@@ -124,12 +135,16 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (!isConnected) {
       setExpandedKeys([])
       setSelectedKeys([])
+      setSelectedDatabase(null)
+      if (activeConnectionId) resetDatabaseOpenStates(activeConnectionId)
     }
   }, [activeConnectionId, isConnected])
 
   const treeData: TreeNode[] = useMemo(() => {
     return dbs.map((db) => {
       const dbKey = `db:${db.name}`
+      const stateKey = activeConnectionId ? `${activeConnectionId}:${db.name}` : ''
+      const dbOpen = activeConnectionId ? databaseOpenStates[stateKey] === true : false
       const tbls = activeConnectionId ? tables[`${activeConnectionId}:${db.name}`] ?? [] : []
       const realTables = tbls.filter((t) => t.type === 'TABLE')
       const views = tbls.filter((t) => t.type === 'VIEW')
@@ -144,76 +159,153 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
       const children: TreeNode[] = []
 
-      if (!filter || filteredTables.length > 0 || dbNameMatch) {
-        const tableCount = filter && !dbNameMatch ? filteredTables.length : realTables.length
-        children.push({
-          key: `folder:${db.name}:tables`,
-          title: tablesLoaded ? `表 (${tableCount})` : '表',
-          icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
-          children: (filter && !dbNameMatch ? filteredTables : realTables).map((t) => ({
-            key: `table:${db.name}:${t.name}`,
-            title: t.name,
-            icon: <TableOutlined style={{ color: 'var(--color-cyan)' }} />,
-            isLeaf: true,
-          })),
-        })
-      }
+      if (dbOpen) {
+        if (!filter || filteredTables.length > 0 || dbNameMatch) {
+          const tableCount = filter && !dbNameMatch ? filteredTables.length : realTables.length
+          children.push({
+            key: `folder:${db.name}:tables`,
+            title: tablesLoaded ? `表 (${tableCount})` : '表',
+            icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
+            children: (filter && !dbNameMatch ? filteredTables : realTables).map((t) => ({
+              key: `table:${db.name}:${t.name}`,
+              title: t.name,
+              icon: <TableOutlined style={{ color: 'var(--color-cyan)' }} />,
+              isLeaf: true,
+            })),
+          })
+        }
 
-      if (!filter || filteredViews.length > 0 || dbNameMatch) {
-        const viewCount = filter && !dbNameMatch ? filteredViews.length : views.length
-        children.push({
-          key: `folder:${db.name}:views`,
-          title: tablesLoaded ? `视图 (${viewCount})` : '视图',
-          icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
-          children: (filter && !dbNameMatch ? filteredViews : views).map((v) => ({
-            key: `view:${db.name}:${v.name}`,
-            title: v.name,
-            icon: <EyeOutlined style={{ color: 'var(--color-purple)' }} />,
-            isLeaf: true,
-          })),
-        })
-      }
+        if (!filter || filteredViews.length > 0 || dbNameMatch) {
+          const viewCount = filter && !dbNameMatch ? filteredViews.length : views.length
+          children.push({
+            key: `folder:${db.name}:views`,
+            title: tablesLoaded ? `视图 (${viewCount})` : '视图',
+            icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
+            children: (filter && !dbNameMatch ? filteredViews : views).map((v) => ({
+              key: `view:${db.name}:${v.name}`,
+              title: v.name,
+              icon: <EyeOutlined style={{ color: 'var(--color-purple)' }} />,
+              isLeaf: true,
+            })),
+          })
+        }
 
-      if (!filter) {
-        children.push(
-          { key: `folder:${db.name}:procedures`, title: '存储过程', icon: <CodeOutlined style={{ color: 'var(--color-yellow)' }} />, children: [] },
-          { key: `folder:${db.name}:functions`, title: '函数', icon: <CodeOutlined style={{ color: 'var(--color-peach)' }} />, children: [] },
-          { key: `folder:${db.name}:triggers`, title: '触发器', icon: <ThunderboltOutlined style={{ color: 'var(--color-red)' }} />, children: [] },
-          { key: `folder:${db.name}:events`, title: '事件', icon: <ClockCircleOutlined style={{ color: 'var(--text-muted)' }} />, children: [] },
-        )
+        if (!filter) {
+          children.push(
+            { key: `folder:${db.name}:procedures`, title: '存储过程', icon: <CodeOutlined style={{ color: 'var(--color-yellow)' }} />, children: [] },
+            { key: `folder:${db.name}:functions`, title: '函数', icon: <CodeOutlined style={{ color: 'var(--color-peach)' }} />, children: [] },
+            { key: `folder:${db.name}:triggers`, title: '触发器', icon: <ThunderboltOutlined style={{ color: 'var(--color-red)' }} />, children: [] },
+            { key: `folder:${db.name}:events`, title: '事件', icon: <ClockCircleOutlined style={{ color: 'var(--text-muted)' }} />, children: [] },
+          )
+        }
       }
 
       const remarkKey = `${activeConnectionId}:${db.name}`
       const remark = dbRemarks[remarkKey]
       const titleNode = remark
-        ? <span>{db.name} <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 4 }}>({remark})</span></span>
-        : db.name
-      return { key: dbKey, title: titleNode, icon: <DatabaseOutlined style={{ color: 'var(--color-primary)' }} />, children }
+        ? (
+          <span className={dbOpen ? 'db-node-open' : 'db-node-closed'}>
+            {db.name} <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 4 }}>({remark})</span>
+          </span>
+        )
+        : (
+          <span className={dbOpen ? 'db-node-open' : 'db-node-closed'}>
+            {db.name}
+          </span>
+        )
+      return {
+        key: dbKey,
+        title: titleNode,
+        icon: <DatabaseOutlined className={dbOpen ? 'db-icon-open' : 'db-icon-closed'} />,
+        children: dbOpen ? children : undefined,
+      }
     }).filter(Boolean) as TreeNode[]
-  }, [dbs, tables, activeConnectionId, filter, dbRemarks])
+  }, [dbs, tables, activeConnectionId, filter, dbRemarks, databaseOpenStates])
+
+  const closeDatabase = (dbName: string) => {
+    if (!activeConnectionId) return
+
+    const tabIdsToClose = mainTabs
+      .filter((tab) =>
+        tab.connectionId === activeConnectionId &&
+        tab.database === dbName &&
+        (tab.type === 'objects' || tab.type === 'data' || tab.type === 'design')
+      )
+      .map((tab) => tab.id)
+
+    const dirtyCount = mainTabs.filter((tab) =>
+      tab.connectionId === activeConnectionId &&
+      tab.database === dbName &&
+      (tab.type === 'data' || tab.type === 'design') &&
+      tab.isDirty
+    ).length
+
+    if (dirtyCount > 0) {
+      setCloseDbConfirm({ dbName, tabIdsToClose, dirtyCount })
+      return
+    }
+
+    setDatabaseOpen(activeConnectionId, dbName, false)
+    if (selectedDatabase === dbName) {
+      setSelectedDatabase(null)
+    }
+    removeTabsByIds(tabIdsToClose)
+    clearQueryDatabaseByConnectionAndDb(activeConnectionId, dbName)
+    setExpandedKeys((prev) => prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`)))
+  }
 
   const handleExpand = async (keys: string[]) => {
+    setContextMenu(null)
     const newKey = keys.find((k) => !expandedKeys.includes(k))
-    setExpandedKeys(keys)
+
     if (newKey?.startsWith('db:') && activeConnectionId) {
       const dbName = newKey.slice(3)
+      ensureDatabaseOpen(dbName)
       setSelectedDatabase(dbName)
       await loadTables(activeConnectionId, dbName)
+      setExpandedKeys(keys)
+      return
     }
+
+    setExpandedKeys(keys)
+  }
+
+  const ensureDatabaseOpen = (dbName: string): boolean => {
+    if (!activeConnectionId) return false
+    const key = `${activeConnectionId}:${dbName}`
+    const open = databaseOpenStates[key] === true
+    if (!open) {
+      setDatabaseOpen(activeConnectionId, dbName, true)
+    }
+    return open
+  }
+
+  const openDatabaseAndReveal = async (dbName: string) => {
+    if (!activeConnectionId) return
+    ensureDatabaseOpen(dbName)
+    setSelectedKeys([`db:${dbName}`])
+    setSelectedDatabase(dbName)
+    setExpandedKeys((prev) => (prev.includes(`db:${dbName}`) ? prev : [...prev, `db:${dbName}`]))
+    await loadTables(activeConnectionId, dbName)
+    addObjectsTab(activeConnectionId, dbName)
   }
 
   const handleSelect = (_keys: string[], info: { node: TreeNode }) => {
+    setContextMenu(null)
     const key = info.node.key
     setSelectedKeys([key])
     let dbName = ''
     if (key.startsWith('db:')) {
       dbName = key.slice(3)
+      setSelectedDatabase(dbName)
+      return
     } else if (key.startsWith('folder:')) {
       dbName = key.split(':')[1]
     } else if (key.startsWith('table:') || key.startsWith('view:')) {
       dbName = key.split(':')[1]
     }
     if (dbName) {
+      ensureDatabaseOpen(dbName)
       setSelectedDatabase(dbName)
       // 如果已有对象 tab，切换到对应数据库
       if (activeConnectionId && mainTabs.some(t => t.type === 'objects')) {
@@ -222,18 +314,20 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     }
   }
 
-  const handleDoubleClick = (node: TreeNode) => {
+  const handleDoubleClick = async (node: TreeNode) => {
+    setContextMenu(null)
     const key = node.key
     if (key.startsWith('db:')) {
       const dbName = key.slice(3)
-      setSelectedDatabase(dbName)
-      if (activeConnectionId) addObjectsTab(activeConnectionId, dbName)
+      await openDatabaseAndReveal(dbName)
     } else if (key.startsWith('folder:')) {
       const dbName = key.split(':')[1]
+      ensureDatabaseOpen(dbName)
       setSelectedDatabase(dbName)
       if (activeConnectionId) addObjectsTab(activeConnectionId, dbName)
     } else if (key.startsWith('table:') || key.startsWith('view:')) {
       const parts = key.split(':')
+      ensureDatabaseOpen(parts[1])
       setSelectedDatabase(parts[1])
       if (activeConnectionId) addDataTab(activeConnectionId, parts[1], parts[2])
     }
@@ -241,16 +335,24 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   const handleContextMenu = (e: React.MouseEvent, node: { key: string }) => {
     e.preventDefault()
+    e.stopPropagation()
     setContextMenu({ key: node.key, x: e.clientX, y: e.clientY })
   }
 
   const handleMenuClick = async (action: string) => {
     if (!contextMenu || !activeConnectionId) return
     const nodeKey = contextMenu.key
+    setContextMenu(null)
 
     if (nodeKey.startsWith('db:')) {
       const dbName = nodeKey.slice(3)
       switch (action) {
+        case 'openDatabase':
+          await openDatabaseAndReveal(dbName)
+          break
+        case 'closeDatabase':
+          closeDatabase(dbName)
+          break
         case 'newQuery':
           setSelectedDatabase(dbName)
           addQueryTab(activeConnectionId, dbName)
@@ -338,7 +440,6 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     } else if (action === 'refresh') {
       await loadDatabases(activeConnectionId)
     }
-    setContextMenu(null)
   }
 
   const handleDeleteDb = async () => {
@@ -618,9 +719,22 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (!contextMenu) return []
     const nodeKey = contextMenu.key
     if (nodeKey.startsWith('db:')) {
+      const dbName = nodeKey.slice(3)
+      const dbOpen = isDatabaseOpen(activeConnectionId, dbName)
+      if (!dbOpen) {
+        return [
+          { key: 'openDatabase', label: '打开数据库', icon: <FolderOpenOutlined /> },
+          { type: 'divider' },
+          { key: 'editRemark', label: '编辑备注', icon: <FormOutlined /> },
+          { key: 'edit', label: '编辑数据库', icon: <EditOutlined /> },
+          { key: 'drop', label: '删除数据库', danger: true, icon: <DeleteOutlined /> },
+        ]
+      }
       return [
         { key: 'newQuery', label: '新建查询', icon: <CodeOutlined /> },
         { key: 'createTable', label: '新建表', icon: <PlusOutlined /> },
+        { type: 'divider' },
+        { key: 'closeDatabase', label: '关闭数据库', icon: <FolderOutlined /> },
         { type: 'divider' },
         { key: 'exportStructure', label: '转储SQL(仅结构)', icon: <ExportOutlined /> },
         { key: 'exportAll', label: '转储SQL(结构+数据)', icon: <ExportOutlined /> },
@@ -688,7 +802,11 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   return (
     <>
-      <div style={{ height: '100%', overflow: 'auto' }} onContextMenu={(e) => e.preventDefault()}>
+      <div
+        style={{ height: '100%', overflow: 'auto' }}
+        onMouseDownCapture={() => setContextMenu(null)}
+        onContextMenu={(e) => { e.preventDefault(); setContextMenu(null) }}
+      >
         <Tree
           treeData={treeData}
           expandedKeys={expandedKeys}
@@ -722,6 +840,45 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           </div>
         )}
       </div>
+
+      <Modal
+        open={!!closeDbConfirm}
+        title="关闭数据库"
+        width={420}
+        onClose={() => setCloseDbConfirm(null)}
+        footer={
+          <>
+            <Button variant="default" onClick={() => setCloseDbConfirm(null)}>取消</Button>
+            <Button
+              variant="primary"
+              style={{ background: 'var(--warning)' }}
+              onClick={() => {
+                if (!activeConnectionId || !closeDbConfirm) return
+                const { dbName, tabIdsToClose } = closeDbConfirm
+                setDatabaseOpen(activeConnectionId, dbName, false)
+                if (selectedDatabase === dbName) {
+                  setSelectedDatabase(null)
+                }
+                removeTabsByIds(tabIdsToClose)
+                clearQueryDatabaseByConnectionAndDb(activeConnectionId, dbName)
+                setExpandedKeys((prev) => prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`)))
+                setCloseDbConfirm(null)
+              }}
+            >
+              强制关闭
+            </Button>
+          </>
+        }
+      >
+        <div style={{ padding: '8px 0' }}>
+          <p style={{ marginBottom: 12 }}>
+            数据库 <strong>{closeDbConfirm?.dbName}</strong> 下存在 <strong style={{ color: 'var(--warning)' }}>{closeDbConfirm?.dirtyCount}</strong> 个未保存标签页。
+          </p>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+            继续关闭将丢失这些标签的未保存修改。Query 标签会保留，但其数据库上下文会被清空。
+          </p>
+        </div>
+      </Modal>
 
       <Modal
         open={!!deleteConfirm}

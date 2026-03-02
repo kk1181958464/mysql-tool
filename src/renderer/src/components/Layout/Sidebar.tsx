@@ -184,10 +184,20 @@ export default function Sidebar() {
             <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: activeConnection.color || '#82aaff', flexShrink: 0 }} />
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeConnection.name}</span>
-              <span style={{ color: connectingIds.has(activeConnection.id) ? 'var(--warning)' : connectionStatuses[activeConnection.id]?.connected ? 'var(--success)' : 'var(--error)', fontSize: 10, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, whiteSpace: 'nowrap' }}>
-                {connectingIds.has(activeConnection.id) && <LoadingOutlined spin />}
-                {connectingIds.has(activeConnection.id) ? '连接中' : connectionStatuses[activeConnection.id]?.connected ? '已连接' : '未连接'}
-              </span>
+              <span
+                title={connectingIds.has(activeConnection.id) ? '连接中' : connectionStatuses[activeConnection.id]?.connected ? '已连接' : '未连接'}
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  flexShrink: 0,
+                  background: connectingIds.has(activeConnection.id)
+                    ? 'var(--warning)'
+                    : connectionStatuses[activeConnection.id]?.connected
+                      ? 'var(--success)'
+                      : 'var(--text-muted)',
+                }}
+              />
             </span>
           ) : (
             <span style={{ color: 'var(--text-muted)' }}>选择连接...</span>
@@ -212,10 +222,20 @@ export default function Sidebar() {
                   >
                     <span style={{ width: 6, height: 6, borderRadius: '50%', background: conn.color || '#82aaff', flexShrink: 0 }} />
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{conn.name}</span>
-                    <span style={{ color: isConnecting ? 'var(--warning)' : isConnected ? 'var(--success)' : 'var(--text-muted)', fontSize: 10, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2 }}>
-                      {isConnecting && <LoadingOutlined spin />}
-                      {isConnecting ? '连接中' : isConnected ? '已连接' : '未连接'}
-                    </span>
+                    <span
+                      title={isConnecting ? '连接中' : isConnected ? '已连接' : '未连接'}
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        flexShrink: 0,
+                        background: isConnecting
+                          ? 'var(--warning)'
+                          : isConnected
+                            ? 'var(--success)'
+                            : 'var(--text-muted)',
+                      }}
+                    />
                   </div>
                 )
               })

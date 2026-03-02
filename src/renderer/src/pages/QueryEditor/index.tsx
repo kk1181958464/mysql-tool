@@ -12,7 +12,6 @@ import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import { ResultPanel } from './ResultPanel'
 import { SnippetManager } from './SnippetManager'
 import { useTabStore, QueryTab } from '../../stores/tab.store'
-import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
@@ -232,27 +231,46 @@ interface Props {
 const QueryEditor: React.FC<Props> = ({ tabId }) => {
   const [snippetOpen, setSnippetOpen] = React.useState(false)
   const editorRef = useRef<any>(null)
-  const { tabs, setQueryResult, setQueryExecuting, setQueryError, updateQueryContent } = useTabStore()
-  const { activeConnectionId } = useConnectionStore()
-  const { databases, tables } = useDatabaseStore()
-  const { selectedDatabase, setSelectedDatabase, resolvedTheme } = useAppStore()
+  const { tabs, setQueryResult, setQueryExecuting, setQueryError, updateQueryContent, setQueryDatabase } = useTabStore()
+  const { databases, tables, isDatabaseOpen } = useDatabaseStore()
+  const { resolvedTheme } = useAppStore()
 
   const tab = tabs.find((t) => t.id === tabId) as QueryTab | undefined
 
-  const dbOptions = activeConnectionId
-    ? (databases[activeConnectionId] || []).map((d) => ({ value: d.name, label: d.name }))
+  const activeConnectionId = tab?.connectionId ?? null
+  const activeDatabase = tab?.database ?? null
+
+  const openDbOptions = activeConnectionId
+    ? (databases[activeConnectionId] || [])
+        .filter((d) => isDatabaseOpen(activeConnectionId, d.name))
+        .map((d) => ({ value: d.name, label: d.name }))
     : []
+
+  const databaseInOpenList = !!activeDatabase && openDbOptions.some((opt) => opt.value === activeDatabase)
+  const hasSelectedDatabase = !!activeDatabase
+  const hasValidDatabase = hasSelectedDatabase && databaseInOpenList
+  const hasSql = !!tab?.content.trim()
+  const executeBlockedReason = !hasSelectedDatabase
+    ? '请先选择数据库'
+    : !hasValidDatabase
+      ? `当前数据库「${activeDatabase}」已关闭或不可用`
+      : ''
+
+  const dbOptions = activeDatabase && !databaseInOpenList
+    ? [{ value: activeDatabase, label: `${activeDatabase}（已关闭）`, disabled: true }, ...openDbOptions]
+    : openDbOptions
+
 
   // 注册 SQL 补全
   useEffect(() => {
     registerSqlCompletion()
 
-    if (!activeConnectionId || !selectedDatabase) {
+    if (!activeConnectionId || !activeDatabase) {
       updateCompletionData([], new Map())
       return
     }
 
-    const key = `${activeConnectionId}:${selectedDatabase}`
+    const key = `${activeConnectionId}:${activeDatabase}`
     const tableList = tables[key] || []
     const tableNames = tableList.map(t => t.name)
     const columnsMap = new Map<string, string[]>()
@@ -268,7 +286,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
         if (canceled) return
         try {
           const cols = await withTimeout(
-            api.meta.columns(activeConnectionId, selectedDatabase, t.name),
+            api.meta.columns(activeConnectionId, activeDatabase, t.name),
             COLUMN_LOAD_TIMEOUT_MS
           )
           if (canceled) return
@@ -289,7 +307,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
     return () => {
       canceled = true
     }
-  }, [activeConnectionId, selectedDatabase, tables])
+  }, [activeConnectionId, activeDatabase, tables])
 
 
   const handleEditorMount = (editor: any) => {
@@ -297,21 +315,29 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
   }
 
   const handleExecute = useCallback(async () => {
-    if (!tab || !activeConnectionId || !tab.content.trim()) return
+    if (!tab || !activeConnectionId || !hasSql) return
+    if (!hasValidDatabase) {
+      setQueryError(tab.id, executeBlockedReason || '请先选择有效数据库后再执行')
+      return
+    }
     setQueryExecuting(tab.id, true)
     try {
-      const result = await api.query.execute(activeConnectionId, tab.content, selectedDatabase || '')
+      const result = await api.query.execute(activeConnectionId, tab.content, activeDatabase || '')
       setQueryResult(tab.id, result)
     } catch (e: any) {
       setQueryError(tab.id, e.message || '执行失败')
     }
-  }, [tab, activeConnectionId, selectedDatabase])
+  }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
 
   const handleExplain = useCallback(async () => {
-    if (!tab || !activeConnectionId || !tab.content.trim()) return
+    if (!tab || !activeConnectionId || !hasSql) return
+    if (!hasValidDatabase) {
+      setQueryError(tab.id, executeBlockedReason || '请先选择有效数据库后再执行')
+      return
+    }
     setQueryExecuting(tab.id, true)
     try {
-      const explainRows = await api.query.explain(activeConnectionId, tab.content, selectedDatabase || '')
+      const explainRows = await api.query.explain(activeConnectionId, tab.content, activeDatabase || '')
       // 转换为 QueryResult 格式
       const result = {
         columns: [
@@ -347,7 +373,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
     } catch (e: any) {
       setQueryError(tab.id, e.message || '执行失败')
     }
-  }, [tab, activeConnectionId, selectedDatabase])
+  }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
 
   const handleFormat = useCallback(async () => {
     if (!tab || !tab.content.trim()) return
@@ -364,14 +390,25 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
   return (
     <div className="query-editor">
       <div className="query-editor-toolbar">
+        {!hasValidDatabase && (
+          <span style={{ color: 'var(--warning, #f59e0b)', fontSize: 12, marginRight: 8 }}>
+            {executeBlockedReason}
+          </span>
+        )}
         <Space>
-          <Tooltip title="执行 (F5)">
-            <Button type="primary" size="small" onClick={handleExecute} disabled={tab.isExecuting}>
+          <Tooltip title={executeBlockedReason || '执行 (F5)'}>
+            <Button
+              type="primary"
+              size="small"
+              onClick={handleExecute}
+              disabled={tab.isExecuting || !hasSql || !hasValidDatabase}
+              loading={tab.isExecuting}
+            >
               <CaretRightOutlined /> 执行
             </Button>
           </Tooltip>
-          <Tooltip title="Explain">
-            <Button size="small" onClick={handleExplain}>
+          <Tooltip title={executeBlockedReason || 'Explain'}>
+            <Button size="small" onClick={handleExplain} disabled={tab.isExecuting || !hasSql || !hasValidDatabase}>
               <FileSearchOutlined /> Explain
             </Button>
           </Tooltip>
@@ -386,10 +423,10 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
             </Button>
           </Tooltip>
           <Select
-            style={{ width: 160 }}
+            style={{ width: 200 }}
             placeholder="选择数据库"
-            value={selectedDatabase}
-            onChange={setSelectedDatabase}
+            value={activeDatabase}
+            onChange={(value) => tab && setQueryDatabase(tab.id, value as string)}
             options={dbOptions}
           />
         </Space>

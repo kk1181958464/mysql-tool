@@ -127,13 +127,13 @@ export default function MainTabBar() {
             <span className="main-tab-title">{tab.title}</span>
             {tab.type === 'design' && (
               tab.isDirty
-                ? <span className="main-tab-dirty" style={{ color: 'var(--warning)' }}>●</span>
+                ? <span className="main-tab-dirty main-tab-dirty-pulse" style={{ color: 'var(--warning)' }}>●</span>
                 : tab.isSaved
                   ? <span className="main-tab-dirty" style={{ color: 'var(--success)' }}>●</span>
                   : null
             )}
-            {tab.type === 'query' && isTabDirty(tab) && <span className="main-tab-dirty" style={{ color: 'var(--warning)' }}>●</span>}
-            {tab.type === 'data' && tab.isDirty && <span className="main-tab-dirty" style={{ color: 'var(--warning)' }}>●</span>}
+            {tab.type === 'query' && isTabDirty(tab) && <span className="main-tab-dirty main-tab-dirty-pulse" style={{ color: 'var(--warning)' }}>●</span>}
+            {tab.type === 'data' && tab.isDirty && <span className="main-tab-dirty main-tab-dirty-pulse" style={{ color: 'var(--warning)' }}>●</span>}
             {tab.closable !== false && (
               <button className="main-tab-close" onClick={(e) => handleClose(e, tab.id)}>
                 <CloseOutlined />

@@ -11,6 +11,7 @@ interface Props {
   editing: ConnectionConfig | null
   onSaved: () => void
   onClose: () => void
+  onPreviewColor?: (color: string) => void
 }
 
 const defaultValues: Partial<ConnectionSavePayload> = {
@@ -42,7 +43,7 @@ const defaultValues: Partial<ConnectionSavePayload> = {
   sortOrder: 0,
 }
 
-export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose }) => {
+export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onPreviewColor }) => {
   const [form, setForm] = useState<Partial<ConnectionSavePayload>>(defaultValues)
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState('')
@@ -166,7 +167,14 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose }) =
           <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>颜色</label>
           <div style={{ display: 'flex', gap: 4 }}>
             {COLORS.map((c) => (
-              <button key={c} onClick={() => updateField('color', c)} style={{ width: 22, height: 22, borderRadius: 4, background: c, border: form.color === c ? '2px solid var(--text-primary)' : '2px solid transparent', cursor: 'pointer' }} />
+              <button
+                key={c}
+                onClick={() => {
+                  updateField('color', c)
+                  onPreviewColor?.(c)
+                }}
+                style={{ width: 22, height: 22, borderRadius: 4, background: c, border: form.color === c ? '2px solid var(--text-primary)' : '2px solid transparent', cursor: 'pointer' }}
+              />
             ))}
           </div>
         </div>

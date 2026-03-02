@@ -278,6 +278,24 @@ body {
   background: var(--bg-surface);
 }
 
+.header-menu-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+
+.header-menu-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
 /* Context Menu */
 .context-menu {
   position: fixed;
@@ -285,7 +303,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  z-index: 1000;
+  z-index: 900;
   min-width: 160px;
   padding: 4px;
   animation: menu-in 0.12s ease;
@@ -622,6 +640,37 @@ body {
   padding: 16px;
 }
 
+/* ===== Connection Tree Database State ===== */
+.sidebar-tree .ui-tree .ui-tree-title .db-node-open {
+  color: var(--color-primary) !important;
+  opacity: 1 !important;
+  font-weight: 600;
+  transition: color 0.14s ease, opacity 0.14s ease;
+}
+
+.sidebar-tree .ui-tree .ui-tree-title .db-node-closed {
+  color: var(--text-muted) !important;
+  opacity: 0.8 !important;
+  transition: color 0.14s ease, opacity 0.14s ease;
+}
+
+.sidebar-tree .ui-tree .ui-tree-icon .db-icon-open {
+  color: var(--color-primary) !important;
+  opacity: 1 !important;
+  transition: color 0.14s ease, opacity 0.14s ease, transform 0.14s ease;
+}
+
+.sidebar-tree .ui-tree .ui-tree-icon .db-icon-closed {
+  color: var(--text-muted) !important;
+  opacity: 0.8 !important;
+  transition: color 0.14s ease, opacity 0.14s ease, transform 0.14s ease;
+}
+
+/* 避免 ui.css 默认树图标颜色覆盖数据库状态 */
+.sidebar-tree .ui-tree .ui-tree-icon {
+  color: inherit;
+}
+
 /* ===== Utility Classes ===== */
 .null-value {
   color: var(--text-muted);
@@ -756,6 +805,11 @@ body {
   font-size: 8px;
   flex-shrink: 0;
   margin-left: -4px;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.main-tab-dirty-pulse {
+  animation: tab-dirty-pulse 0.9s ease-in-out infinite;
 }
 
 .main-tab-close {
@@ -798,6 +852,17 @@ body {
 
 .tab-content-pane {
   animation: tab-fade-in 0.15s ease;
+}
+
+@keyframes tab-dirty-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
 }
 
 @keyframes pulse-text {

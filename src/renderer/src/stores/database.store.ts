@@ -8,12 +8,17 @@ interface DatabaseState {
   databases: Record<string, DatabaseInfo[]>
   tables: Record<string, TableInfo[]>
   columns: Record<string, ColumnDetail[]>
+  databaseOpenStates: Record<string, boolean>
   loadingDatabases: Record<string, boolean>
   _ts: Record<string, number>
   _inflight: Record<string, Promise<void>>
   loadDatabases: (connectionId: string, force?: boolean) => Promise<void>
   loadTables: (connectionId: string, db: string, force?: boolean) => Promise<void>
   loadColumns: (connectionId: string, db: string, table: string, force?: boolean) => Promise<void>
+  isDatabaseOpen: (connectionId: string, dbName: string) => boolean
+  setDatabaseOpen: (connectionId: string, dbName: string, open: boolean) => void
+  toggleDatabaseOpen: (connectionId: string, dbName: string) => void
+  resetDatabaseOpenStates: (connectionId?: string) => void
   clearCache: (connectionId?: string) => void
 }
 
@@ -25,6 +30,7 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
   databases: {},
   tables: {},
   columns: {},
+  databaseOpenStates: {},
   loadingDatabases: {},
   _ts: {},
   _inflight: {},
@@ -123,27 +129,66 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
     }
   },
 
+  isDatabaseOpen: (connectionId, dbName) => {
+    const key = `${connectionId}:${dbName}`
+    const state = get().databaseOpenStates[key]
+    return state === true
+  },
+
+  setDatabaseOpen: (connectionId, dbName, open) => {
+    const key = `${connectionId}:${dbName}`
+    set((s) => ({
+      databaseOpenStates: { ...s.databaseOpenStates, [key]: open },
+    }))
+  },
+
+  toggleDatabaseOpen: (connectionId, dbName) => {
+    const key = `${connectionId}:${dbName}`
+    const current = get().databaseOpenStates[key]
+    set((s) => ({
+      databaseOpenStates: { ...s.databaseOpenStates, [key]: current === false },
+    }))
+  },
+
+  resetDatabaseOpenStates: (connectionId) => {
+    if (!connectionId) {
+      set({ databaseOpenStates: {} })
+      return
+    }
+    set((s) => {
+      const databaseOpenStates = { ...s.databaseOpenStates }
+      for (const key of Object.keys(databaseOpenStates)) {
+        if (key.startsWith(connectionId + ':')) delete databaseOpenStates[key]
+      }
+      return { databaseOpenStates }
+    })
+  },
+
   clearCache: (connectionId) => {
     if (!connectionId) {
-      set({ databases: {}, tables: {}, columns: {}, _ts: {}, _inflight: {} })
+      set({ databases: {}, tables: {}, columns: {}, databaseOpenStates: {}, _ts: {}, _inflight: {} })
       return
     }
     set((s) => {
       const databases = { ...s.databases }
       const tables = { ...s.tables }
       const columns = { ...s.columns }
+      const databaseOpenStates = { ...s.databaseOpenStates }
       const _ts = { ...s._ts }
       const _inflight = { ...s._inflight }
       delete databases[connectionId]
       delete _ts[connectionId]
       delete _inflight[`dbs:${connectionId}`]
+      for (const k of Object.keys(databaseOpenStates)) {
+        if (k.startsWith(connectionId + ':')) delete databaseOpenStates[k]
+      }
       for (const k of Object.keys(tables)) {
         if (k.startsWith(connectionId + ':')) { delete tables[k]; delete _ts[k]; delete _inflight[`tables:${k}`] }
       }
       for (const k of Object.keys(columns)) {
         if (k.startsWith(connectionId + ':')) { delete columns[k]; delete _ts[k]; delete _inflight[`columns:${k}`] }
       }
-      return { databases, tables, columns, _ts, _inflight }
+      return { databases, tables, columns, databaseOpenStates, _ts, _inflight }
     })
   },
 }))

@@ -70,6 +70,8 @@ interface TabState {
   setQueryResult: (id: string, result: QueryResult | null) => void
   setQueryExecuting: (id: string, executing: boolean) => void
   setQueryError: (id: string, error: string | null) => void
+  setQueryDatabase: (id: string, database: string | null) => void
+  clearQueryDatabaseByConnectionAndDb: (connectionId: string, dbName: string) => void
 
   // 数据浏览标签操作
   addDataTab: (connectionId: string, database: string, table: string) => void
@@ -176,6 +178,23 @@ export const useTabStore = create<TabState>((set, get) => ({
   setQueryError: (id, error) => {
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? { ...t, error, isExecuting: false } : t)),
+    }))
+  },
+
+  setQueryDatabase: (id, database) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? { ...t, database } : t)),
+    }))
+  },
+
+  clearQueryDatabaseByConnectionAndDb: (connectionId, dbName) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.type === 'query' && t.connectionId === connectionId && t.database === dbName) {
+          return { ...t, database: null }
+        }
+        return t
+      }),
     }))
   },
 

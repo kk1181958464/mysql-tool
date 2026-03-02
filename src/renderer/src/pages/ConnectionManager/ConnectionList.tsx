@@ -17,9 +17,10 @@ interface Props {
   onNew: () => void
   onClose: () => void
   selectedId?: string | null
+  previewColor?: string | null
 }
 
-export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, selectedId }) => {
+export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, selectedId, previewColor }) => {
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const {
@@ -85,6 +86,7 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
             {items.map((item) => {
               const connected = connectionStatuses[item.id]?.connected
               const isSelected = selectedId === item.id
+              const dotColor = isSelected && previewColor ? previewColor : (item.color || '#3b82f6')
               return (
                 <div
                   key={item.id}
@@ -101,11 +103,20 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
                     gap: 8,
                   }}
                 >
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: item.color || '#3b82f6', flexShrink: 0 }} />
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                       <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>{item.name}</span>
-                      {connected && <Tag type="success" style={{ fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>已连接</Tag>}
+                      <span
+                        title={connected ? '已连接' : '未连接'}
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          flexShrink: 0,
+                          background: connected ? 'var(--success)' : 'var(--text-muted)',
+                        }}
+                      />
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.host}:{item.port}</div>
                   </div>

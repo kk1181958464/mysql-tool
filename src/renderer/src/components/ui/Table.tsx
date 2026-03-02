@@ -105,7 +105,11 @@ export function Table<T extends Record<string, any>>({
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={columns.length} className="ui-table-loading"><div className="ui-spin-dot" style={{ margin: '0 auto' }} /><div style={{ marginTop: 8 }}>加载中...</div></td></tr>
+              <tr className="ui-table-loading-row" aria-hidden>
+                <td colSpan={columns.length}>
+                  <div className="ui-table-skeleton-line" />
+                </td>
+              </tr>
             ) : dataSource.length === 0 ? (
               <tr><td colSpan={columns.length} className="ui-table-empty">
                 <div className="ui-table-empty-icon">
@@ -134,6 +138,14 @@ export function Table<T extends Record<string, any>>({
             )}
           </tbody>
         </table>
+        {loading && (
+          <div className="ui-table-loading-overlay">
+            <div className="ui-table-loading-content">
+              <div className="ui-spin-dot" />
+              <div style={{ marginTop: 8 }}>加载中...</div>
+            </div>
+          </div>
+        )}
       </div>
       {pagination && pagination !== false && (
         <div className="ui-table-pagination">
