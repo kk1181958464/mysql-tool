@@ -5,6 +5,10 @@ import { useDatabaseStore } from './database.store'
 import { useTabStore } from './tab.store'
 import { requestTabCloseGuard } from './tab-close-guard'
 
+const logConnectionDebug = (event: string, payload?: unknown) => {
+  console.info(`[ConnectionStore] ${event}`, payload)
+}
+
 interface ConnectionState {
   connections: ConnectionConfig[]
   activeConnectionId: string | null
@@ -53,14 +57,33 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       config = idOrConfig
       id = config.id
     }
+
+    logConnectionDebug('connect.request', {
+      id,
+      name: config.name,
+      host: config.host,
+      port: config.port,
+      sshEnabled: config.sshEnabled,
+      databaseName: config.databaseName || null,
+    })
+
+    const startedAt = performance.now()
     const status = await api.connection.connect(config)
+    logConnectionDebug('connect.result', {
+      id,
+      connected: status.connected,
+      serverVersion: status.serverVersion,
+      currentDatabase: status.currentDatabase,
+      elapsedMs: Number((performance.now() - startedAt).toFixed(2)),
+    })
+
     set((s) => ({
       connectionStatuses: { ...s.connectionStatuses, [id]: status },
       activeConnectionId: id,
     }))
     // 连接成功后自动加载数据库列表
     if (status.connected) {
-      useDatabaseStore.getState().loadDatabases(id)
+      void useDatabaseStore.getState().loadDatabases(id)
     }
   },
 
@@ -68,19 +91,33 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     const tabStore = useTabStore.getState()
     const relatedTabs = tabStore.getTabsByConnection(id)
 
+    logConnectionDebug('disconnect.request', {
+      id,
+      relatedTabs: relatedTabs.length,
+      activeConnectionId: get().activeConnectionId,
+    })
+
     if (relatedTabs.length > 0) {
       const canClose = await requestTabCloseGuard(relatedTabs)
+      logConnectionDebug('disconnect.guard', { id, canClose, relatedTabs: relatedTabs.length })
       if (!canClose) return
       tabStore.removeTabsByIds(relatedTabs.map((tab) => tab.id))
     }
 
     await api.connection.disconnect(id)
+    logConnectionDebug('disconnect.api.done', { id })
     set((s) => {
       const statuses = { ...s.connectionStatuses }
       delete statuses[id]
+      const nextActiveConnectionId = s.activeConnectionId === id ? null : s.activeConnectionId
+      logConnectionDebug('disconnect.state.updated', {
+        id,
+        nextActiveConnectionId,
+        remainingStatusCount: Object.keys(statuses).length,
+      })
       return {
         connectionStatuses: statuses,
-        activeConnectionId: s.activeConnectionId === id ? null : s.activeConnectionId,
+        activeConnectionId: nextActiveConnectionId,
       }
     })
   },

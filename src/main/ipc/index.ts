@@ -11,6 +11,13 @@ import { registerMetadataIPC } from './metadata.ipc'
 import { registerTableDesignIPC } from './table-design.ipc'
 import { registerImportExportIPC } from './import-export.ipc'
 import { registerBackupIPC } from './backup.ipc'
+import {
+  HEARTBEAT_SETTING_KEY,
+  HEARTBEAT_TIMEOUT_SETTING_KEY,
+  HEARTBEAT_CONCURRENCY_SETTING_KEY,
+  HEARTBEAT_AUTOTUNE_SETTING_KEY,
+} from '../../shared/constants'
+import * as logger from '../utils/logger'
 
 export function registerAllIPC() {
   registerConnectionIPC()
@@ -25,6 +32,9 @@ export function registerAllIPC() {
   ipcMain.handle(IPC.PERF_INNODB_STATUS, async (_e, connId: string) => perf.getInnoDBStatus(connId))
   ipcMain.handle(IPC.PERF_VARIABLES, async (_e, connId: string, filter?: string) => perf.getVariables(connId, filter))
   ipcMain.handle(IPC.PERF_STATUS, async (_e, connId: string, filter?: string) => perf.getGlobalStatus(connId, filter))
+  ipcMain.handle(IPC.PERF_METRIC, async () => {
+    // 性能指标采集保留调用链，默认不落日志，避免控制台噪音
+  })
 
   // Object operations
   ipcMain.handle(IPC.OBJECT_SEARCH, async (_e, connId: string, db: string, keyword: string) => meta.searchObjects(connId, db, keyword))
@@ -68,7 +78,7 @@ export function registerAllIPC() {
   })
 
   // Store operations
-  ipcMain.handle(IPC.STORE_GET_HISTORY, async (_e, connectionId: string, limit?: number) => localStore.queryHistory.getByConnection(connectionId, limit))
+  ipcMain.handle(IPC.STORE_GET_HISTORY, async (_e, connectionId: string, limit?: number, offset?: number) => localStore.queryHistory.getByConnection(connectionId, limit, offset))
   ipcMain.handle(IPC.STORE_SAVE_HISTORY, async (_e, item) => localStore.queryHistory.save(item))
   ipcMain.handle(IPC.STORE_GET_SNIPPETS, async () => localStore.snippets.getAll())
   ipcMain.handle(IPC.STORE_SAVE_SNIPPET, async (_e, snippet) => localStore.snippets.save(snippet))
@@ -76,8 +86,32 @@ export function registerAllIPC() {
   ipcMain.handle(IPC.STORE_SAVE_SETTINGS, async (_e, key: string, value: string) => {
     localStore.settings.set(key, value)
 
-    if (key === 'heartbeatIntervalSeconds') {
+    if (key === HEARTBEAT_SETTING_KEY) {
       const effective = connectionManager.updateHeartbeatInterval(Number(value))
+      if (String(effective) !== value) {
+        localStore.settings.set(key, String(effective))
+      }
+      return
+    }
+
+    if (key === HEARTBEAT_TIMEOUT_SETTING_KEY) {
+      const effective = connectionManager.updateHeartbeatTimeoutMs(Number(value))
+      if (String(effective) !== value) {
+        localStore.settings.set(key, String(effective))
+      }
+      return
+    }
+
+    if (key === HEARTBEAT_CONCURRENCY_SETTING_KEY) {
+      const effective = connectionManager.updateHeartbeatConcurrency(Number(value))
+      if (String(effective) !== value) {
+        localStore.settings.set(key, String(effective))
+      }
+      return
+    }
+
+    if (key === HEARTBEAT_AUTOTUNE_SETTING_KEY) {
+      const effective = connectionManager.updateHeartbeatAutoTuneEnabled(value)
       if (String(effective) !== value) {
         localStore.settings.set(key, String(effective))
       }

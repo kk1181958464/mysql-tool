@@ -310,7 +310,9 @@
 
 .ui-modal-body {
   flex: 1;
-  overflow: visible;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px;
 }
 
@@ -339,6 +341,11 @@
   min-height: 0;
   overflow: auto;
   position: relative;
+  overscroll-behavior: contain;
+}
+
+.ui-table-scroll-virtual {
+  scrollbar-gutter: stable;
 }
 
 .ui-table {
@@ -395,6 +402,13 @@
 
 .ui-table-loading-row td {
   padding: 8px 12px;
+}
+
+.ui-table-virtual-spacer td {
+  padding: 0 !important;
+  border-bottom: none !important;
+  background: transparent !important;
+  animation: none !important;
 }
 
 .ui-table-skeleton-line {
@@ -457,8 +471,8 @@
   opacity: 0.7;
 }
 
-/* 数据行加载完成淡入 */
-.ui-table tbody tr {
+/* 数据行加载完成淡入（仅真实数据行，避免虚拟滚动 spacer 闪烁） */
+.ui-table tbody tr:not(.ui-table-virtual-spacer):not(.ui-table-loading-row) {
   animation: fade-in 0.2s ease;
 }
 

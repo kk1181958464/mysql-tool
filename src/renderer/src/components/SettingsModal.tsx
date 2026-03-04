@@ -5,13 +5,9 @@ import { useAppStore } from '../stores/app.store'
 import { useConnectionStore } from '../stores/connection.store'
 import { api } from '../utils/ipc'
 import {
-  HEARTBEAT_DEFAULT_SECONDS,
-  HEARTBEAT_MAX_SECONDS,
-  HEARTBEAT_MIN_SECONDS,
   TABLE_ROWS_PER_PAGE_DEFAULT,
   TABLE_ROWS_PER_PAGE_MAX,
   TABLE_ROWS_PER_PAGE_MIN,
-  normalizeHeartbeatSeconds,
   normalizePaginationMode,
   normalizeTableRowsPerPage,
   type PaginationMode,
@@ -45,41 +41,19 @@ export default function SettingsModal({ open, onClose }: Props) {
     setThemeMode,
     accentColor,
     setAccentColor,
-    heartbeatIntervalSeconds,
-    setHeartbeatIntervalSeconds,
     rowsPerPage,
     setRowsPerPage,
     paginationMode,
     setPaginationMode,
   } = useAppStore()
   const [msg, setMsg] = useState('')
-  const [heartbeatInput, setHeartbeatInput] = useState(String(heartbeatIntervalSeconds))
   const [rowsPerPageInput, setRowsPerPageInput] = useState(String(rowsPerPage))
 
   useEffect(() => {
     if (open) {
-      setHeartbeatInput(String(heartbeatIntervalSeconds))
       setRowsPerPageInput(String(rowsPerPage))
     }
-  }, [open, heartbeatIntervalSeconds, rowsPerPage])
-
-  const applyHeartbeat = async (raw: string) => {
-    const normalized = normalizeHeartbeatSeconds(raw)
-    setHeartbeatInput(String(normalized))
-
-    if (normalized !== Number(raw)) {
-      setMsg(`⚠ 心跳时间已自动修正为 ${normalized} 秒（允许范围 ${HEARTBEAT_MIN_SECONDS}-${HEARTBEAT_MAX_SECONDS}）`)
-    }
-
-    try {
-      await setHeartbeatIntervalSeconds(normalized)
-      if (normalized === Number(raw)) {
-        setMsg('✓ 心跳时间已保存')
-      }
-    } catch (e: any) {
-      setMsg('✗ ' + (e.message || '心跳时间保存失败'))
-    }
-  }
+  }, [open, rowsPerPage])
 
   const applyRowsPerPage = async (raw: string) => {
     const normalized = normalizeTableRowsPerPage(raw)
@@ -114,7 +88,6 @@ export default function SettingsModal({ open, onClose }: Props) {
         remarks: remarks ? JSON.parse(remarks) : {},
         themeMode,
         accentColor,
-        heartbeatIntervalSeconds,
         rowsPerPage,
         paginationMode,
       }
@@ -143,9 +116,6 @@ export default function SettingsModal({ open, onClose }: Props) {
       }
       if (data.themeMode) setThemeMode(data.themeMode)
       if (data.accentColor !== undefined) setAccentColor(data.accentColor)
-      if (data.heartbeatIntervalSeconds !== undefined) {
-        await setHeartbeatIntervalSeconds(normalizeHeartbeatSeconds(data.heartbeatIntervalSeconds))
-      }
       if (data.rowsPerPage !== undefined) {
         await setRowsPerPage(normalizeTableRowsPerPage(data.rowsPerPage))
       }
@@ -189,43 +159,6 @@ export default function SettingsModal({ open, onClose }: Props) {
                 background: c.value || '#3b82f6', cursor: 'pointer', transition: 'all 0.15s',
               }} />
             ))}
-          </div>
-        </div>
-
-        {/* 心跳设置 */}
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>心跳时间（秒）</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input
-              type="number"
-              min={HEARTBEAT_MIN_SECONDS}
-              max={HEARTBEAT_MAX_SECONDS}
-              step={1}
-              value={heartbeatInput}
-              onChange={(e) => setHeartbeatInput(e.target.value)}
-              onBlur={() => applyHeartbeat(heartbeatInput)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  void applyHeartbeat(heartbeatInput)
-                }
-              }}
-              style={{
-                width: 140,
-                height: 32,
-                borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: 'var(--bg-card)',
-                color: 'var(--text-primary)',
-                padding: '0 10px',
-                outline: 'none',
-              }}
-            />
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              建议 {HEARTBEAT_MIN_SECONDS}-{HEARTBEAT_MAX_SECONDS} 秒，默认 {HEARTBEAT_DEFAULT_SECONDS} 秒
-            </span>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-            无响应不一定是连接挂掉，也可能是数据库负载、锁等待或网络抖动导致。系统会先尝试探测并重建连接。
           </div>
         </div>
 

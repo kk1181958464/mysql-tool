@@ -9,6 +9,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
 import type { PaginationMode } from '../../../../shared/constants'
+import tableTransformWorker from '../../workers/table-transform.worker?worker'
 
 interface Props {
   tabId: string
@@ -57,14 +58,6 @@ const fmtValue = (val: unknown, isDateOnly = false): string => {
   return s
 }
 
-const toLocalInput = (val: unknown): string => {
-  let d: Date | null = null
-  if (isDateValue(val)) d = val
-  else if (val) { d = new Date(String(val)); if (isNaN(d.getTime())) d = null }
-  if (!d) return ''
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
-}
-
 const valIsDate = (val: unknown): boolean => {
   if (isDateValue(val)) return true
   if (typeof val === 'string' && (/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d/.test(val) || /^\d{4}-\d{2}-\d{2}/.test(val))) return true
@@ -106,6 +99,8 @@ const editInputStyle: React.CSSProperties = {
   outline: 'none', fontFamily: 'Consolas, Monaco, monospace',
 }
 const placeholderStyle: React.CSSProperties = { color: 'var(--text-muted)' }
+const TABLEDATA_VIRTUAL_THRESHOLD = 400
+const TABLEDATA_WORKER_THRESHOLD = 2000
 
 // 可编辑单元格 - Navicat 风格
 const EditableCell: React.FC<{
@@ -116,8 +111,9 @@ const EditableCell: React.FC<{
   isRecentlyUpdated: boolean
   onSelect: (shiftKey: boolean) => void
   onSave: (newValue: unknown) => void
+  onDirtyChange: (isDirty: boolean) => void
   onContextMenu: (e: React.MouseEvent) => void
-}> = React.memo(({ value, colType = '', isSelected, isFocused, isRecentlyUpdated, onSelect, onSave, onContextMenu }) => {
+}> = React.memo(({ value, colType = '', isSelected, isFocused, isRecentlyUpdated, onSelect, onSave, onDirtyChange, onContextMenu }) => {
   const [editing, setEditing] = useState(false)
   const lowerType = colType.toLowerCase()
   const mysqlTypeCode = Number(lowerType)
@@ -148,20 +144,36 @@ const EditableCell: React.FC<{
     if (newVal !== displayValue && !(value === null && newVal === null)) {
       onSave(newVal)
     }
+    onDirtyChange(false)
     setEditing(false)
-  }, [value, displayValue, onSave])
+  }, [value, displayValue, onSave, onDirtyChange])
 
   const commitDatePicker = useCallback((val: string) => {
     if (val !== displayValue) {
       onSave(val)
     }
+    onDirtyChange(false)
     setEditing(false)
-  }, [displayValue, onSave])
+  }, [displayValue, onSave, onDirtyChange])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') { e.preventDefault(); commitText(inputValue) }
-    if (e.key === 'Escape') { setEditing(false) }
+    if (e.key === 'Escape') {
+      onDirtyChange(false)
+      setEditing(false)
+    }
   }
+
+  useEffect(() => {
+    if (!editing) {
+      onDirtyChange(false)
+      return
+    }
+    const trimmed = inputValue.trim()
+    const nextValue = trimmed === '' ? null : trimmed
+    const dirty = nextValue !== displayValue && !(value === null && nextValue === null)
+    onDirtyChange(dirty)
+  }, [editing, inputValue, displayValue, value, onDirtyChange])
 
   // 选中状态下，按键直接输入（替换值）— 仅 focused 单元格
   useEffect(() => {
@@ -195,7 +207,10 @@ const EditableCell: React.FC<{
             dateOnly={isDateOnly}
             anchorRect={anchorRect || undefined}
             onConfirm={commitDatePicker}
-            onCancel={() => setEditing(false)}
+            onCancel={() => {
+              onDirtyChange(false)
+              setEditing(false)
+            }}
           />
         </div>
       )
@@ -246,6 +261,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [where, setWhere] = useState('')
   const [orderBy, setOrderBy] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set())
+  const selectedRowKeyList = useMemo(() => Array.from(selectedRowKeys), [selectedRowKeys])
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const lastCheckedRef = useRef<string | null>(null)
@@ -257,6 +273,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [totalCount, setTotalCount] = useState(0)
   const [error, setError] = useState('')
   const [pendingChanges, setPendingChanges] = useState<Map<string, Record<string, unknown>>>(new Map())
+  const [editingDirtyCells, setEditingDirtyCells] = useState<Set<string>>(new Set())
   const [isSaving, setIsSaving] = useState(false)
   const [recentlyUpdatedCells, setRecentlyUpdatedCells] = useState<Set<string>>(new Set())
   const [headerContextMenu, setHeaderContextMenu] = useState<{ x: number; y: number; colName: string } | null>(null)
@@ -268,7 +285,10 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [hasNextPage, setHasNextPage] = useState(false)
   const [lastQueryMode, setLastQueryMode] = useState<EffectivePagination>('offset')
   const [paginationFallbackHint, setPaginationFallbackHint] = useState('')
+  const [transformedBaseRows, setTransformedBaseRows] = useState<Array<Record<string, unknown>>>([])
+  const [pendingPaginationHint, setPendingPaginationHint] = useState('')
   const fetchRequestIdRef = useRef(0)
+  const transformJobIdRef = useRef(0)
 
   const countCacheKey = useMemo(
     () => `${connectionId}|${database}|${table}|${where.trim()}`,
@@ -281,23 +301,24 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   )
 
   const columnDetailsByName = useMemo(() => {
-    const cols = (columnCache[columnCacheKey] || []) as ColumnDetail[]
     const map = new Map<string, ColumnDetail>()
-    cols.forEach((c) => map.set(c.name, c))
+    ;((columnCache[columnCacheKey] || []) as ColumnDetail[]).forEach((c) => map.set(c.name, c))
     return map
   }, [columnCache, columnCacheKey])
 
-  const isDirty = pendingChanges.size > 0 || newRows.length > 0 || isSaving
-
   useEffect(() => {
-    setDataDirty(tabId, isDirty)
-  }, [tabId, isDirty, setDataDirty])
-
-  useEffect(() => {
-    return () => {
-      setDataDirty(tabId, false)
+    if (paginationMode !== 'auto') {
+      setPendingPaginationHint('')
+      return
     }
-  }, [tabId, setDataDirty])
+
+    if (!result) {
+      setPendingPaginationHint('分页模式判定中...')
+      return
+    }
+
+    setPendingPaginationHint('')
+  }, [paginationMode, result, connectionId, database, table])
 
   const fetchData = useCallback(async (
     action: 'reset' | 'next' | 'prev' = 'reset',
@@ -316,18 +337,21 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       const pkColumn = result?.columns.find((c) => c.primaryKey)?.name
       const activeOrderBy = explicitOrderBy ?? orderBy
       const canUseKeyset = Boolean(pkColumn && !activeOrderBy)
-      const wantsKeyset = paginationMode === 'cursor' || (paginationMode === 'auto' && action !== 'reset')
+      const wantsKeyset = paginationMode === 'cursor' || paginationMode === 'auto'
 
       let effectiveMode: EffectivePagination = wantsKeyset && canUseKeyset ? 'keyset' : 'offset'
+      const isInitialAutoProbe = paginationMode === 'auto' && action === 'reset' && !result
       let fallbackHint = ''
 
-      if (paginationMode === 'cursor' && effectiveMode === 'offset') {
-        fallbackHint = activeOrderBy
-          ? '当前存在排序条件，已回退为偏移分页'
-          : '当前条件不满足游标分页，已回退为偏移分页'
+      if (effectiveMode === 'offset') {
+        if (activeOrderBy) {
+          fallbackHint = '当前存在排序条件，已回退为偏移分页'
+        } else if (!pkColumn && !isInitialAutoProbe) {
+          fallbackHint = '当前表缺少主键，已回退为偏移分页'
+        }
       }
 
-      if (effectiveMode === 'keyset' && action !== 'reset' && !cursor) {
+      if (action === 'reset' && typeof fallbackPage === 'number' && fallbackPage > 1) {
         effectiveMode = 'offset'
       }
 
@@ -385,7 +409,23 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       const pkAfterQuery = res.columns.find((c) => c.primaryKey)?.name
       const rows = res.rows || []
-      if (effectiveMode === 'keyset' && pkAfterQuery && rows.length > 0) {
+      const canUseKeysetAfterQuery = Boolean(wantsKeyset && !activeOrderBy && pkAfterQuery)
+      const resolvedMode: EffectivePagination = canUseKeysetAfterQuery ? 'keyset' : 'offset'
+      let resolvedFallbackHint = fallbackHint
+
+      if (resolvedMode === 'offset') {
+        if (activeOrderBy) {
+          resolvedFallbackHint = '当前存在排序条件，已回退为偏移分页'
+        } else if (!pkAfterQuery && !isInitialAutoProbe) {
+          resolvedFallbackHint = '当前表缺少主键，已回退为偏移分页'
+        } else if (isInitialAutoProbe) {
+          resolvedFallbackHint = ''
+        }
+      } else {
+        resolvedFallbackHint = ''
+      }
+
+      if (resolvedMode === 'keyset' && pkAfterQuery && rows.length > 0) {
         setCursor({
           firstPk: rows[0][pkAfterQuery],
           lastPk: rows[rows.length - 1][pkAfterQuery]
@@ -395,8 +435,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
 
       setHasNextPage(rows.length === rowsPerPage)
-      setLastQueryMode(effectiveMode)
-      setPaginationFallbackHint(fallbackHint)
+      setLastQueryMode(resolvedMode)
+      setPaginationFallbackHint(resolvedFallbackHint)
       setResult(res)
       setTotalCount(countValue)
     } catch (e: any) {
@@ -407,9 +447,24 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         setLoading(false)
       }
     }
-  }, [connectionId, database, table, page, rowsPerPage, where, orderBy, countCacheKey, result?.columns, cursor, paginationMode])
+  }, [connectionId, database, table, rowsPerPage, where, orderBy, countCacheKey, paginationMode, page, cursor, result])
 
   useEffect(() => {
+    if (!connectionId || !database || !table) return
+    loadColumns(connectionId, database, table).catch(() => {})
+  }, [connectionId, database, table, loadColumns])
+
+  useEffect(() => {
+    if (paginationMode === 'auto' && !result) {
+      setPage(1)
+      setJumpPage('')
+      setCursor(null)
+      setHasNextPage(false)
+      setPaginationFallbackHint('')
+      fetchData('reset')
+      return
+    }
+
     setPage(1)
     setJumpPage('')
     setCursor(null)
@@ -421,12 +476,76 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const pk = result?.columns.find((c) => c.primaryKey)
   const pkCol = pk?.name || '_rowIndex'
   const totalPages = Math.max(1, Math.ceil(totalCount / rowsPerPage))
-  const allRowKeys = [...(result?.rows.map((r, i) => String(r[pkCol] ?? i)) || []), ...newRows.map(r => String(r._newKey))]
+  const hasUnsavedChanges = pendingChanges.size > 0 || newRows.length > 0 || editingDirtyCells.size > 0
 
   useEffect(() => {
-    if (!connectionId || !database || !table) return
-    loadColumns(connectionId, database, table).catch(() => {})
-  }, [connectionId, database, table, loadColumns])
+    setDataDirty(tabId, hasUnsavedChanges)
+  }, [setDataDirty, tabId, hasUnsavedChanges])
+
+  useEffect(() => {
+    return () => {
+      setDataDirty(tabId, false)
+    }
+  }, [setDataDirty, tabId])
+
+  const getRowKey = useCallback((record: Record<string, unknown>) => {
+    return String(record._newKey ?? record[pkCol] ?? record._rowIndex)
+  }, [pkCol])
+
+  const baseRowsWithIndex = useMemo(
+    () => (result?.rows.map((row, index) => ({ ...row, _rowIndex: index })) || []),
+    [result?.rows]
+  )
+
+  useEffect(() => {
+    if (!baseRowsWithIndex.length) {
+      setTransformedBaseRows([])
+      return
+    }
+
+    if (baseRowsWithIndex.length < TABLEDATA_WORKER_THRESHOLD) {
+      setTransformedBaseRows(baseRowsWithIndex)
+      return
+    }
+
+    const worker = new tableTransformWorker()
+    const nextJobId = transformJobIdRef.current + 1
+    transformJobIdRef.current = nextJobId
+    const jobId = `table-data-${nextJobId}`
+
+    worker.onmessage = (event: MessageEvent<{ id: string; rows: Array<Record<string, unknown>> }>) => {
+      if (event.data.id !== jobId) return
+      setTransformedBaseRows(event.data.rows)
+      worker.terminate()
+    }
+
+    worker.postMessage({ id: jobId, rows: baseRowsWithIndex })
+
+    return () => {
+      worker.terminate()
+    }
+  }, [baseRowsWithIndex])
+
+  const normalizedBaseRows = useMemo(
+    () => (transformedBaseRows.length ? transformedBaseRows : baseRowsWithIndex),
+    [transformedBaseRows, baseRowsWithIndex]
+  )
+
+  const tableDataSource = useMemo(
+    () => [...normalizedBaseRows, ...newRows],
+    [normalizedBaseRows, newRows]
+  )
+
+  const rowsByKey = useMemo(() => {
+    const map = new Map<string, Record<string, unknown>>()
+    tableDataSource.forEach((row) => map.set(getRowKey(row), row))
+    return map
+  }, [tableDataSource, getRowKey])
+
+  const allRowKeys = useMemo(
+    () => tableDataSource.map((row) => getRowKey(row)),
+    [tableDataSource, getRowKey]
+  )
 
   useEffect(() => {
     return () => {
@@ -486,11 +605,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }, [deleteBusy, deleteConfirmOpen])
 
   const handleDelete = useCallback(async () => {
-    if (selectedRowKeys.size === 0 || deleteBusy) return
+    if (selectedRowKeyList.length === 0 || deleteBusy) return
     setDeleteBusy(true)
     try {
-      const newKeys = [...selectedRowKeys].filter(k => k.startsWith('_new_'))
-      const dbKeys = [...selectedRowKeys].filter(k => !k.startsWith('_new_'))
+      const newKeys = selectedRowKeyList.filter(k => k.startsWith('_new_'))
+      const dbKeys = selectedRowKeyList.filter(k => !k.startsWith('_new_'))
       if (newKeys.length > 0) {
         setNewRows(prev => prev.filter(r => !newKeys.includes(String(r._newKey))))
       }
@@ -511,10 +630,30 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     } finally {
       setDeleteBusy(false)
     }
-  }, [selectedRowKeys, deleteBusy, pk, connectionId, database, table, invalidateCountCache, fetchData])
+  }, [selectedRowKeyList, deleteBusy, pk, connectionId, database, table, invalidateCountCache, fetchData])
+
+  const handleEditingDirtyChange = useCallback((rowKey: string, colName: string, isDirty: boolean) => {
+    const cellKey = `${rowKey}:${colName}`
+    setEditingDirtyCells((prev) => {
+      const hasCell = prev.has(cellKey)
+      if (isDirty && hasCell) return prev
+      if (!isDirty && !hasCell) return prev
+      const next = new Set(prev)
+      if (isDirty) next.add(cellKey)
+      else next.delete(cellKey)
+      return next
+    })
+  }, [])
 
   const handleCellChange = useCallback((rowKey: unknown, colName: string, newValue: unknown) => {
     const key = String(rowKey)
+    setEditingDirtyCells((prev) => {
+      const cellKey = `${key}:${colName}`
+      if (!prev.has(cellKey)) return prev
+      const next = new Set(prev)
+      next.delete(cellKey)
+      return next
+    })
     // 新增行直接改 newRows 数据
     if (key.startsWith('_new_')) {
       setNewRows(prev => prev.map(r => r._newKey === key ? { ...r, [colName]: newValue } : r))
@@ -629,35 +768,59 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         }
         setNewRows([])
       }
+      setEditingDirtyCells(new Set())
       invalidateCountCache()
       if (hasInserts) {
         await fetchData('reset', true, undefined, false)
       }
-      setDataDirty(tabId, false)
     } catch (e: any) {
       setError(e.message || '保存失败')
     } finally {
       setIsSaving(false)
     }
-  }, [isSaving, pk, pendingChanges, newRows, result?.columns, connectionId, database, table, fetchData, invalidateCountCache, applyPendingChangesToResult, revalidateRowsAfterSave, setDataDirty, tabId])
+  }, [isSaving, pk, pendingChanges, newRows, result?.columns, connectionId, database, table, fetchData, invalidateCountCache, applyPendingChangesToResult, revalidateRowsAfterSave])
+
+  const handleSaveChangesRef = useRef(handleSaveChanges)
+
+  useEffect(() => {
+    handleSaveChangesRef.current = handleSaveChanges
+  }, [handleSaveChanges])
+
+  const flushEditingAndSave = useCallback(() => {
+    const active = document.activeElement as HTMLElement | null
+    const inTableData = !!(active && rootRef.current?.contains(active))
+    const isEditingInput = !!(active && inTableData && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable))
+
+    if (isEditingInput) {
+      active.blur()
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          void handleSaveChangesRef.current()
+        })
+      })
+      return
+    }
+
+    void handleSaveChangesRef.current()
+  }, [])
 
   // Ctrl+S 保存
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
-        handleSaveChanges()
+        flushEditingAndSave()
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [handleSaveChanges])
+  }, [flushEditingAndSave])
 
   // Delete：勾选行删除（走与删除按钮一致的确认流程）
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Delete') return
-      if (selectedRowKeys.size === 0 || deleteConfirmOpen) return
+      if (selectedRowKeyList.length === 0 || deleteConfirmOpen) return
       const active = document.activeElement as HTMLElement | null
       if (active) {
         const tag = active.tagName
@@ -666,11 +829,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         if (isTypingInput) return
       }
       e.preventDefault()
-      openDeleteConfirm([...selectedRowKeys])
+      openDeleteConfirm(selectedRowKeyList)
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectedRowKeys, deleteConfirmOpen, openDeleteConfirm])
+  }, [selectedRowKeyList, deleteConfirmOpen, openDeleteConfirm])
 
   // 选区数字键批量改值（列头整列与 Shift 矩形多选共用）
   useEffect(() => {
@@ -767,10 +930,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setCellContextMenu(null)
 
     // 若勾选了多行，则按多行执行；否则按当前右键行执行
-    const selectedKeys = selectedRowKeys.size > 0 ? [...selectedRowKeys] : [rowKey]
-    const allRows = [...(result?.rows.map((r, i) => ({ ...r, _rowIndex: i })) || []), ...newRows]
-    const rowsByKey = new Map<string, Record<string, unknown>>()
-    allRows.forEach((r, i) => rowsByKey.set(String(r._newKey ?? r[pkCol] ?? i), r))
+    const selectedKeys = selectedRowKeyList.length > 0 ? selectedRowKeyList : [rowKey]
 
     switch (action) {
       case 'copyInsert': {
@@ -805,8 +965,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }
 
   const handleToolbarDelete = useCallback(() => {
-    openDeleteConfirm([...selectedRowKeys])
-  }, [openDeleteConfirm, selectedRowKeys])
+    openDeleteConfirm(selectedRowKeyList)
+  }, [openDeleteConfirm, selectedRowKeyList])
 
   // Ctrl/Cmd + A：数据详情页全选所有复选框行（用于批量删除/导出）
   useEffect(() => {
@@ -827,9 +987,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }, [allRowKeys])
 
   // checkbox 列 + 数据列
-  const allChecked = allRowKeys.length > 0 && allRowKeys.every(k => selectedRowKeys.has(k))
+  const allChecked = useMemo(
+    () => allRowKeys.length > 0 && allRowKeys.every((k) => selectedRowKeys.has(k)),
+    [allRowKeys, selectedRowKeys]
+  )
 
-  const checkboxCol = {
+  const checkboxCol = useMemo(() => ({
     key: '_checkbox',
     title: (
       <input
@@ -843,8 +1006,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     ),
     dataIndex: '_checkbox' as string,
     width: 40,
-    render: (_: unknown, record: Record<string, unknown>, index: number) => {
-      const rk = String(record._newKey ?? record[pkCol] ?? index)
+    render: (_: unknown, record: Record<string, unknown>) => {
+      const rk = getRowKey(record)
       return (
         <input
           type="checkbox"
@@ -871,7 +1034,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         />
       )
     },
-  }
+  }), [allChecked, allRowKeys, getRowKey, selectedRowKeys])
 
   const handleHeaderMenuAction = useCallback((action: 'asc' | 'desc' | 'clear') => {
     if (!headerContextMenu) return
@@ -940,8 +1103,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       dataIndex: col.name,
       ellipsis: true,
       width: 170,
-      render: (v: unknown, record: Record<string, unknown>, index: number) => {
-        const rk = String(record._newKey ?? record[pkCol] ?? index)
+      render: (v: unknown, record: Record<string, unknown>) => {
+        const rk = getRowKey(record)
         const pending = pendingChanges.get(rk)
         const cellValue = pending && col.name in pending ? pending[col.name] : v
         const cellKey = `${rk}:${col.name}`
@@ -957,14 +1120,15 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
             isRecentlyUpdated={isRecentlyUpdated}
             onSelect={(shiftKey) => handleCellSelect(rk, col.name, shiftKey)}
             onSave={(newVal) => handleCellChange(rk, col.name, newVal)}
+            onDirtyChange={(isDirty) => handleEditingDirtyChange(rk, col.name, isDirty)}
             onContextMenu={(e) => handleCellContextMenu(e, rk, col.name, record)}
           />
         )
       },
     }
-  }) || [], [result?.columns, pkCol, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, handleCellChange, handleCellSelect, handleColumnSelect])
+  }) || [], [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange])
 
-  const columns = [checkboxCol, ...dataCols]
+  const columns = useMemo(() => [checkboxCol, ...dataCols], [checkboxCol, dataCols])
   const isKeysetMode = lastQueryMode === 'keyset'
   const configuredModeLabel = PAGINATION_MODE_LABEL[paginationMode]
   const effectiveModeLabel = lastQueryMode === 'keyset' ? '游标' : '偏移'
@@ -993,21 +1157,21 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         <Button
           size="small"
           type="danger"
-          disabled={selectedRowKeys.size === 0 || deleteBusy}
+          disabled={selectedRowKeyList.length === 0 || deleteBusy}
           onClick={handleToolbarDelete}
         >
-          <DeleteOutlined /> 删除({selectedRowKeys.size})
+          <DeleteOutlined /> 删除({selectedRowKeyList.length})
         </Button>
-        {(pendingChanges.size > 0 || newRows.length > 0 || isSaving) && (
+        {(hasUnsavedChanges || isSaving) && (
           <Button
             size="small"
             type="primary"
             loading={isSaving}
             disabled={isSaving}
-            onClick={handleSaveChanges}
+            onClick={flushEditingAndSave}
             style={{ minWidth: 132, transition: 'opacity 0.2s ease, transform 0.2s ease', opacity: isSaving ? 0.9 : 1 }}
           >
-            <SaveOutlined /> {isSaving ? '保存中...' : `保存修改 (${pendingChanges.size + newRows.length})`}
+            <SaveOutlined /> {isSaving ? '保存中...' : `保存修改 (${pendingChanges.size + newRows.length + editingDirtyCells.size})`}
           </Button>
         )}
         {newRows.length === 0 && <Button size="small" onClick={() => setExportOpen(true)}>导出</Button>}
@@ -1019,13 +1183,19 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         <Table
           size="small"
           loading={loading}
-          dataSource={[...(result?.rows.map((r, i) => ({ ...r, _rowIndex: i })) || []), ...newRows]}
+          dataSource={tableDataSource}
           columns={columns}
-          rowKey={(r: Record<string, unknown>) => String(r._newKey ?? r[pkCol] ?? r._rowIndex)}
+          rowKey={getRowKey}
           onRow={(record: Record<string, unknown>) => ({
             style: record._newKey ? { background: 'rgba(34,197,94,0.12)' } : undefined,
           })}
           scroll={{ x: 'max-content' }}
+          virtual={{
+            enabled: tableDataSource.length >= TABLEDATA_VIRTUAL_THRESHOLD,
+            rowHeight: 34,
+            overscan: 8,
+            threshold: TABLEDATA_VIRTUAL_THRESHOLD,
+          }}
           resizable
         />
       </div>
@@ -1035,8 +1205,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           共 {totalCount} 行
           {isKeysetMode ? `，当前第 ${page} 页（游标翻页）` : `，共 ${totalPages} 页`}
           {`，配置模式：${configuredModeLabel}，实际模式：${effectiveModeLabel}`}
-          {paginationFallbackHint && <span style={{ color: 'var(--warning, #f59e0b)' }}>（{paginationFallbackHint}）</span>}
-          {(pendingChanges.size > 0 || newRows.length > 0) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length} 行 (Ctrl+S)</span>}
+          {(pendingPaginationHint || paginationFallbackHint) && <span style={{ color: 'var(--warning, #f59e0b)' }}>（{pendingPaginationHint || paginationFallbackHint}）</span>}
+          {(hasUnsavedChanges || isSaving) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length + editingDirtyCells.size} 行 (Ctrl+S)</span>}
         </span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button
@@ -1045,7 +1215,13 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
             onClick={() => {
               if (loading || page <= 1) return
               setPage((prev) => Math.max(1, prev - 1))
-              fetchData(isKeysetMode ? 'prev' : 'reset', false, Math.max(1, page - 1))
+              const prevPage = Math.max(1, page - 1)
+              if (prevPage === 1) {
+                setCursor(null)
+                fetchData('reset', false, 1)
+              } else {
+                fetchData(isKeysetMode ? 'prev' : 'reset', false, prevPage)
+              }
             }}
           >
             上一页
@@ -1115,7 +1291,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         )}
       >
         <div style={{ color: 'var(--text-secondary)', lineHeight: 1.7 }}>
-          确定删除已勾选的 <b>{selectedRowKeys.size}</b> 行数据吗？此操作不可撤销。
+          确定删除已勾选的 <b>{selectedRowKeyList.length}</b> 行数据吗？此操作不可撤销。
         </div>
       </Modal>
 
@@ -1133,7 +1309,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       {/* 单元格右键菜单 */}
       {cellContextMenu && (() => {
-        const count = selectedRowKeys.size > 0 ? selectedRowKeys.size : 1
+        const count = selectedRowKeyList.length > 0 ? selectedRowKeyList.length : 1
         const suffix = count > 1 ? `(${count})` : ''
         return (
         <div

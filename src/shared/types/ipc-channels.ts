@@ -40,6 +40,7 @@ export const IPC = {
   PERF_INNODB_STATUS: 'perf:innodbStatus',
   PERF_VARIABLES: 'perf:variables',
   PERF_STATUS: 'perf:status',
+  PERF_METRIC: 'perf:metric',
   BACKUP_CREATE: 'backup:create',
   BACKUP_RESTORE: 'backup:restore',
   BACKUP_LIST: 'backup:list',
@@ -57,4 +58,10 @@ export const IPC = {
   STORE_SAVE_SNIPPET: 'store:saveSnippet',
   STORE_GET_SETTINGS: 'store:getSettings',
   STORE_SAVE_SETTINGS: 'store:saveSettings',
+  WIN_MINIMIZE: 'win:minimize',
+  WIN_MAXIMIZE: 'win:maximize',
+  WIN_CLOSE: 'win:close',
+  WIN_HIDE_TO_TRAY: 'win:hideToTray',
+  WIN_QUIT: 'win:quit',
+  WIN_IS_MAXIMIZED: 'win:isMaximized',
 } as const

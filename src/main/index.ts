@@ -1,11 +1,67 @@
-import { app, BrowserWindow, nativeTheme, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, nativeTheme } from 'electron'
 import * as path from 'path'
-import * as localStore from './services/local-store'
-import * as connectionManager from './services/connection-manager'
+import { IPC } from '../shared/types/ipc-channels'
 import { registerAllIPC } from './ipc/index'
+import * as connectionManager from './services/connection-manager'
+import * as localStore from './services/local-store'
 import * as logger from './utils/logger'
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let isQuitting = false
+
+const getAppIconPath = () => path.join(__dirname, '../../resources/icon.png')
+
+const showAndFocusMainWindow = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function createTray() {
+  if (tray) {
+    return
+  }
+
+  try {
+    const iconPath = getAppIconPath()
+    const icon = nativeImage.createFromPath(iconPath)
+    tray = new Tray(icon)
+    tray.setToolTip('MySQL 连接工具')
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        {
+          label: '打开',
+          click: () => showAndFocusMainWindow(),
+        },
+        {
+          type: 'separator',
+        },
+        {
+          label: '退出',
+          click: () => {
+            isQuitting = true
+            app.quit()
+          },
+        },
+      ]),
+    )
+
+    tray.on('double-click', () => {
+      showAndFocusMainWindow()
+    })
+  } catch (error) {
+    logger.error('Failed to create tray', error)
+  }
+}
 
 function createWindow() {
   const isDark = nativeTheme.shouldUseDarkColors
@@ -15,7 +71,7 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     backgroundColor: isDark ? '#171c28' : '#f5f7fa',
-    icon: path.join(__dirname, '../../resources/icon.png'),
+    icon: getAppIconPath(),
     frame: false,
     transparent: false,
     thickFrame: false,
@@ -29,6 +85,15 @@ function createWindow() {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
+  })
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting) {
+      return
+    }
+
+    event.preventDefault()
+    mainWindow?.hide()
   })
 
   mainWindow.on('closed', () => {
@@ -52,22 +117,32 @@ app.whenReady().then(() => {
   registerAllIPC()
 
   // Window control IPC
-  ipcMain.on('win:minimize', () => mainWindow?.minimize())
-  ipcMain.on('win:maximize', () => {
+  ipcMain.on(IPC.WIN_MINIMIZE, () => mainWindow?.minimize())
+  ipcMain.on(IPC.WIN_MAXIMIZE, () => {
     if (mainWindow?.isMaximized()) mainWindow.unmaximize()
     else mainWindow?.maximize()
   })
-  ipcMain.on('win:close', () => mainWindow?.close())
-  ipcMain.handle('win:isMaximized', () => mainWindow?.isMaximized() ?? false)
+  ipcMain.on(IPC.WIN_CLOSE, () => mainWindow?.close())
+  ipcMain.on(IPC.WIN_HIDE_TO_TRAY, () => mainWindow?.hide())
+  ipcMain.on(IPC.WIN_QUIT, () => {
+    isQuitting = true
+    app.quit()
+  })
+  ipcMain.handle(IPC.WIN_IS_MAXIMIZED, () => mainWindow?.isMaximized() ?? false)
 
   createWindow()
+  createTray()
 
   nativeTheme.on('updated', () => {
     mainWindow?.webContents.send('native-theme-changed', nativeTheme.shouldUseDarkColors)
   })
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    } else {
+      showAndFocusMainWindow()
+    }
   })
 })
 
@@ -76,6 +151,10 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  isQuitting = true
   logger.info('App quitting, cleaning up...')
+  tray?.destroy()
+  tray = null
+  localStore.flushLocalStoreQueues()
   await connectionManager.disconnectAll()
 })

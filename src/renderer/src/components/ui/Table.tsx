@@ -1,5 +1,5 @@
 import './ui.css'
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 
 interface Column<T> {
   key: string
@@ -10,6 +10,13 @@ interface Column<T> {
   sorter?: boolean | ((a: T, b: T) => number)
   ellipsis?: boolean
   resizable?: boolean
+}
+
+interface TableVirtualConfig {
+  enabled: boolean
+  rowHeight: number
+  overscan?: number
+  threshold?: number
 }
 
 interface TableProps<T> {
@@ -24,6 +31,7 @@ interface TableProps<T> {
   scroll?: { x?: number | string; y?: number | string }
   pagination?: false | { page: number; pageSize: number; total: number; onChange: (page: number) => void }
   resizable?: boolean
+  virtual?: TableVirtualConfig
 }
 
 export function Table<T extends Record<string, any>>({
@@ -38,9 +46,16 @@ export function Table<T extends Record<string, any>>({
   scroll,
   pagination,
   resizable = false,
+  virtual,
 }: TableProps<T>) {
   const [colWidths, setColWidths] = useState<Record<string, number>>({})
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(0)
   const resizing = useRef<{ key: string; startX: number; startWidth: number } | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const rafIdRef = useRef<number | null>(null)
+  const latestScrollTopRef = useRef(0)
+  const latestViewportHeightRef = useRef(0)
 
   const handleMouseDown = useCallback((e: React.MouseEvent, colKey: string, currentWidth: number) => {
     e.preventDefault()
@@ -79,10 +94,126 @@ export function Table<T extends Record<string, any>>({
     return col.width
   }
 
+  const virtualOverscan = Math.max(0, virtual?.overscan ?? 6)
+  const virtualThreshold = Math.max(0, virtual?.threshold ?? 200)
+  const virtualRowHeight = virtual?.rowHeight ?? 34
+  const virtualEnabled = Boolean(
+    virtual?.enabled
+      && !loading
+      && dataSource.length > virtualThreshold
+      && virtualRowHeight > 0
+  )
+
+  useEffect(() => {
+    if (!virtualEnabled || !scrollRef.current) return
+
+    const el = scrollRef.current
+    const updateViewport = () => {
+      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      const rawScrollTop = el.scrollTop
+      const nextScrollTop = Math.max(
+        0,
+        Math.min(maxScrollTop, maxScrollTop - rawScrollTop <= 1 ? maxScrollTop : Math.round(rawScrollTop))
+      )
+      const nextViewportHeight = el.clientHeight
+      latestScrollTopRef.current = nextScrollTop
+      latestViewportHeightRef.current = nextViewportHeight
+      setScrollTop((prev) => (prev === nextScrollTop ? prev : nextScrollTop))
+      setViewportHeight((prev) => (prev === nextViewportHeight ? prev : nextViewportHeight))
+    }
+
+    updateViewport()
+
+    const onScroll = () => {
+      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      const rawScrollTop = el.scrollTop
+      latestScrollTopRef.current = Math.max(
+        0,
+        Math.min(maxScrollTop, maxScrollTop - rawScrollTop <= 1 ? maxScrollTop : Math.round(rawScrollTop))
+      )
+      latestViewportHeightRef.current = el.clientHeight
+      if (rafIdRef.current !== null) return
+
+      rafIdRef.current = window.requestAnimationFrame(() => {
+        rafIdRef.current = null
+        const nextScrollTop = latestScrollTopRef.current
+        const nextViewportHeight = latestViewportHeightRef.current
+        setScrollTop((prev) => (prev === nextScrollTop ? prev : nextScrollTop))
+        setViewportHeight((prev) => (prev === nextViewportHeight ? prev : nextViewportHeight))
+      })
+    }
+
+    el.addEventListener('scroll', onScroll, { passive: true })
+
+    const observer = new ResizeObserver(() => {
+      const nextViewportHeight = el.clientHeight
+      latestViewportHeightRef.current = nextViewportHeight
+      setViewportHeight((prev) => (prev === nextViewportHeight ? prev : nextViewportHeight))
+    })
+    observer.observe(el)
+
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      observer.disconnect()
+      if (rafIdRef.current !== null) {
+        window.cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+    }
+  }, [virtualEnabled])
+
+  useEffect(() => {
+    if (!virtualEnabled || !scrollRef.current) return
+    const el = scrollRef.current
+
+    const handleWheel = (event: WheelEvent) => {
+      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      const currentScrollTop = el.scrollTop
+      const atTop = currentScrollTop <= 0
+      const atBottom = currentScrollTop >= maxScrollTop - 1
+      const scrollingUp = event.deltaY < 0
+      const scrollingDown = event.deltaY > 0
+
+      if ((atTop && scrollingUp) || (atBottom && scrollingDown)) {
+        event.preventDefault()
+      }
+    }
+
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [virtualEnabled])
+
+  const virtualWindow = useMemo(() => {
+    if (!virtualEnabled) {
+      return {
+        start: 0,
+        end: dataSource.length,
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+      }
+    }
+
+    const normalizedScrollTop = Math.max(0, Math.round(scrollTop))
+    const visibleCount = Math.max(1, Math.ceil((viewportHeight || virtualRowHeight) / virtualRowHeight))
+    const start = Math.max(0, Math.floor(normalizedScrollTop / virtualRowHeight) - virtualOverscan)
+    const end = Math.min(dataSource.length, start + visibleCount + virtualOverscan * 2)
+
+    return {
+      start,
+      end,
+      topSpacerHeight: Math.max(0, Math.round(start * virtualRowHeight)),
+      bottomSpacerHeight: Math.max(0, Math.round((dataSource.length - end) * virtualRowHeight)),
+    }
+  }, [virtualEnabled, dataSource.length, viewportHeight, scrollTop, virtualOverscan, virtualRowHeight])
+
+  const renderRows = virtualEnabled
+    ? dataSource.slice(virtualWindow.start, virtualWindow.end)
+    : dataSource
+
   return (
     <div className={`ui-table-wrapper ui-table-${size} ${className}`} style={style}>
-      <div className="ui-table-scroll">
-        <table className="ui-table">
+      <div className={`ui-table-scroll ${virtualEnabled ? 'ui-table-scroll-virtual' : ''}`} ref={scrollRef}>
+        <table className={`ui-table ${virtualEnabled ? 'ui-table-virtual-enabled' : ''}`}>
           <colgroup>
             {columns.map((col) => (
               <col key={col.key} style={{ width: getColWidth(col), minWidth: getColWidth(col) }} />
@@ -126,15 +257,30 @@ export function Table<T extends Record<string, any>>({
                 <div className="ui-table-empty-hint">当前没有可显示的记录</div>
               </td></tr>
             ) : (
-              dataSource.map((record, index) => (
-                <tr key={getRowKey(record, index)} {...onRow?.(record, index)}>
-                  {columns.map((col) => (
-                    <td key={col.key} className={col.ellipsis ? 'ellipsis' : ''}>
-                      {col.render ? col.render(getValue(record, col), record, index) : getValue(record, col)}
-                    </td>
-                  ))}
-                </tr>
-              ))
+              <>
+                {virtualEnabled && virtualWindow.topSpacerHeight > 0 && (
+                  <tr className="ui-table-virtual-spacer" aria-hidden>
+                    <td colSpan={columns.length} style={{ height: virtualWindow.topSpacerHeight }} />
+                  </tr>
+                )}
+                {renderRows.map((record, index) => {
+                  const actualIndex = virtualEnabled ? virtualWindow.start + index : index
+                  return (
+                    <tr key={getRowKey(record, actualIndex)} {...onRow?.(record, actualIndex)}>
+                      {columns.map((col) => (
+                        <td key={col.key} className={col.ellipsis ? 'ellipsis' : ''}>
+                          {col.render ? col.render(getValue(record, col), record, actualIndex) : getValue(record, col)}
+                        </td>
+                      ))}
+                    </tr>
+                  )
+                })}
+                {virtualEnabled && virtualWindow.bottomSpacerHeight > 0 && (
+                  <tr className="ui-table-virtual-spacer" aria-hidden>
+                    <td colSpan={columns.length} style={{ height: virtualWindow.bottomSpacerHeight }} />
+                  </tr>
+                )}
+              </>
             )}
           </tbody>
         </table>

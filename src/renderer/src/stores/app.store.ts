@@ -2,9 +2,15 @@ import { create } from 'zustand'
 import { api } from '../utils/ipc'
 import {
   HEARTBEAT_SETTING_KEY,
+  HEARTBEAT_TIMEOUT_SETTING_KEY,
+  HEARTBEAT_CONCURRENCY_SETTING_KEY,
+  HEARTBEAT_AUTOTUNE_SETTING_KEY,
   PAGINATION_MODE_SETTING_KEY,
   TABLE_ROWS_PER_PAGE_SETTING_KEY,
   normalizeHeartbeatSeconds,
+  normalizeHeartbeatTimeoutMs,
+  normalizeHeartbeatConcurrency,
+  normalizeHeartbeatAutoTuneEnabled,
   normalizePaginationMode,
   normalizeTableRowsPerPage,
   type PaginationMode,
@@ -22,6 +28,9 @@ const resolveTheme = (mode: ThemeMode): ResolvedTheme =>
 const savedThemeMode = (localStorage.getItem('themeMode') as ThemeMode) || 'system'
 const savedAccentColor = localStorage.getItem('accentColor') || ''
 const savedHeartbeatInterval = normalizeHeartbeatSeconds(localStorage.getItem(HEARTBEAT_SETTING_KEY))
+const savedHeartbeatTimeoutMs = normalizeHeartbeatTimeoutMs(localStorage.getItem(HEARTBEAT_TIMEOUT_SETTING_KEY))
+const savedHeartbeatConcurrency = normalizeHeartbeatConcurrency(localStorage.getItem(HEARTBEAT_CONCURRENCY_SETTING_KEY))
+const savedHeartbeatAutoTuneEnabled = normalizeHeartbeatAutoTuneEnabled(localStorage.getItem(HEARTBEAT_AUTOTUNE_SETTING_KEY))
 const savedRowsPerPage = normalizeTableRowsPerPage(localStorage.getItem(TABLE_ROWS_PER_PAGE_SETTING_KEY))
 const savedPaginationMode = normalizePaginationMode(localStorage.getItem(PAGINATION_MODE_SETTING_KEY))
 
@@ -32,6 +41,9 @@ interface AppState {
   resolvedTheme: ResolvedTheme
   accentColor: string
   heartbeatIntervalSeconds: number
+  heartbeatTimeoutMs: number
+  heartbeatMaxConcurrency: number
+  heartbeatAutoTuneEnabled: boolean
   rowsPerPage: number
   paginationMode: PaginationMode
   toggleSidebar: () => void
@@ -39,6 +51,9 @@ interface AppState {
   setThemeMode: (mode: ThemeMode) => void
   setAccentColor: (color: string) => void
   setHeartbeatIntervalSeconds: (seconds: number) => Promise<void>
+  setHeartbeatTimeoutMs: (timeoutMs: number) => Promise<void>
+  setHeartbeatMaxConcurrency: (concurrency: number) => Promise<void>
+  setHeartbeatAutoTuneEnabled: (enabled: boolean) => Promise<void>
   setRowsPerPage: (value: number) => Promise<void>
   setPaginationMode: (mode: PaginationMode) => Promise<void>
 }
@@ -50,6 +65,9 @@ export const useAppStore = create<AppState>((set) => ({
   resolvedTheme: resolveTheme(savedThemeMode),
   accentColor: savedAccentColor,
   heartbeatIntervalSeconds: savedHeartbeatInterval,
+  heartbeatTimeoutMs: savedHeartbeatTimeoutMs,
+  heartbeatMaxConcurrency: savedHeartbeatConcurrency,
+  heartbeatAutoTuneEnabled: savedHeartbeatAutoTuneEnabled,
   rowsPerPage: savedRowsPerPage,
   paginationMode: savedPaginationMode,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -70,6 +88,36 @@ export const useAppStore = create<AppState>((set) => ({
       await api.store.saveSettings(HEARTBEAT_SETTING_KEY, String(normalized))
     } catch (error) {
       console.warn('[app.store] save heartbeat setting failed', error)
+    }
+  },
+  setHeartbeatTimeoutMs: async (timeoutMs) => {
+    const normalized = normalizeHeartbeatTimeoutMs(timeoutMs)
+    localStorage.setItem(HEARTBEAT_TIMEOUT_SETTING_KEY, String(normalized))
+    set({ heartbeatTimeoutMs: normalized })
+    try {
+      await api.store.saveSettings(HEARTBEAT_TIMEOUT_SETTING_KEY, String(normalized))
+    } catch (error) {
+      console.warn('[app.store] save heartbeat timeout setting failed', error)
+    }
+  },
+  setHeartbeatMaxConcurrency: async (concurrency) => {
+    const normalized = normalizeHeartbeatConcurrency(concurrency)
+    localStorage.setItem(HEARTBEAT_CONCURRENCY_SETTING_KEY, String(normalized))
+    set({ heartbeatMaxConcurrency: normalized })
+    try {
+      await api.store.saveSettings(HEARTBEAT_CONCURRENCY_SETTING_KEY, String(normalized))
+    } catch (error) {
+      console.warn('[app.store] save heartbeat concurrency setting failed', error)
+    }
+  },
+  setHeartbeatAutoTuneEnabled: async (enabled) => {
+    const normalized = normalizeHeartbeatAutoTuneEnabled(enabled)
+    localStorage.setItem(HEARTBEAT_AUTOTUNE_SETTING_KEY, String(normalized))
+    set({ heartbeatAutoTuneEnabled: normalized })
+    try {
+      await api.store.saveSettings(HEARTBEAT_AUTOTUNE_SETTING_KEY, String(normalized))
+    } catch (error) {
+      console.warn('[app.store] save heartbeat auto-tune setting failed', error)
     }
   },
   setRowsPerPage: async (value) => {
@@ -110,6 +158,57 @@ void (async () => {
     }
   } catch (error) {
     console.warn('[app.store] load heartbeat setting failed', error)
+  }
+
+  try {
+    const saved = await api.store.getSettings(HEARTBEAT_TIMEOUT_SETTING_KEY)
+    if (saved === null) {
+      await useAppStore.getState().setHeartbeatTimeoutMs(savedHeartbeatTimeoutMs)
+    } else {
+      const normalized = normalizeHeartbeatTimeoutMs(saved)
+      localStorage.setItem(HEARTBEAT_TIMEOUT_SETTING_KEY, String(normalized))
+      useAppStore.setState({ heartbeatTimeoutMs: normalized })
+
+      if (String(normalized) !== saved) {
+        await api.store.saveSettings(HEARTBEAT_TIMEOUT_SETTING_KEY, String(normalized))
+      }
+    }
+  } catch (error) {
+    console.warn('[app.store] load heartbeat timeout setting failed', error)
+  }
+
+  try {
+    const saved = await api.store.getSettings(HEARTBEAT_CONCURRENCY_SETTING_KEY)
+    if (saved === null) {
+      await useAppStore.getState().setHeartbeatMaxConcurrency(savedHeartbeatConcurrency)
+    } else {
+      const normalized = normalizeHeartbeatConcurrency(saved)
+      localStorage.setItem(HEARTBEAT_CONCURRENCY_SETTING_KEY, String(normalized))
+      useAppStore.setState({ heartbeatMaxConcurrency: normalized })
+
+      if (String(normalized) !== saved) {
+        await api.store.saveSettings(HEARTBEAT_CONCURRENCY_SETTING_KEY, String(normalized))
+      }
+    }
+  } catch (error) {
+    console.warn('[app.store] load heartbeat concurrency setting failed', error)
+  }
+
+  try {
+    const saved = await api.store.getSettings(HEARTBEAT_AUTOTUNE_SETTING_KEY)
+    if (saved === null) {
+      await useAppStore.getState().setHeartbeatAutoTuneEnabled(savedHeartbeatAutoTuneEnabled)
+    } else {
+      const normalized = normalizeHeartbeatAutoTuneEnabled(saved)
+      localStorage.setItem(HEARTBEAT_AUTOTUNE_SETTING_KEY, String(normalized))
+      useAppStore.setState({ heartbeatAutoTuneEnabled: normalized })
+
+      if (String(normalized) !== saved) {
+        await api.store.saveSettings(HEARTBEAT_AUTOTUNE_SETTING_KEY, String(normalized))
+      }
+    }
+  } catch (error) {
+    console.warn('[app.store] load heartbeat auto-tune setting failed', error)
   }
 
   try {

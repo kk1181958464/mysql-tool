@@ -3,7 +3,20 @@ import type { ConnectionConfig, ConnectionStatus } from '../../shared/types/conn
 import { createTunnel } from './ssh-tunnel'
 import * as localStore from './local-store'
 import * as logger from '../utils/logger'
-import { HEARTBEAT_SETTING_KEY, HEARTBEAT_DEFAULT_SECONDS, normalizeHeartbeatSeconds } from '../../shared/constants'
+import {
+  HEARTBEAT_SETTING_KEY,
+  HEARTBEAT_DEFAULT_SECONDS,
+  HEARTBEAT_TIMEOUT_SETTING_KEY,
+  HEARTBEAT_TIMEOUT_DEFAULT_MS,
+  HEARTBEAT_CONCURRENCY_SETTING_KEY,
+  HEARTBEAT_CONCURRENCY_DEFAULT,
+  HEARTBEAT_AUTOTUNE_SETTING_KEY,
+  HEARTBEAT_AUTOTUNE_DEFAULT,
+  normalizeHeartbeatSeconds,
+  normalizeHeartbeatTimeoutMs,
+  normalizeHeartbeatConcurrency,
+  normalizeHeartbeatAutoTuneEnabled,
+} from '../../shared/constants'
 
 const pools = new Map<string, mysql.Pool>()
 const tunnels = new Map<string, { close: () => void }>()
@@ -12,8 +25,22 @@ const connectionConfigs = new Map<string, ConnectionConfig>()
 let heartbeatIntervalSeconds = HEARTBEAT_DEFAULT_SECONDS
 let heartbeatTimer: NodeJS.Timeout | null = null
 let heartbeatRunning = false
+let heartbeatMaxConcurrency = HEARTBEAT_CONCURRENCY_DEFAULT
+let heartbeatQueryTimeoutMs = HEARTBEAT_TIMEOUT_DEFAULT_MS
+let heartbeatAutoTuneEnabled = HEARTBEAT_AUTOTUNE_DEFAULT
+let heartbeatBaseConcurrency = HEARTBEAT_CONCURRENCY_DEFAULT
+let heartbeatBaseTimeoutMs = HEARTBEAT_TIMEOUT_DEFAULT_MS
+let heartbeatStableTicks = 0
 
 type ConnectionLikeError = Error & { code?: string; errno?: number }
+
+type HeartbeatBatchStats = {
+  checked: number
+  failed: number
+  timeouts: number
+}
+
+function reportHeartbeatMetric(_name: string, _value: number, _tags?: Record<string, unknown>): void {}
 
 function getHeartbeatTimerDelayMs(): number {
   return heartbeatIntervalSeconds * 1000
@@ -33,19 +60,136 @@ function ensureHeartbeatSchedulerState(): void {
     void runHeartbeatTick()
   }, getHeartbeatTimerDelayMs())
 
-  logger.info(`[heartbeat] scheduler started (${heartbeatIntervalSeconds}s)`)
 }
 
 function stopHeartbeatScheduler(reason: string): void {
   if (!heartbeatTimer) return
   clearInterval(heartbeatTimer)
   heartbeatTimer = null
-  logger.info(`[heartbeat] scheduler stopped (${reason})`)
+}
+
+async function runHeartbeatForConnection(id: string): Promise<void> {
+  const conn = await ensureConnection(id)
+  let timeoutTimer: NodeJS.Timeout | null = null
+
+  try {
+    await Promise.race([
+      conn.query('SELECT 1').then(() => undefined),
+      new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(() => {
+          reject(new Error(`heartbeat timeout after ${heartbeatQueryTimeoutMs}ms (${id})`))
+        }, heartbeatQueryTimeoutMs)
+      }),
+    ])
+
+  } finally {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer)
+    }
+    conn.release()
+  }
+}
+
+async function runHeartbeatInBatches(ids: string[]): Promise<HeartbeatBatchStats> {
+  const stats: HeartbeatBatchStats = { checked: 0, failed: 0, timeouts: 0 }
+
+  for (let i = 0; i < ids.length; i += heartbeatMaxConcurrency) {
+    const batch = ids.slice(i, i + heartbeatMaxConcurrency)
+    const batchResults = await Promise.allSettled(
+      batch.map(async (id) => {
+        try {
+          await runHeartbeatForConnection(id)
+          return { id, ok: true as const }
+        } catch (err: any) {
+          return { id, ok: false as const, err }
+        }
+      })
+    )
+
+    for (const result of batchResults) {
+      stats.checked += 1
+      if (result.status === 'fulfilled') {
+        if (!result.value.ok) {
+          stats.failed += 1
+          const message = String(result.value.err?.message || result.value.err || '')
+          if (message.includes('heartbeat timeout')) {
+            stats.timeouts += 1
+          }
+        }
+      } else {
+        stats.failed += 1
+        const message = String(result.reason?.message || result.reason || '')
+        if (message.includes('heartbeat timeout')) {
+          stats.timeouts += 1
+        }
+      }
+    }
+  }
+
+  return stats
+}
+
+function applyHeartbeatAutoTune(stats: HeartbeatBatchStats): void {
+  if (!heartbeatAutoTuneEnabled || stats.checked === 0) return
+
+  const failureRate = stats.failed / stats.checked
+  const timeoutRate = stats.timeouts / stats.checked
+
+  if (stats.timeouts > 0 || failureRate >= 0.4 || timeoutRate >= 0.25) {
+    const prevConcurrency = heartbeatMaxConcurrency
+    const prevTimeout = heartbeatQueryTimeoutMs
+
+    heartbeatMaxConcurrency = normalizeHeartbeatConcurrency(Math.max(HEARTBEAT_CONCURRENCY_MIN, Math.floor(heartbeatMaxConcurrency / 2)))
+    heartbeatQueryTimeoutMs = normalizeHeartbeatTimeoutMs(Math.round(heartbeatQueryTimeoutMs * 1.25))
+    heartbeatStableTicks = 0
+
+    if (prevConcurrency !== heartbeatMaxConcurrency || prevTimeout !== heartbeatQueryTimeoutMs) {
+      reportHeartbeatMetric('heartbeat.autotune.adjust', 1, {
+        reason: 'degrade',
+        failed: stats.failed,
+        timeouts: stats.timeouts,
+        checked: stats.checked,
+        concurrencyBefore: prevConcurrency,
+        concurrencyAfter: heartbeatMaxConcurrency,
+        timeoutBefore: prevTimeout,
+        timeoutAfter: heartbeatQueryTimeoutMs,
+      })
+    }
+    return
+  }
+
+  if (stats.failed === 0 && stats.timeouts === 0) {
+    heartbeatStableTicks += 1
+    if (heartbeatStableTicks >= 3) {
+      const prevConcurrency = heartbeatMaxConcurrency
+      const prevTimeout = heartbeatQueryTimeoutMs
+
+      heartbeatMaxConcurrency = normalizeHeartbeatConcurrency(Math.min(heartbeatBaseConcurrency, heartbeatMaxConcurrency + 1))
+      heartbeatQueryTimeoutMs = normalizeHeartbeatTimeoutMs(
+        heartbeatQueryTimeoutMs > heartbeatBaseTimeoutMs
+          ? Math.max(heartbeatBaseTimeoutMs, heartbeatQueryTimeoutMs - 500)
+          : heartbeatQueryTimeoutMs
+      )
+      heartbeatStableTicks = 0
+
+      if (prevConcurrency !== heartbeatMaxConcurrency || prevTimeout !== heartbeatQueryTimeoutMs) {
+        reportHeartbeatMetric('heartbeat.autotune.adjust', 1, {
+          reason: 'recover',
+          checked: stats.checked,
+          concurrencyBefore: prevConcurrency,
+          concurrencyAfter: heartbeatMaxConcurrency,
+          timeoutBefore: prevTimeout,
+          timeoutAfter: heartbeatQueryTimeoutMs,
+        })
+      }
+    }
+  } else {
+    heartbeatStableTicks = 0
+  }
 }
 
 async function runHeartbeatTick(): Promise<void> {
   if (heartbeatRunning) {
-    logger.debug('[heartbeat] previous tick still running, skipping this cycle')
     return
   }
 
@@ -55,18 +199,25 @@ async function runHeartbeatTick(): Promise<void> {
   }
 
   heartbeatRunning = true
+  const tickStart = performance.now()
+  const tickTs = Date.now()
+
   try {
-    for (const id of pools.keys()) {
-      try {
-        const conn = await ensureConnection(id)
-        await conn.query('SELECT 1')
-        conn.release()
-        logger.debug(`[heartbeat] connection ${id} ok`)
-      } catch (err: any) {
-        logger.warn(`[heartbeat] connection ${id} check failed: ${err?.message || err}`)
-      }
-    }
-  } finally {
+    const ids = Array.from(pools.keys())
+    const stats = await runHeartbeatInBatches(ids)
+    applyHeartbeatAutoTune(stats)
+    const elapsed = performance.now() - tickStart
+
+
+    reportHeartbeatMetric('heartbeat.tick_ms', elapsed, {
+      checked: stats.checked,
+      failed: stats.failed,
+      timeouts: stats.timeouts,
+      intervalSec: heartbeatIntervalSeconds,
+      concurrency: heartbeatMaxConcurrency,
+      timeoutMs: heartbeatQueryTimeoutMs,
+      autoTuneEnabled: heartbeatAutoTuneEnabled,
+    })  } finally {
     heartbeatRunning = false
   }
 }
@@ -77,23 +228,74 @@ function restartHeartbeatScheduler(reason: string): void {
 }
 
 export function initializeHeartbeatInterval(): void {
-  const saved = localStore.settings.get(HEARTBEAT_SETTING_KEY)
-  heartbeatIntervalSeconds = normalizeHeartbeatSeconds(saved)
-
-  if (saved === null || String(heartbeatIntervalSeconds) !== saved) {
+  const savedInterval = localStore.settings.get(HEARTBEAT_SETTING_KEY)
+  heartbeatIntervalSeconds = normalizeHeartbeatSeconds(savedInterval)
+  if (savedInterval === null || String(heartbeatIntervalSeconds) !== savedInterval) {
     localStore.settings.set(HEARTBEAT_SETTING_KEY, String(heartbeatIntervalSeconds))
   }
 
-  logger.info(`[heartbeat] initialized (${heartbeatIntervalSeconds}s)`)
+  const savedTimeout = localStore.settings.get(HEARTBEAT_TIMEOUT_SETTING_KEY)
+  const normalizedTimeout = normalizeHeartbeatTimeoutMs(savedTimeout)
+  const timeoutSafetyFloorMs = 1000
+  heartbeatQueryTimeoutMs = Math.max(timeoutSafetyFloorMs, normalizedTimeout)
+  if (savedTimeout === null || String(heartbeatQueryTimeoutMs) !== savedTimeout) {
+    localStore.settings.set(HEARTBEAT_TIMEOUT_SETTING_KEY, String(heartbeatQueryTimeoutMs))
+  }
+
+  const savedConcurrency = localStore.settings.get(HEARTBEAT_CONCURRENCY_SETTING_KEY)
+  heartbeatMaxConcurrency = normalizeHeartbeatConcurrency(savedConcurrency)
+  if (savedConcurrency === null || String(heartbeatMaxConcurrency) !== savedConcurrency) {
+    localStore.settings.set(HEARTBEAT_CONCURRENCY_SETTING_KEY, String(heartbeatMaxConcurrency))
+  }
+
+  const savedAutoTuneEnabled = localStore.settings.get(HEARTBEAT_AUTOTUNE_SETTING_KEY)
+  heartbeatAutoTuneEnabled = normalizeHeartbeatAutoTuneEnabled(savedAutoTuneEnabled)
+  if (savedAutoTuneEnabled === null || String(heartbeatAutoTuneEnabled) !== String(savedAutoTuneEnabled)) {
+    localStore.settings.set(HEARTBEAT_AUTOTUNE_SETTING_KEY, String(heartbeatAutoTuneEnabled))
+  }
+
+  heartbeatBaseConcurrency = heartbeatMaxConcurrency
+  heartbeatBaseTimeoutMs = heartbeatQueryTimeoutMs
+  heartbeatStableTicks = 0
+
   ensureHeartbeatSchedulerState()
 }
 
 export function updateHeartbeatInterval(seconds: number): number {
   const normalized = normalizeHeartbeatSeconds(seconds)
   heartbeatIntervalSeconds = normalized
-  logger.info(`[heartbeat] interval updated to ${normalized}s`)
   restartHeartbeatScheduler('interval updated')
   return normalized
+}
+
+export function updateHeartbeatTimeoutMs(timeoutMs: number): number {
+  const normalized = normalizeHeartbeatTimeoutMs(timeoutMs)
+  const timeoutSafetyFloorMs = 1000
+  heartbeatQueryTimeoutMs = Math.max(timeoutSafetyFloorMs, normalized)
+  heartbeatBaseTimeoutMs = heartbeatQueryTimeoutMs
+  heartbeatStableTicks = 0
+  restartHeartbeatScheduler('timeout updated')
+  return heartbeatQueryTimeoutMs
+}
+
+export function updateHeartbeatConcurrency(concurrency: number): number {
+  const normalized = normalizeHeartbeatConcurrency(concurrency)
+  heartbeatMaxConcurrency = normalized
+  heartbeatBaseConcurrency = normalized
+  heartbeatStableTicks = 0
+  restartHeartbeatScheduler('concurrency updated')
+  return normalized
+}
+
+export function updateHeartbeatAutoTuneEnabled(enabled: boolean): boolean {
+  heartbeatAutoTuneEnabled = normalizeHeartbeatAutoTuneEnabled(enabled)
+  heartbeatStableTicks = 0
+  if (!heartbeatAutoTuneEnabled) {
+    heartbeatMaxConcurrency = heartbeatBaseConcurrency
+    heartbeatQueryTimeoutMs = heartbeatBaseTimeoutMs
+  }
+  restartHeartbeatScheduler('auto-tune updated')
+  return heartbeatAutoTuneEnabled
 }
 
 function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overridePort?: number): mysql.PoolOptions {
@@ -165,6 +367,7 @@ function getSavedConfig(id: string): ConnectionConfig | null {
 }
 
 export async function connect(config: ConnectionConfig): Promise<ConnectionStatus> {
+  const startedAt = Date.now()
   try {
     let host = config.host
     let port = config.port
@@ -186,10 +389,14 @@ export async function connect(config: ConnectionConfig): Promise<ConnectionStatu
     connectionConfigs.set(config.id, config)
     ensureHeartbeatSchedulerState()
 
-    logger.info(`Connected to ${config.name} (${version})`)
     return { id: config.id, connected: true, serverVersion: version, currentDatabase: config.databaseName }
   } catch (err: any) {
-    logger.error(`Connection failed for ${config.name}: ${err.message}`)
+    logger.error('[connection.connect.failed]', {
+      id: config.id,
+      name: config.name,
+      elapsedMs: Date.now() - startedAt,
+      error: err.message,
+    })
     return { id: config.id, connected: false, error: err.message }
   }
 }
@@ -207,7 +414,7 @@ export async function disconnect(id: string): Promise<void> {
   }
   connectionConfigs.delete(id)
   ensureHeartbeatSchedulerState()
-  logger.info(`Disconnected ${id}`)
+
 }
 
 export function getPool(id: string): mysql.Pool {

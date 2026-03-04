@@ -9,6 +9,10 @@ import type { BackupRecord, BackupSchedule } from '../../shared/types/table-desi
 
 let db: Database.Database
 
+const pendingHistoryQueue: Array<Omit<QueryHistoryItem, 'id'>> = []
+let historyFlushTimer: NodeJS.Timeout | null = null
+const HISTORY_FLUSH_DELAY_MS = 200
+
 export function init() {
   const dbPath = path.join(app.getPath('userData'), 'mysql-tool.db')
   logger.info(`Initializing local store at ${dbPath}`)
@@ -105,6 +109,54 @@ function createTables() {
 function boolToInt(v: boolean): number { return v ? 1 : 0 }
 function intToBool(v: number): boolean { return v === 1 }
 
+function flushPendingHistory(): void {
+  if (pendingHistoryQueue.length === 0) return
+
+  const batch = pendingHistoryQueue.splice(0, pendingHistoryQueue.length)
+  try {
+    const stmt = db.prepare(`INSERT INTO query_history (connectionId,databaseName,sqlText,executionTimeMs,rowCount,isSuccess,errorMessage,isSlow,createdAt) VALUES (?,?,?,?,?,?,?,?,?)`)
+    const tx = db.transaction((items: Array<Omit<QueryHistoryItem, 'id'>>) => {
+      for (const item of items) {
+        stmt.run(
+          item.connectionId,
+          item.databaseName,
+          item.sqlText,
+          item.executionTimeMs,
+          item.rowCount,
+          boolToInt(item.isSuccess),
+          item.errorMessage,
+          boolToInt(item.isSlow),
+          item.createdAt || new Date().toISOString()
+        )
+      }
+    })
+    tx(batch)
+  } catch (error) {
+    logger.warn('Failed to flush query history queue', error)
+    pendingHistoryQueue.unshift(...batch)
+  }
+}
+
+function scheduleHistoryFlush(): void {
+  if (historyFlushTimer) return
+
+  historyFlushTimer = setTimeout(() => {
+    historyFlushTimer = null
+    flushPendingHistory()
+    if (pendingHistoryQueue.length > 0) {
+      scheduleHistoryFlush()
+    }
+  }, HISTORY_FLUSH_DELAY_MS)
+}
+
+export function flushLocalStoreQueues(): void {
+  if (historyFlushTimer) {
+    clearTimeout(historyFlushTimer)
+    historyFlushTimer = null
+  }
+  flushPendingHistory()
+}
+
 function rowToConnection(row: any): ConnectionConfig {
   return {
     ...row,
@@ -148,14 +200,14 @@ export const connections = {
 }
 
 export const queryHistory = {
-  getByConnection(connectionId: string, limit = 100): QueryHistoryItem[] {
-    return db.prepare('SELECT * FROM query_history WHERE connectionId = ? ORDER BY id DESC LIMIT ?')
-      .all(connectionId, limit)
+  getByConnection(connectionId: string, limit = 100, offset = 0): QueryHistoryItem[] {
+    return db.prepare('SELECT * FROM query_history WHERE connectionId = ? ORDER BY id DESC LIMIT ? OFFSET ?')
+      .all(connectionId, limit, offset)
       .map((r: any) => ({ ...r, isSuccess: intToBool(r.isSuccess), isSlow: intToBool(r.isSlow) }))
   },
   save(item: Omit<QueryHistoryItem, 'id'>) {
-    db.prepare(`INSERT INTO query_history (connectionId,databaseName,sqlText,executionTimeMs,rowCount,isSuccess,errorMessage,isSlow,createdAt) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(item.connectionId, item.databaseName, item.sqlText, item.executionTimeMs, item.rowCount, boolToInt(item.isSuccess), item.errorMessage, boolToInt(item.isSlow), item.createdAt || new Date().toISOString())
+    pendingHistoryQueue.push(item)
+    scheduleHistoryFlush()
   },
   clearByConnection(connectionId: string) {
     db.prepare('DELETE FROM query_history WHERE connectionId = ?').run(connectionId)

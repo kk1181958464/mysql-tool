@@ -40,7 +40,6 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
   await new Promise<void>((resolve, reject) => {
     sshClient.on('ready', () => {
       server.listen(localPort, '127.0.0.1', () => {
-        logger.info(`SSH tunnel established on 127.0.0.1:${localPort}`)
         resolve()
       })
     })

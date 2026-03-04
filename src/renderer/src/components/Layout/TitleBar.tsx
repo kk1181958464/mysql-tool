@@ -18,8 +18,8 @@ export default function TitleBar() {
   const handleClose = async () => {
     const saved = localStorage.getItem('closeAction')
     if (saved) {
-      if (saved === 'minimize') api.win.minimize()
-      else api.win.close()
+      if (saved === 'minimize') api.win.hideToTray()
+      else api.win.quit()
       return
     }
     setShowClose(true)
@@ -29,8 +29,8 @@ export default function TitleBar() {
     if (remember) localStorage.setItem('closeAction', action)
     setShowClose(false)
     setRemember(false)
-    if (action === 'minimize') api.win.minimize()
-    else api.win.close()
+    if (action === 'minimize') api.win.hideToTray()
+    else api.win.quit()
   }
 
   return (

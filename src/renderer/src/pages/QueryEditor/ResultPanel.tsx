@@ -1,14 +1,19 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { Tabs, Table, Tag, Button, Space, Dropdown, Empty, Spin } from '../../components/ui'
 import { DownloadOutlined, CheckCircleOutlined, WarningOutlined, CloseCircleOutlined } from '@ant-design/icons'
 import { useTabStore, QueryTab } from '../../stores/tab.store'
 import { useConnectionStore } from '../../stores/connection.store'
 import { api } from '../../utils/ipc'
 import type { QueryHistoryItem } from '../../../../shared/types/query'
+import tableTransformWorker from '../../workers/table-transform.worker?worker'
 
 interface Props {
   tabId: string
 }
+
+const RESULT_VIRTUAL_THRESHOLD = 1000
+const HISTORY_VIRTUAL_THRESHOLD = 12
+const RESULT_WORKER_THRESHOLD = 5000
 
 // Explain 类型评级
 const getTypeLevel = (type: string): { color: string; icon: React.ReactNode; label: string } => {
@@ -76,8 +81,14 @@ const ExplainView: React.FC<{ rows: Record<string, unknown>[] }> = ({ rows }) =>
 export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const { tabs } = useTabStore()
   const { activeConnectionId } = useConnectionStore()
-  const [history, setHistory] = useState<QueryHistoryItem[]>([])
+  const [historyRows, setHistoryRows] = useState<QueryHistoryItem[]>([])
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyPageSize] = useState(20)
+  const [historyHasMore, setHistoryHasMore] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [activeKey, setActiveKey] = useState('results')
+  const [transformedRows, setTransformedRows] = useState<Array<Record<string, unknown>>>([])
+  const transformJobIdRef = useRef(0)
 
   const tab = tabs.find((t) => t.id === tabId) as QueryTab | undefined
   const result = tab?.result
@@ -85,10 +96,40 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const executing = tab?.isExecuting
 
   useEffect(() => {
-    if (activeKey === 'history' && activeConnectionId) {
-      api.store.getHistory(activeConnectionId).then(setHistory).catch(() => {})
-    }
-  }, [activeKey, activeConnectionId])
+    setHistoryPage(1)
+  }, [activeConnectionId])
+
+  useEffect(() => {
+    if (activeKey !== 'history' || !activeConnectionId) return
+
+    const offset = (historyPage - 1) * historyPageSize
+    const start = performance.now()
+    setHistoryLoading(true)
+
+    api.store.getHistory(activeConnectionId, historyPageSize, offset)
+      .then((rows) => {
+        const data = Array.isArray(rows) ? rows : []
+        setHistoryRows(data)
+        setHistoryHasMore(data.length >= historyPageSize)
+        void api.perf.reportMetric({
+          name: 'result_panel.history_fetch_ms',
+          value: Number((performance.now() - start).toFixed(2)),
+          tags: {
+            page: 'query_editor',
+            tab: 'history',
+            pageNo: historyPage,
+            pageSize: historyPageSize,
+            rows: data.length,
+          },
+          ts: Date.now(),
+        })
+      })
+      .catch(() => {
+        setHistoryRows([])
+        setHistoryHasMore(false)
+      })
+      .finally(() => setHistoryLoading(false))
+  }, [activeKey, activeConnectionId, historyPage, historyPageSize])
 
   const resultColumns = result?.columns.map((col) => ({
     key: col.name,
@@ -102,20 +143,90 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     },
   })) || []
 
+  useEffect(() => {
+    const rows = result?.rows
+    if (!rows || rows.length === 0) {
+      setTransformedRows([])
+      return
+    }
+
+    if (rows.length < RESULT_WORKER_THRESHOLD) {
+      setTransformedRows(rows)
+      return
+    }
+
+    const worker = new tableTransformWorker()
+    const nextJobId = transformJobIdRef.current + 1
+    transformJobIdRef.current = nextJobId
+    const jobId = `${tabId}-${nextJobId}`
+    const workerStart = performance.now()
+
+    worker.onmessage = (event: MessageEvent<{ id: string; rows: Array<Record<string, unknown>> }>) => {
+      if (event.data.id !== jobId) return
+      setTransformedRows(event.data.rows)
+      void api.perf.reportMetric({
+        name: 'result_panel.worker_transform_ms',
+        value: Number((performance.now() - workerStart).toFixed(2)),
+        tags: {
+          page: 'query_editor',
+          tab: 'results',
+          rows: rows.length,
+        },
+        ts: Date.now(),
+      })
+      worker.terminate()
+    }
+
+    worker.postMessage({ id: jobId, rows })
+
+    return () => {
+      worker.terminate()
+    }
+  }, [result?.rows, tabId])
+
+  const normalizedRows = useMemo(() => {
+    const rows = transformedRows.length ? transformedRows : (result?.rows || [])
+    return rows.map((r, i) => ({ ...r, _key: i }))
+  }, [transformedRows, result?.rows])
+
+  useEffect(() => {
+    if (activeKey !== 'results' || !result) return
+    const start = performance.now()
+    requestAnimationFrame(() => {
+      void api.perf.reportMetric({
+        name: 'result_panel.render_cost_ms',
+        value: Number((performance.now() - start).toFixed(2)),
+        tags: {
+          page: 'query_editor',
+          tab: 'results',
+          rows: normalizedRows.length,
+          isSelect: result.isSelect,
+        },
+        ts: Date.now(),
+      })
+    })
+  }, [activeKey, result, normalizedRows.length])
+
   const handleExport = async (format: string) => {
     if (!result || !activeConnectionId) return
     try {
       await api.importExport.exportData(activeConnectionId, '', result.sql, '', format)
-    } catch { /* ignore */ }
+    } catch {
+      // ignore
+    }
   }
 
-  // 判断是否为 Explain 结果
   const isExplain = result?.sql?.toUpperCase().startsWith('EXPLAIN ')
+  const resultCount = result ? (result.isSelect ? result.rowCount : result.affectedRows) : 0
+
+  const historyPaginationTotal = historyHasMore
+    ? historyPage * historyPageSize + 1
+    : (historyPage - 1) * historyPageSize + historyRows.length
 
   const tabItems = [
     {
       key: 'results',
-      label: `结果${result ? ` (${result.rowCount})` : ''}`,
+      label: `结果${result ? ` (${resultCount})` : ''}`,
       children: executing ? (
         <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="执行中..." /></div>
       ) : result ? (
@@ -125,13 +236,21 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
           <div style={{ height: '100%', overflow: 'auto' }}>
             <Table
               columns={resultColumns}
-              dataSource={result.rows.map((r, i) => ({ ...r, _key: i }))}
+              dataSource={normalizedRows}
               rowKey="_key"
               size="small"
               scroll={{ x: 'max-content' }}
+              virtual={{
+                enabled: normalizedRows.length >= RESULT_VIRTUAL_THRESHOLD,
+                rowHeight: 34,
+                overscan: 8,
+                threshold: RESULT_VIRTUAL_THRESHOLD,
+              }}
             />
             <Space style={{ padding: '4px 8px' }}>
-              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{result.rowCount} 行 | {result.executionTime}ms</span>
+              <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                {result.isSelect ? `${result.rowCount} 行` : `影响 ${result.affectedRows} 行`} | {result.executionTime}ms
+              </span>
               <Dropdown
                 items={[
                   { key: 'csv', label: 'CSV' },
@@ -173,9 +292,22 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
             { key: 'rowCount', title: '行数', dataIndex: 'rowCount', width: 60 },
             { key: 'createdAt', title: '时间', dataIndex: 'createdAt', width: 160 },
           ]}
-          dataSource={history}
+          dataSource={historyRows}
           rowKey="id"
           size="small"
+          loading={historyLoading}
+          virtual={{
+            enabled: historyRows.length >= HISTORY_VIRTUAL_THRESHOLD,
+            rowHeight: 34,
+            overscan: 6,
+            threshold: HISTORY_VIRTUAL_THRESHOLD,
+          }}
+          pagination={{
+            page: historyPage,
+            pageSize: historyPageSize,
+            total: historyPaginationTotal,
+            onChange: (nextPage) => setHistoryPage(nextPage),
+          }}
         />
       ),
     },

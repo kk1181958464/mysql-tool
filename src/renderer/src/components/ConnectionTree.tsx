@@ -76,9 +76,19 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const connectionError = connectionStatus?.error
   const filter = filterText.toLowerCase().trim()
 
+  const logTreeDebug = (_event: string, _payload?: unknown) => {}
+
   // 点击外部或滚动时关闭右键菜单
   useEffect(() => {
-    const handlePointerDownCapture = () => setContextMenu(null)
+    const isInsideContextMenu = (target: EventTarget | null): boolean => {
+      if (!target || !(target instanceof Node)) return false
+      return contextMenuRef.current?.contains(target) ?? false
+    }
+
+    const handlePointerDownCapture = (event: PointerEvent | MouseEvent) => {
+      if (isInsideContextMenu(event.target)) return
+      setContextMenu(null)
+    }
     const handleScroll = () => setContextMenu(null)
     const handleGlobalClose = () => setContextMenu(null)
     window.addEventListener('pointerdown', handlePointerDownCapture, true)
@@ -223,7 +233,10 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   }, [dbs, tables, activeConnectionId, filter, dbRemarks, databaseOpenStates])
 
   const closeDatabase = (dbName: string) => {
-    if (!activeConnectionId) return
+    if (!activeConnectionId) {
+      logTreeDebug('closeDatabase.skip.no-active-connection', { dbName })
+      return
+    }
 
     const tabIdsToClose = mainTabs
       .filter((tab) =>
@@ -240,7 +253,17 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       tab.isDirty
     ).length
 
+    logTreeDebug('closeDatabase.request', {
+      dbName,
+      activeConnectionId,
+      dirtyCount,
+      tabIdsToClose,
+      selectedDatabase,
+      expandedKeys,
+    })
+
     if (dirtyCount > 0) {
+      logTreeDebug('closeDatabase.blocked-by-dirty-tabs', { dbName, dirtyCount, tabIdsToClose })
       setCloseDbConfirm({ dbName, tabIdsToClose, dirtyCount })
       return
     }
@@ -251,7 +274,11 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     }
     removeTabsByIds(tabIdsToClose)
     clearQueryDatabaseByConnectionAndDb(activeConnectionId, dbName)
-    setExpandedKeys((prev) => prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`)))
+    setExpandedKeys((prev) => {
+      const next = prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`))
+      logTreeDebug('closeDatabase.expanded-keys-updated', { dbName, prev, next })
+      return next
+    })
   }
 
   const handleExpand = async (keys: string[]) => {
@@ -319,7 +346,16 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     const key = node.key
     if (key.startsWith('db:')) {
       const dbName = key.slice(3)
-      await openDatabaseAndReveal(dbName)
+      const dbOpen = activeConnectionId ? isDatabaseOpen(activeConnectionId, dbName) : false
+
+      if (!dbOpen) {
+        await openDatabaseAndReveal(dbName)
+        return
+      }
+
+      setSelectedDatabase(dbName)
+      setSelectedKeys([key])
+      return
     } else if (key.startsWith('folder:')) {
       const dbName = key.split(':')[1]
       ensureDatabaseOpen(dbName)
@@ -336,12 +372,21 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const handleContextMenu = (e: React.MouseEvent, node: { key: string }) => {
     e.preventDefault()
     e.stopPropagation()
+    logTreeDebug('menu.open', { key: node.key, x: e.clientX, y: e.clientY })
     setContextMenu({ key: node.key, x: e.clientX, y: e.clientY })
   }
 
-  const handleMenuClick = async (action: string) => {
-    if (!contextMenu || !activeConnectionId) return
-    const nodeKey = contextMenu.key
+  const handleMenuClick = async (action: string, targetNodeKey?: string) => {
+    if (!activeConnectionId) {
+      logTreeDebug('menu.skip.no-active-connection', { action, targetNodeKey, contextMenuKey: contextMenu?.key })
+      return
+    }
+    const nodeKey = targetNodeKey ?? contextMenu?.key
+    if (!nodeKey) {
+      logTreeDebug('menu.skip.no-node-key', { action, targetNodeKey, contextMenuKey: contextMenu?.key })
+      return
+    }
+    logTreeDebug('menu.click', { action, nodeKey, activeConnectionId })
     setContextMenu(null)
 
     if (nodeKey.startsWith('db:')) {
@@ -351,6 +396,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           await openDatabaseAndReveal(dbName)
           break
         case 'closeDatabase':
+          logTreeDebug('menu.action.closeDatabase', { dbName })
           closeDatabase(dbName)
           break
         case 'newQuery':
@@ -731,10 +777,10 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         ]
       }
       return [
+        { key: 'closeDatabase', label: '关闭数据库', icon: <FolderOutlined /> },
+        { type: 'divider' },
         { key: 'newQuery', label: '新建查询', icon: <CodeOutlined /> },
         { key: 'createTable', label: '新建表', icon: <PlusOutlined /> },
-        { type: 'divider' },
-        { key: 'closeDatabase', label: '关闭数据库', icon: <FolderOutlined /> },
         { type: 'divider' },
         { key: 'exportStructure', label: '转储SQL(仅结构)', icon: <ExportOutlined /> },
         { key: 'exportAll', label: '转储SQL(结构+数据)', icon: <ExportOutlined /> },
@@ -804,8 +850,25 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     <>
       <div
         style={{ height: '100%', overflow: 'auto' }}
-        onMouseDownCapture={() => setContextMenu(null)}
-        onContextMenu={(e) => { e.preventDefault(); setContextMenu(null) }}
+        onMouseDownCapture={(event) => {
+          const target = event.target
+          if (target instanceof Node && contextMenuRef.current?.contains(target)) {
+            logTreeDebug('root.mousedown-capture.inside-menu.skip')
+            return
+          }
+          logTreeDebug('root.mousedown-capture.close-menu', { targetTag: (event.target as HTMLElement)?.tagName })
+          setContextMenu(null)
+        }}
+        onContextMenu={(e) => {
+          const target = e.target
+          if (target instanceof Node && contextMenuRef.current?.contains(target)) {
+            logTreeDebug('root.contextmenu.inside-menu.skip')
+            return
+          }
+          e.preventDefault()
+          logTreeDebug('root.contextmenu.prevented-close-menu')
+          setContextMenu(null)
+        }}
       >
         <Tree
           treeData={treeData}
@@ -831,7 +894,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
                 <div
                   key={item.key}
                   className={`context-menu-item ${item.danger ? 'danger' : ''}`}
-                  onClick={() => handleMenuClick(item.key)}
+                  onClick={() => handleMenuClick(item.key, contextMenu.key)}
                 >
                   {item.icon} {item.label}
                 </div>
@@ -856,12 +919,22 @@ export default function ConnectionTree({ filterText = '' }: Props) {
                 if (!activeConnectionId || !closeDbConfirm) return
                 const { dbName, tabIdsToClose } = closeDbConfirm
                 setDatabaseOpen(activeConnectionId, dbName, false)
+                logTreeDebug('closeDatabase.force-confirmed', {
+                  dbName,
+                  activeConnectionId,
+                  tabIdsToClose,
+                  selectedDatabase,
+                })
                 if (selectedDatabase === dbName) {
                   setSelectedDatabase(null)
                 }
                 removeTabsByIds(tabIdsToClose)
                 clearQueryDatabaseByConnectionAndDb(activeConnectionId, dbName)
-                setExpandedKeys((prev) => prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`)))
+                setExpandedKeys((prev) => {
+                  const next = prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`))
+                  logTreeDebug('closeDatabase.force-expanded-keys-updated', { dbName, prev, next })
+                  return next
+                })
                 setCloseDbConfirm(null)
               }}
             >

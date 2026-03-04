@@ -47,6 +47,44 @@ let globalColumns: Map<string, string[]> = new Map()
 const COLUMN_LOAD_LIMIT = 20
 const COLUMN_LOAD_CONCURRENCY = 4
 const COLUMN_LOAD_TIMEOUT_MS = 5000
+const COMPLETION_MAX_ITEMS = 300
+const COMPLETION_MAX_COLUMN_ITEMS = 180
+
+const pushSuggestion = (
+  target: monaco.languages.CompletionItem[],
+  item: monaco.languages.CompletionItem,
+  maxItems = COMPLETION_MAX_ITEMS
+) => {
+  if (target.length < maxItems) {
+    target.push(item)
+  }
+}
+
+const pushColumnSuggestions = (
+  target: monaco.languages.CompletionItem[],
+  columns: Map<string, string[]>,
+  range: monaco.IRange,
+  prefix: string,
+  sortText: string,
+  maxItems = COMPLETION_MAX_COLUMN_ITEMS,
+) => {
+  const normalizedPrefix = prefix.trim().toLowerCase()
+  for (const [table, cols] of columns.entries()) {
+    for (const col of cols) {
+      if (target.length >= maxItems) return
+      if (normalizedPrefix && !col.toLowerCase().startsWith(normalizedPrefix)) continue
+      target.push({
+        label: col,
+        kind: monaco.languages.CompletionItemKind.Field,
+        insertText: col,
+        detail: table,
+        range,
+        sortText,
+      })
+    }
+  }
+}
+
 
 const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
   return new Promise<T>((resolve, reject) => {
@@ -118,6 +156,8 @@ const registerSqlCompletion = () => {
         endColumn: word.endColumn,
       }
 
+      const prefix = (word.word || '').toLowerCase()
+
       // 获取光标前的文本
       const textBefore = model.getValueInRange({
         startLineNumber: 1,
@@ -131,7 +171,8 @@ const registerSqlCompletion = () => {
 
       // 始终提供关键字
       SQL_KEYWORDS.forEach(kw => {
-        suggestions.push({
+        if (prefix && !kw.toLowerCase().startsWith(prefix)) return
+        pushSuggestion(suggestions, {
           label: kw,
           kind: monaco.languages.CompletionItemKind.Keyword,
           insertText: kw,
@@ -143,28 +184,22 @@ const registerSqlCompletion = () => {
       // 根据上下文提供优先补全
       if (context === 'select') {
         // SELECT 后面：字段、*、函数优先
-        suggestions.push({
-          label: '*',
-          kind: monaco.languages.CompletionItemKind.Operator,
-          insertText: '*',
-          detail: '所有字段',
-          range,
-          sortText: '0',
-        })
-        globalColumns.forEach((cols, table) => {
-          cols.forEach(col => {
-            suggestions.push({
-              label: col,
-              kind: monaco.languages.CompletionItemKind.Field,
-              insertText: col,
-              detail: table,
-              range,
-              sortText: '1',
-            })
+        if (!prefix || '*'.startsWith(prefix)) {
+          pushSuggestion(suggestions, {
+            label: '*',
+            kind: monaco.languages.CompletionItemKind.Operator,
+            insertText: '*',
+            detail: '所有字段',
+            range,
+            sortText: '0',
           })
-        })
+        }
+
+        pushColumnSuggestions(suggestions, globalColumns, range, prefix, '1')
+
         ;['COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'DISTINCT'].forEach(fn => {
-          suggestions.push({
+          if (prefix && !fn.toLowerCase().startsWith(prefix)) return
+          pushSuggestion(suggestions, {
             label: fn,
             kind: monaco.languages.CompletionItemKind.Function,
             insertText: fn + '()',
@@ -176,7 +211,8 @@ const registerSqlCompletion = () => {
       } else if (context === 'from') {
         // FROM/JOIN 后面：表名优先
         globalTables.forEach(table => {
-          suggestions.push({
+          if (prefix && !table.toLowerCase().startsWith(prefix)) return
+          pushSuggestion(suggestions, {
             label: table,
             kind: monaco.languages.CompletionItemKind.Class,
             insertText: table,
@@ -187,22 +223,12 @@ const registerSqlCompletion = () => {
         })
       } else if (context === 'where') {
         // WHERE/SET/ORDER BY 后面：字段优先
-        globalColumns.forEach((cols, table) => {
-          cols.forEach(col => {
-            suggestions.push({
-              label: col,
-              kind: monaco.languages.CompletionItemKind.Field,
-              insertText: col,
-              detail: table,
-              range,
-              sortText: '0',
-            })
-          })
-        })
+        pushColumnSuggestions(suggestions, globalColumns, range, prefix, '0')
       } else {
         // 其他情况：表名也提示
         globalTables.forEach(table => {
-          suggestions.push({
+          if (prefix && !table.toLowerCase().startsWith(prefix)) return
+          pushSuggestion(suggestions, {
             label: table,
             kind: monaco.languages.CompletionItemKind.Class,
             insertText: table,
@@ -213,7 +239,7 @@ const registerSqlCompletion = () => {
         })
       }
 
-      return { suggestions }
+      return { suggestions: suggestions.slice(0, COMPLETION_MAX_ITEMS) }
     }
   })
 }

@@ -57,6 +57,7 @@ const api: ElectronAPI = {
     innodbStatus: (connId) => ipcRenderer.invoke(IPC.PERF_INNODB_STATUS, connId),
     variables: (connId, filter) => ipcRenderer.invoke(IPC.PERF_VARIABLES, connId, filter),
     status: (connId, filter) => ipcRenderer.invoke(IPC.PERF_STATUS, connId, filter),
+    reportMetric: (metric) => ipcRenderer.invoke(IPC.PERF_METRIC, metric),
   },
   backup: {
     create: (config) => ipcRenderer.invoke(IPC.BACKUP_CREATE, config),
@@ -74,7 +75,7 @@ const api: ElectronAPI = {
     execRoutine: (connId, db, name, type, params) => ipcRenderer.invoke(IPC.OBJECT_EXEC_ROUTINE, connId, db, name, type, params),
   },
   store: {
-    getHistory: (connectionId, limit) => ipcRenderer.invoke(IPC.STORE_GET_HISTORY, connectionId, limit),
+    getHistory: (connectionId, limit, offset) => ipcRenderer.invoke(IPC.STORE_GET_HISTORY, connectionId, limit, offset),
     saveHistory: (item) => ipcRenderer.invoke(IPC.STORE_SAVE_HISTORY, item),
     getSnippets: () => ipcRenderer.invoke(IPC.STORE_GET_SNIPPETS),
     saveSnippet: (snippet) => ipcRenderer.invoke(IPC.STORE_SAVE_SNIPPET, snippet),
@@ -93,10 +94,12 @@ const api: ElectronAPI = {
     return () => ipcRenderer.removeListener('import:progress', handler)
   },
   win: {
-    minimize: () => ipcRenderer.send('win:minimize'),
-    maximize: () => ipcRenderer.send('win:maximize'),
-    close: () => ipcRenderer.send('win:close'),
-    isMaximized: () => ipcRenderer.invoke('win:isMaximized'),
+    minimize: () => ipcRenderer.send(IPC.WIN_MINIMIZE),
+    maximize: () => ipcRenderer.send(IPC.WIN_MAXIMIZE),
+    close: () => ipcRenderer.send(IPC.WIN_CLOSE),
+    hideToTray: () => ipcRenderer.send(IPC.WIN_HIDE_TO_TRAY),
+    quit: () => ipcRenderer.send(IPC.WIN_QUIT),
+    isMaximized: () => ipcRenderer.invoke(IPC.WIN_IS_MAXIMIZED),
     onMaximized: (cb: (maximized: boolean) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, v: boolean) => cb(v)
       ipcRenderer.on('win:maximized', handler)

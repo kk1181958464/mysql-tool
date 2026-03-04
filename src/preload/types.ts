@@ -3,6 +3,13 @@ import type { QueryResult, ExplainResult, QueryHistoryItem, Snippet } from '../s
 import type { DatabaseInfo, TableInfo, ColumnDetail, IndexInfo, ForeignKeyInfo, ViewInfo, ProcedureInfo, TriggerInfo, EventInfo, ObjectSearchResult } from '../shared/types/metadata'
 import type { TableDesign, TableDiff, BackupConfig, BackupRecord, BackupSchedule } from '../shared/types/table-design'
 
+export interface PerfMetricPayload {
+  name: string
+  value: number
+  tags?: Record<string, string | number | boolean>
+  ts?: number
+}
+
 export interface ElectronAPI {
   connection: {
     test(config: ConnectionConfig): Promise<ConnectionStatus>
@@ -58,6 +65,7 @@ export interface ElectronAPI {
     innodbStatus(connId: string): Promise<string>
     variables(connId: string, filter?: string): Promise<Record<string, string>>
     status(connId: string, filter?: string): Promise<Record<string, string>>
+    reportMetric(metric: PerfMetricPayload): Promise<void>
   }
   backup: {
     create(config: BackupConfig): Promise<BackupRecord>
@@ -75,7 +83,7 @@ export interface ElectronAPI {
     execRoutine(connId: string, db: string, name: string, type: 'PROCEDURE' | 'FUNCTION', params: string[]): Promise<{ rows: unknown[] }>
   }
   store: {
-    getHistory(connectionId: string, limit?: number): Promise<QueryHistoryItem[]>
+    getHistory(connectionId: string, limit?: number, offset?: number): Promise<QueryHistoryItem[]>
     saveHistory(item: Omit<QueryHistoryItem, 'id'>): Promise<void>
     getSnippets(): Promise<Snippet[]>
     saveSnippet(snippet: Snippet): Promise<void>
@@ -93,6 +101,8 @@ export interface ElectronAPI {
     minimize(): void
     maximize(): void
     close(): void
+    hideToTray(): void
+    quit(): void
     isMaximized(): Promise<boolean>
     onMaximized(cb: (maximized: boolean) => void): () => void
   }
