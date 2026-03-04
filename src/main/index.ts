@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, nativeTheme } from 'electron'
+import * as fs from 'fs'
 import * as path from 'path'
 import { IPC } from '../shared/types/ipc-channels'
 import { registerAllIPC } from './ipc/index'
@@ -10,7 +11,29 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 
-const getAppIconPath = () => path.join(__dirname, '../../resources/icon.png')
+const getAppIconPath = () => {
+  const candidates = [
+    process.platform === 'win32' ? path.join(process.resourcesPath, 'icon.ico') : '',
+    path.join(process.resourcesPath, 'icon.png'),
+    path.join(app.getAppPath(), 'resources', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    path.join(app.getAppPath(), 'resources', 'icon.png'),
+    path.join(__dirname, '../../resources', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    path.join(__dirname, '../../resources/icon.png')
+  ].filter(Boolean)
+
+  for (const iconPath of candidates) {
+    if (!fs.existsSync(iconPath)) {
+      continue
+    }
+
+    const image = nativeImage.createFromPath(iconPath)
+    if (!image.isEmpty()) {
+      return iconPath
+    }
+  }
+
+  return path.join(__dirname, '../../resources/icon.png')
+}
 
 const showAndFocusMainWindow = () => {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -34,6 +57,12 @@ function createTray() {
   try {
     const iconPath = getAppIconPath()
     const icon = nativeImage.createFromPath(iconPath)
+
+    if (icon.isEmpty()) {
+      logger.error(`Tray icon is empty: ${iconPath}`)
+      return
+    }
+
     tray = new Tray(icon)
     tray.setToolTip('MySQL 连接工具')
     tray.setContextMenu(
