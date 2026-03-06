@@ -325,7 +325,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (key.startsWith('db:')) {
       dbName = key.slice(3)
       setSelectedDatabase(dbName)
-      if (activeConnectionId) {
+      const dbOpen = activeConnectionId ? isDatabaseOpen(activeConnectionId, dbName) : false
+      if (dbOpen && activeConnectionId) {
         addObjectsTab(activeConnectionId, dbName)
       }
       return
