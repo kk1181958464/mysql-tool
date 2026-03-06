@@ -325,6 +325,9 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (key.startsWith('db:')) {
       dbName = key.slice(3)
       setSelectedDatabase(dbName)
+      if (activeConnectionId) {
+        addObjectsTab(activeConnectionId, dbName)
+      }
       return
     } else if (key.startsWith('folder:')) {
       dbName = key.split(':')[1]

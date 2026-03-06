@@ -22,6 +22,7 @@ type ViewMode = 'table' | 'card'
 const VIEW_MODE_KEY = 'objects-view-mode'
 const getStoredViewMode = (): ViewMode => (localStorage.getItem(VIEW_MODE_KEY) as ViewMode) || 'table'
 const setStoredViewMode = (mode: ViewMode) => localStorage.setItem(VIEW_MODE_KEY, mode)
+const tableStatusCache: Record<string, TableInfo[]> = {}
 
 export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const { tables, loadTables } = useDatabaseStore()
@@ -40,6 +41,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set())
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false)
   const lastClickedRef = useRef<string | null>(null)
+  const latestStatusRequestKeyRef = useRef('')
   const [importing, setImporting] = useState(false)
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0, fail: 0 })
   const [importMsg, setImportMsg] = useState<string | null>(null)
@@ -130,18 +132,33 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
 
   useEffect(() => {
     if (!connectionId || !database) return
-    loadTables(connectionId, database)
-    loadTableStatus()
+    const statusKey = `${connectionId}:${database}`
+    const cachedStatus = tableStatusCache[statusKey]
+    setTableStatus(cachedStatus || [])
+    void loadTables(connectionId, database)
+    void loadTableStatus(false)
   }, [connectionId, database])
 
-  const loadTableStatus = async () => {
+  const loadTableStatus = async (forceLoading = false) => {
     if (!connectionId || !database) return
-    setLoading(true)
+    const statusKey = `${connectionId}:${database}`
+    const hasCachedStatus = Array.isArray(tableStatusCache[statusKey])
+    const shouldShowLoading = forceLoading || !hasCachedStatus
+    if (shouldShowLoading) {
+      setLoading(true)
+    }
     setError('')
+
+    const requestKey = `${statusKey}:${Date.now()}`
+    latestStatusRequestKeyRef.current = requestKey
     try {
       const status = await api.meta.tableStatus(connectionId, database)
-      setTableStatus(status || [])
+      if (latestStatusRequestKeyRef.current !== requestKey) return
+      const normalized = status || []
+      tableStatusCache[statusKey] = normalized
+      setTableStatus(normalized)
     } catch (e: any) {
+      if (latestStatusRequestKeyRef.current !== requestKey) return
       console.error('loadTableStatus error:', e)
       const rawMessage = e?.message || '加载失败'
       const lower = String(rawMessage).toLowerCase()
@@ -150,12 +167,15 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         || lower.includes('连接已失效')
       setError(isConnLost ? '连接已失效，请点击刷新或重新连接后重试' : rawMessage)
     }
-    setLoading(false)
+
+    if (latestStatusRequestKeyRef.current === requestKey) {
+      setLoading(false)
+    }
   }
 
   const handleRefresh = () => {
-    loadTables(connectionId, database)
-    loadTableStatus()
+    loadTables(connectionId, database, true)
+    void loadTableStatus(true)
     setSelectedTables(new Set())
   }
 
