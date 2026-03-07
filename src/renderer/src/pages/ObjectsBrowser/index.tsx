@@ -474,6 +474,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     { key: 'engine', title: '引擎', dataIndex: 'engine', width: 80 },
     { key: 'collation', title: '排序规则', dataIndex: 'collation', width: 150 },
     { key: 'createTime', title: '创建时间', dataIndex: 'createTime', width: 160, render: (v: any) => v ? (v instanceof Date ? v.toLocaleString() : String(v)) : '-' },
+    { key: 'updateTime', title: '最后变更时间', dataIndex: 'updateTime', width: 160, render: (v: any) => v ? (v instanceof Date ? v.toLocaleString() : String(v)) : '-' },
     { key: 'comment', title: '注释', dataIndex: 'comment', ellipsis: true, render: (v: any) => v || '-' },
   ]
 
