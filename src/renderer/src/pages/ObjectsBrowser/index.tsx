@@ -36,7 +36,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
   const [truncateConfirm, setTruncateConfirm] = useState<string | null>(null)
   const [renameModal, setRenameModal] = useState<{ tableName: string; newName: string } | null>(null)
-  const [exportSql, setExportSql] = useState<{ tableName: string; sql: string; includeData?: boolean } | null>(null)
+  const [exportSql, setExportSql] = useState<{ tableName: string; sql: string; includeData?: boolean; selectedNames?: string[] } | null>(null)
   const [operating, setOperating] = useState(false)
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set())
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false)
@@ -327,26 +327,16 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             out.push(`DROP TABLE IF EXISTS \`${n}\`;`)
             out.push(`${ddlSql};`)
             out.push('')
-
             out.push('-- ----------------------------')
             out.push(`-- Records of \`${n}\``)
             out.push('-- ----------------------------')
-
-            const dataResult = await api.query.execute(connectionId, `SELECT * FROM \`${database}\`.\`${n}\``, database)
-            const rows = dataResult.rows || []
-            if (rows.length) {
-              for (const row of rows) {
-                const cols = Object.keys(row).map(c => `\`${c}\``).join(', ')
-                const vals = Object.values(row).map(v => toSqlLiteral(v)).join(', ')
-                out.push(`INSERT INTO \`${n}\` (${cols}) VALUES (${vals});`)
-              }
-            }
+            out.push('-- INSERT statements omitted in preview. Download file to export full structure and data.')
             out.push('')
           } catch (e: any) { alert(e.message || '导出失败'); return }
         }
 
         out.push('SET FOREIGN_KEY_CHECKS = 1;')
-        setExportSql({ tableName: names.length > 1 ? database : names[0], sql: out.join('\n'), includeData: true })
+        setExportSql({ tableName: names.length > 1 ? database : names[0], sql: out.join('\n'), includeData: true, selectedNames: names })
         break
       }
     }
@@ -389,27 +379,48 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       const ddl = await api.meta.tableDDL(connectionId, database, tableName)
       let sql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
       if (includeData) {
-        const dataResult = await api.query.execute(connectionId, `SELECT * FROM \`${database}\`.\`${tableName}\``, database)
-        if (dataResult.rows?.length) {
-          const cols = Object.keys(dataResult.rows[0])
-          const values = dataResult.rows.map((row: any) => {
-            return '(' + cols.map((c: string) => {
-              const v = row[c]
-              if (v === null) return 'NULL'
-              if (typeof v === 'number') return v
-              return `'${String(v).replace(/'/g, "''")}'`
-            }).join(', ') + ')'
-          }).join(',\n')
-          sql += `\n\nINSERT INTO \`${tableName}\` (\`${cols.join('`, `')}\`) VALUES\n${values};`
+        sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Download file to export full structure and data.`
+      }
+      setExportSql({ tableName, sql, includeData, selectedNames: [tableName] })
+    } catch (e: any) { alert(e.message || '导出失败') }
+  }
+
+  const buildFullExportSql = async (tableNames: string[]) => {
+    const parts: string[] = ['SET NAMES utf8mb4;', 'SET FOREIGN_KEY_CHECKS = 0;', '']
+    for (const tableName of tableNames) {
+      const ddl = await api.meta.tableDDL(connectionId, database, tableName)
+      const ddlSql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
+      parts.push('-- ----------------------------')
+      parts.push(`-- Table structure for \`${tableName}\``)
+      parts.push('-- ----------------------------')
+      parts.push(`DROP TABLE IF EXISTS \`${tableName}\`;`)
+      parts.push(`${ddlSql};`)
+      parts.push('')
+      parts.push('-- ----------------------------')
+      parts.push(`-- Records of \`${tableName}\``)
+      parts.push('-- ----------------------------')
+
+      const dataResult = await api.query.execute(connectionId, `SELECT * FROM \`${database}\`.\`${tableName}\``, database)
+      const rows = dataResult.rows || []
+      if (rows.length) {
+        for (const row of rows) {
+          const cols = Object.keys(row).map(c => `\`${c}\``).join(', ')
+          const vals = Object.values(row).map(v => toSqlLiteral(v)).join(', ')
+          parts.push(`INSERT INTO \`${tableName}\` (${cols}) VALUES (${vals});`)
         }
       }
-      setExportSql({ tableName, sql })
-    } catch (e: any) { alert(e.message || '导出失败') }
+      parts.push('')
+    }
+    parts.push('SET FOREIGN_KEY_CHECKS = 1;')
+    return parts.join('\n')
   }
 
   const handleDownloadSql = async () => {
     if (!exportSql) return
-    const blob = new Blob([exportSql.sql], { type: 'text/plain;charset=utf-8' })
+    const sql = exportSql.includeData && exportSql.selectedNames?.length
+      ? await buildFullExportSql(exportSql.selectedNames)
+      : exportSql.sql
+    const blob = new Blob([sql], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
