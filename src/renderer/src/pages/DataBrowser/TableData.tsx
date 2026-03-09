@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Table, Input, Space, Button, DateTimePicker, Modal } from '../../components/ui'
-import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined, SearchOutlined } from '@ant-design/icons'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
 import type { ColumnDetail } from '../../../../shared/types/metadata'
@@ -258,6 +258,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const { loadColumns, columns: columnCache } = useDatabaseStore()
   const setDataDirty = useTabStore((s) => s.setDataDirty)
   const [jumpPage, setJumpPage] = useState('')
+  const [whereInput, setWhereInput] = useState('')
   const [where, setWhere] = useState('')
   const [orderBy, setOrderBy] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set())
@@ -437,6 +438,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       setHasNextPage(rows.length === rowsPerPage)
       setLastQueryMode(resolvedMode)
       setPaginationFallbackHint(resolvedFallbackHint)
+      if (resolvedMode === 'offset' || action === 'reset') {
+        const nextPage = fallbackPage ?? (action === 'reset' ? 1 : page)
+        setPage(nextPage)
+        setJumpPage(String(nextPage))
+      }
       setResult(res)
       setTotalCount(countValue)
     } catch (e: any) {
@@ -597,6 +603,13 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const invalidateCountCache = useCallback(() => {
     countCacheRef.current.delete(countCacheKey)
   }, [countCacheKey])
+
+  const applyWhereFilter = useCallback(() => {
+    setPage(1)
+    setJumpPage('1')
+    setCursor(null)
+    setWhere(whereInput)
+  }, [whereInput])
 
   const openDeleteConfirm = useCallback((targetKeys: string[]) => {
     if (targetKeys.length === 0 || deleteBusy || deleteConfirmOpen) return
@@ -1139,11 +1152,13 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         <Input
           prefix={<FilterOutlined />}
           placeholder="WHERE 条件..."
-          value={where}
-          onChange={(e) => setWhere(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && (setPage(1), setCursor(null), fetchData('reset'))}
+          value={whereInput}
+          onChange={(e) => setWhereInput(e.target.value)}
           style={{ width: 300 }}
         />
+        <Button size="small" onClick={applyWhereFilter}>
+          <SearchOutlined /> 查询
+        </Button>
         <Button size="small" disabled={newRows.length > 0} onClick={() => {
           newRowCounter.current += 1
           const emptyRow: Record<string, unknown> = { _newKey: `_new_${newRowCounter.current}` }
