@@ -168,29 +168,73 @@ export function registerQueryIPC() {
         }
       }
 
-      // 覆盖导入：为所有 CREATE TABLE 预插入 DROP TABLE IF EXISTS
-      // 兼容：`tbl` / tbl / `db`.`tbl` / db.tbl / CREATE TEMPORARY TABLE
-      const buildDropTable = (db: string | undefined, table: string) => {
-        const q = (id: string) => `\`${id.replace(/`/g, '``')}\``
-        return db ? `DROP TABLE IF EXISTS ${q(db)}.${q(table)}` : `DROP TABLE IF EXISTS ${q(table)}`
-      }
-
-      cleaned = cleaned.replace(
-        /CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/gi,
-        (m, dbQ, dbN, tblQ, tblN) => {
-          const db = (dbQ || dbN || undefined) as string | undefined
-          const table = (tblQ || tblN) as string
-          return `${buildDropTable(db, table)};\n${m}`
-        },
-      )
-
       cleaned = ensureSemicolons(cleaned)
       sendProgress({ current: 0, total: Math.max(cleaned.length, 1), fail: 0, stage: 'parsing' })
       const stmts = await splitStatementsWithProgress(cleaned, ({ current, total, stage }) => {
         sendProgress({ current, total, fail: 0, stage })
       })
+
+      // 覆盖导入：若 SQL 中未包含 DROP TABLE，则为每条 CREATE TABLE 预插入 DROP TABLE IF EXISTS
+      // 双重保证：导出带 DROP；导入若缺失则补齐
+      const defaultDb = database || poolConfig.database
+      const mkKey = (db: string | undefined, table: string) => `${String(db || defaultDb || '').toLowerCase()}::${table.toLowerCase()}`
+
+      const parseDropTable = (stmt: string): { db?: string; table: string } | null => {
+        const m = stmt.match(/^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/i)
+        if (!m) return null
+        const db = (m[1] || m[2] || undefined) as string | undefined
+        const table = (m[3] || m[4]) as string
+        return { db, table }
+      }
+
+      const parseCreateTable = (stmt: string): { db?: string; table: string } | null => {
+        const m = stmt.match(/^CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/i)
+        if (!m) return null
+        const db = (m[1] || m[2] || undefined) as string | undefined
+        const table = (m[3] || m[4]) as string
+        return { db, table }
+      }
+
+      const quote = (id: string) => `\`${id.replace(/`/g, '``')}\``
+      const buildDropStmt = (db: string | undefined, table: string) => {
+        const dbName = db || defaultDb
+        return dbName ? `DROP TABLE IF EXISTS ${quote(dbName)}.${quote(table)}` : `DROP TABLE IF EXISTS ${quote(table)}`
+      }
+
+      const hasAnyDrop = stmts.some((s) => /^DROP\s+TABLE\b/i.test(s.trim()))
+      const withDrop: string[] = []
+      if (hasAnyDrop) {
+        withDrop.push(...stmts)
+      } else {
+        const seenDrop = new Set<string>()
+        for (const stmt of stmts) {
+          const trimmed = stmt.trim()
+          if (!trimmed) continue
+
+          const dropInfo = parseDropTable(trimmed)
+          if (dropInfo) {
+            seenDrop.add(mkKey(dropInfo.db, dropInfo.table))
+            withDrop.push(trimmed)
+            continue
+          }
+
+          const createInfo = parseCreateTable(trimmed)
+          if (createInfo) {
+            const key = mkKey(createInfo.db, createInfo.table)
+            if (!seenDrop.has(key)) {
+              withDrop.push(buildDropStmt(createInfo.db, createInfo.table))
+              seenDrop.add(key)
+            }
+            withDrop.push(trimmed)
+            continue
+          }
+
+          withDrop.push(trimmed)
+        }
+      }
+
       const originalStatementTotal = stmts.length
-      const executableStmts = stmts.filter((stmt) => STMT_KEYWORDS.test(stmt))
+      const executableStmts = withDrop.filter((stmt) => STMT_KEYWORDS.test(stmt))
       let ok = 0, fail = 0
       const errors: string[] = []
       const total = executableStmts.length

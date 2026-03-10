@@ -305,10 +305,15 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         for (const n of names) {
           try {
             const ddl = await api.meta.tableDDL(connectionId, database, n)
-            parts.push((typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || '')
+            const ddlSql = ((typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || '').trim()
+            parts.push('-- ----------------------------')
+            parts.push(`-- Table structure for \`${n}\``)
+            parts.push('-- ----------------------------')
+            parts.push(`DROP TABLE IF EXISTS \`${n}\`;`)
+            parts.push(ddlSql ? (ddlSql.trimEnd().endsWith(';') ? ddlSql : ddlSql + ';') : '')
           } catch (e: any) { alert(e.message || '导出失败'); return }
         }
-        setExportSql({ tableName: names.length > 1 ? database : names[0], sql: parts.join('\n\n-- ----------------------------\n\n') })
+        setExportSql({ tableName: names.length > 1 ? database : names[0], sql: parts.join('\n') })
         break
       }
       case 'exportAll': {
@@ -390,7 +395,10 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     setPreviewLoadingText(includeData ? '正在生成结构 + 数据摘要预览...' : '正在生成结构预览...')
     try {
       const ddl = await api.meta.tableDDL(connectionId, database, tableName)
-      let sql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
+      let sql = ((typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || '').trim()
+      if (!sql.trimEnd().endsWith(';')) sql += ';'
+      // 导出默认带 DROP，导入再补齐（双重保证）
+      sql = `DROP TABLE IF EXISTS \`${tableName}\`;\n${sql}`
       if (includeData) {
         sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
       }

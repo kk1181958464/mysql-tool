@@ -608,6 +608,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       const ddl = await api.meta.tableDDL(activeConnectionId, dbName, tableName)
       let sql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
       if (!sql.trimEnd().endsWith(';')) sql += ';'
+      // 导出默认带 DROP，导入再补齐（双重保证）
+      sql = `DROP TABLE IF EXISTS \`${tableName}\`;\n${sql}`
       if (includeData) {
         sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
       }
