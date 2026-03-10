@@ -168,8 +168,22 @@ export function registerQueryIPC() {
         }
       }
 
-      cleaned = cleaned.replace(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`(\w+)`/gi,
-        (m, name) => `DROP TABLE IF EXISTS \`${name}\`;\n${m}`)
+      // 覆盖导入：为所有 CREATE TABLE 预插入 DROP TABLE IF EXISTS
+      // 兼容：`tbl` / tbl / `db`.`tbl` / db.tbl / CREATE TEMPORARY TABLE
+      const buildDropTable = (db: string | undefined, table: string) => {
+        const q = (id: string) => `\`${id.replace(/`/g, '``')}\``
+        return db ? `DROP TABLE IF EXISTS ${q(db)}.${q(table)}` : `DROP TABLE IF EXISTS ${q(table)}`
+      }
+
+      cleaned = cleaned.replace(
+        /CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/gi,
+        (m, dbQ, dbN, tblQ, tblN) => {
+          const db = (dbQ || dbN || undefined) as string | undefined
+          const table = (tblQ || tblN) as string
+          return `${buildDropTable(db, table)};\n${m}`
+        },
+      )
+
       cleaned = ensureSemicolons(cleaned)
       sendProgress({ current: 0, total: Math.max(cleaned.length, 1), fail: 0, stage: 'parsing' })
       const stmts = await splitStatementsWithProgress(cleaned, ({ current, total, stage }) => {
