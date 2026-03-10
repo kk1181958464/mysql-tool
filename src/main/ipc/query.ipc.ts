@@ -10,6 +10,40 @@ const PARSE_YIELD_EVERY = 5000
 
 const yieldToEventLoop = async () => new Promise<void>((resolve) => setImmediate(resolve))
 
+/**
+ * 移除语句开头的空白与注释（-- / # / /* *\/），用于关键词识别与简单解析。
+ * 注意：仅处理“前导”注释，不处理语句中间注释。
+ */
+function stripLeadingTrivia(stmt: string): string {
+  let s = stmt
+  while (true) {
+    // leading whitespace
+    const ws = s.match(/^\s+/)
+    if (ws) s = s.slice(ws[0].length)
+
+    // leading line comments
+    if (s.startsWith('--')) {
+      const idx = s.indexOf('\n')
+      s = idx >= 0 ? s.slice(idx + 1) : ''
+      continue
+    }
+    if (s.startsWith('#')) {
+      const idx = s.indexOf('\n')
+      s = idx >= 0 ? s.slice(idx + 1) : ''
+      continue
+    }
+
+    // leading block comments
+    if (s.startsWith('/*')) {
+      const end = s.indexOf('*/')
+      s = end >= 0 ? s.slice(end + 2) : ''
+      continue
+    }
+
+    return s
+  }
+}
+
 /** 按分号拆分 SQL，尊重字符串/注释，并周期性上报解析进度 */
 async function splitStatementsWithProgress(
   sql: string,
@@ -180,7 +214,8 @@ export function registerQueryIPC() {
       const mkKey = (db: string | undefined, table: string) => `${String(db || defaultDb || '').toLowerCase()}::${table.toLowerCase()}`
 
       const parseDropTable = (stmt: string): { db?: string; table: string } | null => {
-        const m = stmt.match(/^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/i)
+        const core = stripLeadingTrivia(stmt)
+        const m = core.match(/^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/i)
         if (!m) return null
         const db = (m[1] || m[2] || undefined) as string | undefined
         const table = (m[3] || m[4]) as string
@@ -188,7 +223,8 @@ export function registerQueryIPC() {
       }
 
       const parseCreateTable = (stmt: string): { db?: string; table: string } | null => {
-        const m = stmt.match(/^CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/i)
+        const core = stripLeadingTrivia(stmt)
+        const m = core.match(/^CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:`([^`]+)`|([A-Za-z0-9_]+))\s*\.\s*)?(?:`([^`]+)`|([A-Za-z0-9_]+))/i)
         if (!m) return null
         const db = (m[1] || m[2] || undefined) as string | undefined
         const table = (m[3] || m[4]) as string
@@ -201,40 +237,35 @@ export function registerQueryIPC() {
         return dbName ? `DROP TABLE IF EXISTS ${quote(dbName)}.${quote(table)}` : `DROP TABLE IF EXISTS ${quote(table)}`
       }
 
-      const hasAnyDrop = stmts.some((s) => /^DROP\s+TABLE\b/i.test(s.trim()))
       const withDrop: string[] = []
-      if (hasAnyDrop) {
-        withDrop.push(...stmts)
-      } else {
-        const seenDrop = new Set<string>()
-        for (const stmt of stmts) {
-          const trimmed = stmt.trim()
-          if (!trimmed) continue
+      const seenDrop = new Set<string>()
+      for (const stmt of stmts) {
+        const trimmed = stmt.trim()
+        if (!trimmed) continue
 
-          const dropInfo = parseDropTable(trimmed)
-          if (dropInfo) {
-            seenDrop.add(mkKey(dropInfo.db, dropInfo.table))
-            withDrop.push(trimmed)
-            continue
-          }
-
-          const createInfo = parseCreateTable(trimmed)
-          if (createInfo) {
-            const key = mkKey(createInfo.db, createInfo.table)
-            if (!seenDrop.has(key)) {
-              withDrop.push(buildDropStmt(createInfo.db, createInfo.table))
-              seenDrop.add(key)
-            }
-            withDrop.push(trimmed)
-            continue
-          }
-
+        const dropInfo = parseDropTable(trimmed)
+        if (dropInfo) {
+          seenDrop.add(mkKey(dropInfo.db, dropInfo.table))
           withDrop.push(trimmed)
+          continue
         }
+
+        const createInfo = parseCreateTable(trimmed)
+        if (createInfo) {
+          const key = mkKey(createInfo.db, createInfo.table)
+          if (!seenDrop.has(key)) {
+            withDrop.push(buildDropStmt(createInfo.db, createInfo.table))
+            seenDrop.add(key)
+          }
+          withDrop.push(trimmed)
+          continue
+        }
+
+        withDrop.push(trimmed)
       }
 
       const originalStatementTotal = stmts.length
-      const executableStmts = withDrop.filter((stmt) => STMT_KEYWORDS.test(stmt))
+      const executableStmts = withDrop.filter((stmt) => STMT_KEYWORDS.test(stripLeadingTrivia(stmt)))
       let ok = 0, fail = 0
       const errors: string[] = []
       const total = executableStmts.length

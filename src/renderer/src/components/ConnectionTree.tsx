@@ -644,6 +644,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         parts.push('-- ----------------------------')
         parts.push(`-- Table structure for \`${t.name}\``)
         parts.push('-- ----------------------------')
+        parts.push(`DROP TABLE IF EXISTS \`${t.name}\`;`)
         parts.push(d)
         if (includeData) {
           parts.push('')
@@ -712,37 +713,31 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       return
     }
 
-    // 含数据，分批导出
+    // 含数据：交给主进程 exportToSQL（支持 JSON 列、drop/create、insertStyle、多表进度）
     setExporting(true)
     setExportModalOpen(true)
     exportSessionActiveRef.current = true
     exportCancelledRef.current = false
     try {
-      let fullSql: string
+      let tables: string[]
       if (isDb) {
-        const tbls = useDatabaseStore.getState().tables[`${activeConnectionId}:${dbName}`] || []
-        const parts: string[] = []
-        for (let i = 0; i < tbls.length; i++) {
-          if (exportCancelledRef.current) break
-          setExportProgress({ current: tbls[i].name, done: i, total: tbls.length, rows: 0 })
-          parts.push(await fullExportTable(dbName, tbls[i].name, (n) => {
-            setExportProgress({ current: tbls[i].name, done: i, total: tbls.length, rows: n })
-          }))
-        }
-        fullSql = parts.join('\n\n-- ----------------------------\n\n')
+        tables = (useDatabaseStore.getState().tables[`${activeConnectionId}:${dbName}`] || []).map((t: any) => t.name)
       } else {
-        const countRes = await api.query.execute(activeConnectionId, `SELECT COUNT(*) AS total FROM \`${dbName}\`.\`${tableName}\``, dbName)
-        const totalRows = Number((countRes.rows?.[0] as any)?.total ?? 0)
-        setExportProgress({ current: tableName, done: 0, total: 1, rows: 0, totalRows })
-        fullSql = await fullExportTable(dbName, tableName, (n) => {
-          setExportProgress({ current: tableName, done: 0, total: 1, rows: n, totalRows })
-        })
+        tables = [tableName]
       }
+
+      // 注意：此处 sql 参数仅用于 CSV/JSON；format=sql 时由 options.tables 驱动
+      await api.importExport.exportData(activeConnectionId, dbName, '', filePath, 'sql', {
+        tables,
+        dropTable: true,
+        createTable: true,
+        includeData: true,
+        insertStyle: 'multi',
+      })
 
       if (exportCancelledRef.current) {
         setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
       } else {
-        await api.dialog.writeFile(filePath, fullSql)
         setExportProgress(prev => prev ? { ...prev, finished: true } : null)
       }
     } catch (e: any) {
