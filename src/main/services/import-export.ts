@@ -13,12 +13,17 @@ import * as connectionManager from './connection-manager'
 type Primitive = string | number | boolean | bigint | null | undefined
 type SqlValue = Primitive | Date | Buffer | Record<string, unknown> | unknown[]
 type RowRecord = Record<string, SqlValue>
+type TableColumn = {
+  name: string
+  type: string
+}
 
 type ExportSqlOptions = {
   dropTable?: boolean
   createTable?: boolean
   includeData?: boolean
   insertStyle?: 'single' | 'multi' | 'ignore' | 'replace'
+  onProgress?: (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => void
 }
 
 const IMPORT_BATCH_SIZE = 500
@@ -27,6 +32,92 @@ const EXPORT_BATCH_SIZE = 1000
 function formatExportTime(d = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function formatNavicatDate(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function normalizeJsonValue(value: SqlValue): unknown {
+  if (value === undefined) return null
+  if (value === null) return null
+  if (typeof value === 'bigint') return value.toString()
+  if (Buffer.isBuffer(value)) return value.toString('base64')
+  if (value instanceof Date) return formatExportTime(value)
+  if (Array.isArray(value)) return value.map(item => normalizeJsonValue(item as SqlValue))
+  if (typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, normalizeJsonValue(item as SqlValue)])
+    )
+  }
+  return value
+}
+
+function normalizeRowForJson(row: RowRecord, columns: string[]): Record<string, unknown> {
+  return Object.fromEntries(columns.map((column) => [column, normalizeJsonValue(row[column])]))
+}
+
+function getRowValues(row: RowRecord, columns: string[]): SqlValue[] {
+  return columns.map((column) => row[column])
+}
+
+async function getTableColumns(conn: any, table: string): Promise<TableColumn[]> {
+  const [columnRows] = await conn.query(`SHOW COLUMNS FROM \`${table}\``)
+  return (columnRows as Array<{ Field: string; Type: string }>).map((column) => ({
+    name: column.Field,
+    type: String(column.Type || '').toLowerCase(),
+  }))
+}
+
+async function getTableColumnNames(conn: any, table: string): Promise<string[]> {
+  const columns = await getTableColumns(conn, table)
+  return columns.map((column) => column.name)
+}
+
+async function getExistingTableNames(conn: any): Promise<Set<string>> {
+  const [tableRows] = await conn.query('SHOW FULL TABLES WHERE Table_type IN (\'BASE TABLE\', \'VIEW\')')
+  return new Set(
+    (tableRows as Record<string, string>[])
+      .map((row) => Object.values(row).find((value) => typeof value === 'string'))
+      .filter((value): value is string => Boolean(value))
+  )
+}
+
+function assertTablesExist(existingTables: Set<string>, tables: string[]): void {
+  const missingTables = tables.filter((table) => !existingTables.has(table))
+  if (!missingTables.length) return
+
+  throw new Error(`以下表已不存在：${missingTables.join('、')}，请刷新对象列表后重试`)
+}
+
+async function buildNavicatHeader(connId: string, conn: any, db: string): Promise<string> {
+  const [versionRows] = await conn.query('SELECT VERSION() AS version')
+  const version = (versionRows as Array<{ version?: string }>)[0]?.version || 'unknown'
+  const exportTime = formatNavicatDate()
+  const pool = connectionManager.getPool(connId) as any
+  const poolConfig = pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {}
+  const host = poolConfig.host || 'unknown'
+  const port = poolConfig.port || 3306
+
+  return [
+    '/*',
+    ' Navicat Premium Dump SQL',
+    '',
+    ` Source Server         : ${db}`,
+    ' Source Server Type    : MySQL',
+    ` Source Server Version : ${version}`,
+    ` Source Host           : ${host}:${port}`,
+    ` Source Schema         : ${db}`,
+    '',
+    ' Target Server Type    : MySQL',
+    ` Target Server Version : ${version}`,
+    ' File Encoding         : 65001',
+    '',
+    ` Date: ${exportTime}`,
+    '*/',
+    '',
+  ].join('\n')
 }
 
 function toSqlLiteral(v: SqlValue): string {
@@ -50,10 +141,36 @@ function toSqlLiteral(v: SqlValue): string {
   return `'${s}'`
 }
 
+function isJsonColumnType(type: string): boolean {
+  return type === 'json'
+}
+
+function normalizeValueForJsonColumn(value: SqlValue): string {
+  if (value === undefined || value === null) return 'null'
+  if (Buffer.isBuffer(value)) return JSON.stringify(value.toString('base64'))
+  if (value instanceof Date) return JSON.stringify(formatExportTime(value))
+  if (typeof value === 'bigint') return JSON.stringify(value.toString())
+  return JSON.stringify(value)
+}
+
+function getRowSqlValues(row: RowRecord, columns: TableColumn[]): string[] {
+  return columns.map((column) => {
+    const value = row[column.name]
+    if (isJsonColumnType(column.type)) {
+      return toSqlLiteral(normalizeValueForJsonColumn(value))
+    }
+    return toSqlLiteral(value)
+  })
+}
+
 function extractTableFromSelectSql(sql: string): string | null {
   const normalized = sql.trim().replace(/\s+/g, ' ')
   const match = normalized.match(/^SELECT\s+\*\s+FROM\s+`?([\w$]+)`?(?:\s+|;|$)/i)
   return match?.[1] || null
+}
+
+function getRowColumns(rows: RowRecord[]): string[] {
+  return rows.length ? Object.keys(rows[0]) : []
 }
 
 async function writeChunk(stream: fs.WriteStream, chunk: string): Promise<void> {
@@ -215,17 +332,25 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
   if (table) {
     const out = fs.createWriteStream(filePath, { encoding: 'utf-8' })
     try {
-      await writeChunk(out, '[\n')
-      let isFirst = true
-      await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
-        for (const row of rows) {
-          const line = `${isFirst ? '' : ',\n'}${JSON.stringify(row)}`
-          await writeChunk(out, line)
-          isFirst = false
-        }
-      })
-      await writeChunk(out, '\n]\n')
-      await closeStream(out)
+      const conn = await connectionManager.getConnection(connId)
+      try {
+        await conn.query(`USE \`${db}\``)
+        const columns = await getTableColumnNames(conn, table)
+        await writeChunk(out, '[\n')
+        let isFirst = true
+        await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
+          for (const row of rows) {
+            const normalizedRow = normalizeRowForJson(row, columns)
+            const line = `${isFirst ? '' : ',\n'}${JSON.stringify(normalizedRow)}`
+            await writeChunk(out, line)
+            isFirst = false
+          }
+        })
+        await writeChunk(out, '\n]\n')
+        await closeStream(out)
+      } finally {
+        conn.release()
+      }
     } catch (e) {
       out.destroy()
       throw e
@@ -237,7 +362,8 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
   try {
     await conn.query(`USE \`${db}\``)
     const [rows] = await conn.query(sql)
-    await writeFile(filePath, JSON.stringify(rows, null, 2), 'utf-8')
+    const normalizedRows = (rows as RowRecord[]).map((row) => normalizeRowForJson(row, Object.keys(row)))
+    await writeFile(filePath, JSON.stringify(normalizedRows, null, 2), 'utf-8')
   } finally {
     conn.release()
   }
@@ -248,10 +374,13 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
 
   try {
     await conn.query(`USE \`${db}\``)
+    const existingTables = await getExistingTableNames(conn)
+    assertTablesExist(existingTables, tables)
     await mkdir(path.dirname(filePath), { recursive: true })
     const out = fs.createWriteStream(filePath, { encoding: 'utf-8' })
 
     try {
+      await writeChunk(out, await buildNavicatHeader(connId, conn, db))
       await writeChunk(out, 'SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
 
       const dropTable = options?.dropTable !== false
@@ -259,13 +388,29 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
       const includeData = options?.includeData !== false
       const insertStyle: 'single' | 'multi' | 'ignore' | 'replace' = options?.insertStyle || 'single'
 
+      const useColumnList = insertStyle !== 'single'
       const insertHead = insertStyle === 'ignore'
         ? 'INSERT IGNORE INTO'
         : insertStyle === 'replace'
           ? 'REPLACE INTO'
           : 'INSERT INTO'
 
-      for (const table of tables) {
+      for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
+        const table = tables[tableIndex]
+        const reportProgress = (rows: number, finished = false) => {
+          options?.onProgress?.({
+            current: table,
+            done: finished ? tableIndex + 1 : tableIndex,
+            total: tables.length,
+            rows,
+            finished,
+          })
+        }
+        reportProgress(0)
+        const tableColumns = await getTableColumns(conn, table)
+        const columnNames = tableColumns.map((column) => column.name)
+        const cols = columnNames.map((column) => `\`${column}\``).join(', ')
+
         if (createTable) {
           const [ddlRows] = await conn.query(`SHOW CREATE TABLE \`${table}\``)
           const ddl = (ddlRows as Record<string, string>[])[0]?.['Create Table']
@@ -277,13 +422,12 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
           }
         }
 
-        if (!includeData) continue
+        if (!includeData || !columnNames.length) continue
 
         let wroteHeader = false
+        let exportedRows = 0
         await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
           if (!rows.length) return
-
-          const cols = Object.keys(rows[0]).map(c => `\`${c}\``).join(', ')
 
           if (!wroteHeader) {
             const header = `-- ----------------------------\n-- Records of \`${table}\`\n-- ----------------------------\n`
@@ -296,22 +440,28 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
             for (let i = 0; i < rows.length; i += 1) {
               const row = rows[i]
               const prefix = i === 0 ? '' : ',\n'
-              const values = Object.values(row).map(v => toSqlLiteral(v)).join(', ')
+              const values = getRowSqlValues(row, tableColumns).join(', ')
               await writeChunk(out, `${prefix}(${values})`)
             }
             await writeChunk(out, ';\n')
+            exportedRows += rows.length
+            reportProgress(exportedRows)
             return
           }
 
           for (const row of rows) {
-            const vals = Object.values(row).map(v => toSqlLiteral(v)).join(', ')
-            await writeChunk(out, `${insertHead} \`${table}\` (${cols}) VALUES (${vals});\n`)
+            const vals = getRowSqlValues(row, tableColumns).join(', ')
+            const columnClause = useColumnList ? ` (${cols})` : ''
+            await writeChunk(out, `${insertHead} \`${table}\`${columnClause} VALUES (${vals});\n`)
           }
+          exportedRows += rows.length
+          reportProgress(exportedRows)
         })
 
         if (wroteHeader) {
           await writeChunk(out, '\n')
         }
+        reportProgress(exportedRows, true)
       }
 
       await writeChunk(out, 'SET FOREIGN_KEY_CHECKS = 1;\n')

@@ -83,7 +83,7 @@ export function CreateDatabaseModal({ open, connectionId, onClose }: Props) {
     try {
       const sql = `CREATE DATABASE \`${name}\` CHARACTER SET ${charset} COLLATE ${collation}`
       await api.query.execute(connectionId, sql)
-      await loadDatabases(connectionId)
+      await loadDatabases(connectionId, true)
       onClose()
     } catch (e: any) {
       setError(e.message || '创建失败')

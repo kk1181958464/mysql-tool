@@ -36,6 +36,7 @@ export const IPC = {
   IMPORT_PREVIEW: 'import:preview',
   EXPORT_DATA: 'export:data',
   EXPORT_STRUCTURE: 'export:structure',
+  EXPORT_PROGRESS: 'export:progress',
   PERF_PROCESS_LIST: 'perf:processList',
   PERF_INNODB_STATUS: 'perf:innodbStatus',
   PERF_VARIABLES: 'perf:variables',

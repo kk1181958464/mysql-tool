@@ -232,7 +232,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       ) : result ? (
         isExplain ? (
           <ExplainView rows={result.rows} />
-        ) : (
+        ) : result.isSelect ? (
           <div style={{ height: '100%', overflow: 'auto' }}>
             <Table
               columns={resultColumns}
@@ -249,7 +249,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
             />
             <Space style={{ padding: '4px 8px' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                {result.isSelect ? `${result.rowCount} 行` : `影响 ${result.affectedRows} 行`} | {result.executionTime}ms
+                {result.rowCount} 行 | {result.executionTime}ms
               </span>
               <Dropdown
                 items={[
@@ -262,6 +262,21 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                 <Button size="small"><DownloadOutlined /> 导出</Button>
               </Dropdown>
             </Space>
+          </div>
+        ) : (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
+            <div style={{ textAlign: 'center', maxWidth: 400 }}>
+              <div style={{ fontSize: 48, color: 'var(--accent)', marginBottom: 16 }}>✓</div>
+              <h3 style={{ marginBottom: 8, color: 'var(--text-primary)' }}>执行成功</h3>
+              <div style={{ color: 'var(--text-secondary)', marginBottom: 24, fontSize: 14 }}>
+                <div>影响行数: {result.affectedRows}</div>
+                {result.insertId > 0 && <div>插入ID: {result.insertId}</div>}
+                <div>执行时间: {result.executionTime}ms</div>
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5 }}>
+                <div>SQL: {result.sql.length > 100 ? result.sql.substring(0, 100) + '...' : result.sql}</div>
+              </div>
+            </div>
           </div>
         )
       ) : (

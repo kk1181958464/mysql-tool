@@ -32,8 +32,8 @@ export function registerTableDesignIPC() {
     }
   })
 
-  ipcMain.handle(IPC.DESIGN_ALTER_TABLE, async (_e, connId: string, db: string, tableName: string, diff) => {
-    const sql = tableDesigner.generateAlterTableSQL(tableName, diff)
+  ipcMain.handle(IPC.DESIGN_ALTER_TABLE, async (_e, connId: string, db: string, tableName: string, diff, newDesign) => {
+    const sql = tableDesigner.generateAlterTableSQL(tableName, diff, newDesign)
     if (!sql) return ''
     const conn = await connectionManager.getConnection(connId)
     try {

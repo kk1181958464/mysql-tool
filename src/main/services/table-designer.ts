@@ -48,13 +48,39 @@ export function generateCreateTableSQL(design: TableDesign): string {
   return sql + ';'
 }
 
-export function generateAlterTableSQL(tableName: string, diff: TableDiff): string {
+export function generateAlterTableSQL(tableName: string, diff: TableDiff, newDesign: TableDesign): string {
   const stmts: string[] = []
   // 兼容处理：如果 diff 结构不完整，返回空
-  if (!diff.dropColumns || !diff.addColumns) return ''
-  for (const col of diff.dropColumns) stmts.push(`DROP COLUMN \`${col}\``)
-  for (const col of diff.addColumns) stmts.push(`ADD COLUMN ${colDef(col)}`)
-  for (const m of diff.modifyColumns || []) stmts.push(`CHANGE COLUMN \`${m.old}\` ${colDef(m.new)}`)
+  if (!diff) return ''
+  if (diff.dropColumns) {
+    for (const col of diff.dropColumns) stmts.push(`DROP COLUMN \`${col}\``)
+  }
+  if (diff.addColumns) {
+    for (const col of diff.addColumns) {
+      const colIndex = newDesign.columns.findIndex(c => c.name === col.name)
+      if (colIndex === 0) {
+        stmts.push(`ADD COLUMN ${colDef(col)} FIRST`)
+      } else if (colIndex > 0) {
+        const prevCol = newDesign.columns[colIndex - 1]
+        stmts.push(`ADD COLUMN ${colDef(col)} AFTER \`${prevCol.name}\``)
+      } else {
+        stmts.push(`ADD COLUMN ${colDef(col)}`)
+      }
+    }
+  }
+  if (diff.modifyColumns) {
+    for (const m of diff.modifyColumns) {
+      const colIndex = newDesign.columns.findIndex(c => c.name === m.new.name)
+      if (colIndex === 0) {
+        stmts.push(`CHANGE COLUMN \`${m.old}\` ${colDef(m.new)} FIRST`)
+      } else if (colIndex > 0) {
+        const prevCol = newDesign.columns[colIndex - 1]
+        stmts.push(`CHANGE COLUMN \`${m.old}\` ${colDef(m.new)} AFTER \`${prevCol.name}\``)
+      } else {
+        stmts.push(`CHANGE COLUMN \`${m.old}\` ${colDef(m.new)}`)
+      }
+    }
+  }
   for (const idx of diff.dropIndexes || []) stmts.push(`DROP INDEX \`${idx}\``)
   for (const idx of diff.addIndexes || []) stmts.push(`ADD ${indexDef(idx)}`)
   for (const fk of diff.dropForeignKeys || []) stmts.push(`DROP FOREIGN KEY \`${fk}\``)
@@ -82,7 +108,19 @@ export function diffTables(oldDesign: TableDesign, newDesign: TableDesign): Tabl
   }
   for (const [name, col] of newColMap) {
     if (!oldColMap.has(name)) diff.addColumns.push(col)
-    else if (JSON.stringify(oldColMap.get(name)) !== JSON.stringify(col)) diff.modifyColumns.push({ old: name, new: col })
+    else {
+      const oldCol = oldColMap.get(name)
+      if (JSON.stringify(oldCol) !== JSON.stringify(col)) {
+        diff.modifyColumns.push({ old: name, new: col })
+      } else {
+        // 检查字段顺序是否变化
+        const oldIndex = oldDesign.columns.findIndex(c => c.name === name)
+        const newIndex = newDesign.columns.findIndex(c => c.name === name)
+        if (oldIndex !== newIndex) {
+          diff.modifyColumns.push({ old: name, new: col })
+        }
+      }
+    }
   }
 
   const oldIdxNames = new Set(oldDesign.indexes.map(i => i.name))

@@ -1,4 +1,4 @@
-import { useState, lazy, Suspense, useEffect, useCallback, useRef } from 'react'
+import { useState, lazy, Suspense, useEffect, useCallback, useRef, useLayoutEffect } from 'react'
 import { CloseOutlined, CodeOutlined, TableOutlined, LayoutOutlined, DatabaseOutlined, DashboardOutlined, SwapOutlined, SaveOutlined } from '@ant-design/icons'
 import { useTabStore, Tab } from '../../stores/tab.store'
 import { isTabDirty, registerTabCloseGuard } from '../../stores/tab-close-guard'
@@ -26,6 +26,9 @@ export default function MainTabBar() {
   const { tabs, activeTabId, setActiveTab, removeTabsByIds } = useTabStore()
   const [confirmCloseIds, setConfirmCloseIds] = useState<string[] | null>(null)
 
+  const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null)
+  const tabContextMenuRef = useRef<HTMLDivElement | null>(null)
+
   const pendingResolveRef = useRef<((ok: boolean) => void) | null>(null)
 
   const requestCloseTabs = useCallback(async (targetTabs: Tab[]) => {
@@ -50,12 +53,106 @@ export default function MainTabBar() {
     }
   }, [requestCloseTabs])
 
+  // 点击外部、滚动、或全局关闭事件时关闭右键菜单
+  useEffect(() => {
+    const isInsideContextMenu = (target: EventTarget | null): boolean => {
+      if (!target || !(target instanceof Node)) return false
+      return tabContextMenuRef.current?.contains(target) ?? false
+    }
+
+    const handlePointerDownCapture = (event: PointerEvent | MouseEvent) => {
+      if (isInsideContextMenu(event.target)) return
+      setTabContextMenu(null)
+    }
+    const handleScroll = () => setTabContextMenu(null)
+    const handleGlobalClose = () => setTabContextMenu(null)
+
+    window.addEventListener('pointerdown', handlePointerDownCapture, true)
+    document.addEventListener('mousedown', handlePointerDownCapture, true)
+    document.addEventListener('scroll', handleScroll, true)
+    window.addEventListener('app:close-context-menus', handleGlobalClose as EventListener)
+    document.addEventListener('app:close-context-menus', handleGlobalClose as EventListener)
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDownCapture, true)
+      document.removeEventListener('mousedown', handlePointerDownCapture, true)
+      document.removeEventListener('scroll', handleScroll, true)
+      window.removeEventListener('app:close-context-menus', handleGlobalClose as EventListener)
+      document.removeEventListener('app:close-context-menus', handleGlobalClose as EventListener)
+    }
+  }, [])
+
+  // 溢出修正：避免菜单贴边/出屏（参考 ConnectionTree 的处理方式）
+  useLayoutEffect(() => {
+    if (!tabContextMenu || !tabContextMenuRef.current) return
+
+    const menuEl = tabContextMenuRef.current
+    const rect = menuEl.getBoundingClientRect()
+    let nextX = tabContextMenu.x
+    let nextY = tabContextMenu.y
+
+    if (rect.right > window.innerWidth - 8) {
+      nextX = Math.max(8, window.innerWidth - rect.width - 8)
+    }
+    if (rect.bottom > window.innerHeight - 8) {
+      nextY = Math.max(8, window.innerHeight - rect.height - 8)
+    }
+
+    if (nextX !== tabContextMenu.x || nextY !== tabContextMenu.y) {
+      setTabContextMenu({ ...tabContextMenu, x: nextX, y: nextY })
+    }
+  }, [tabContextMenu])
+
   const closeWithGuard = useCallback(async (targetTabs: Tab[]) => {
     if (targetTabs.length === 0) return
     const ok = await requestCloseTabs(targetTabs)
     if (!ok) return
     removeTabsByIds(targetTabs.map((tab) => tab.id))
   }, [removeTabsByIds, requestCloseTabs])
+
+  const getClosableTabs = useCallback((inputTabs: Tab[]) => {
+    // objects tab / 固定 tab 永不可关闭
+    return inputTabs.filter((t) => t.closable !== false && t.type !== 'objects')
+  }, [])
+
+  const handleTabContextMenu = (e: React.MouseEvent, tab: Tab) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    // 打开前，先广播关闭其他菜单（与 ConnectionTree 一致的全局约定）
+    window.dispatchEvent(new Event('app:close-context-menus'))
+
+    // 右键目标 tab：更符合预期，直接切换为 active
+    setActiveTab(tab.id)
+
+    setTabContextMenu({ x: e.clientX, y: e.clientY, tabId: tab.id })
+  }
+
+  const handleCloseCurrentFromMenu = async () => {
+    if (!tabContextMenu) return
+    const target = tabs.find((t) => t.id === tabContextMenu.tabId)
+    setTabContextMenu(null)
+    if (!target) return
+    const closable = getClosableTabs([target])
+    if (closable.length === 0) return
+    await closeWithGuard(closable)
+  }
+
+  const handleCloseOthersFromMenu = async () => {
+    if (!tabContextMenu) return
+    const targetId = tabContextMenu.tabId
+    setTabContextMenu(null)
+
+    const otherTabs = tabs.filter((t) => t.id !== targetId)
+    const toClose = getClosableTabs(otherTabs)
+    await closeWithGuard(toClose)
+  }
+
+  const handleCloseAllFromMenu = async () => {
+    setTabContextMenu(null)
+    const toClose = getClosableTabs(tabs)
+    await closeWithGuard(toClose)
+  }
 
   const handleClose = (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
@@ -122,6 +219,7 @@ export default function MainTabBar() {
             key={tab.id}
             className={`main-tab ${tab.id === activeTabId ? 'active' : ''}`}
             onClick={() => setActiveTab(tab.id)}
+            onContextMenu={(e) => handleTabContextMenu(e, tab)}
           >
             <span className="main-tab-icon">{TAB_ICONS[tab.type]}</span>
             <span className="main-tab-title">{tab.title}</span>
@@ -153,6 +251,54 @@ export default function MainTabBar() {
           </div>
         ))}
       </div>
+      {/* Tab 右键菜单 */}
+      {tabContextMenu && (
+        <div
+          ref={tabContextMenuRef}
+          className="context-menu"
+          style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
+          onClick={() => setTabContextMenu(null)}
+        >
+          {(() => {
+            const target = tabs.find((t) => t.id === tabContextMenu.tabId)
+            const canCloseCurrent = !!target && getClosableTabs([target]).length > 0
+            return (
+              <>
+                <div
+                  className="context-menu-item"
+                  style={canCloseCurrent ? undefined : { opacity: 0.5, pointerEvents: 'none' }}
+                  onClick={(e) => {
+                    if (!canCloseCurrent) {
+                      e.stopPropagation()
+                      return
+                    }
+                    void handleCloseCurrentFromMenu()
+                  }}
+                >
+                  关闭当前
+                </div>
+                <div className="context-menu-divider" />
+                <div
+                  className="context-menu-item"
+                  onClick={() => {
+                    void handleCloseOthersFromMenu()
+                  }}
+                >
+                  关闭其他
+                </div>
+                <div
+                  className="context-menu-item"
+                  onClick={() => {
+                    void handleCloseAllFromMenu()
+                  }}
+                >
+                  关闭所有
+                </div>
+              </>
+            )
+          })()}
+        </div>
+      )}
 
       {/* 关闭确认弹窗 */}
       <Modal

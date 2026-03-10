@@ -1,7 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from './Button'
 import './ui.css'
+
+const MODAL_ANIMATION_MS = 180
 
 interface ModalProps {
   open: boolean
@@ -28,16 +30,43 @@ export function Modal({
   children,
   className = '',
 }: ModalProps) {
+  const [mounted, setMounted] = useState(open)
+  const [leaving, setLeaving] = useState(false)
+  const closeTimerRef = useRef<number | null>(null)
+
   useEffect(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+    }
+
     if (open) {
+      setMounted(true)
+      setLeaving(false)
+      return
+    }
+
+    if (mounted) {
+      setLeaving(true)
+      closeTimerRef.current = window.setTimeout(() => {
+        setMounted(false)
+        setLeaving(false)
+        closeTimerRef.current = null
+      }, MODAL_ANIMATION_MS)
+    }
+  }, [mounted, open])
+
+  useEffect(() => {
+    if (mounted) {
       document.body.style.overflow = 'hidden'
     } else {
       document.body.style.overflow = ''
     }
+
     return () => {
       document.body.style.overflow = ''
     }
-  }, [open])
+  }, [mounted])
 
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
@@ -47,12 +76,23 @@ export function Modal({
     return () => document.removeEventListener('keydown', handleEsc)
   }, [open, onClose])
 
-  if (!open) return null
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current)
+      }
+    }
+  }, [])
+
+  if (!mounted) return null
+
+  const overlayClassName = `ui-modal-overlay ${leaving ? 'ui-modal-overlay-leave' : 'ui-modal-overlay-enter'}`
+  const modalClassName = `ui-modal ${leaving ? 'ui-modal-leave' : 'ui-modal-enter'} ${className}`.trim()
 
   const modalContent = (
-    <div className="ui-modal-overlay">
+    <div className={overlayClassName}>
       <div
-        className={`ui-modal ${className}`}
+        className={modalClassName}
         style={{ width }}
       >
         {title && (

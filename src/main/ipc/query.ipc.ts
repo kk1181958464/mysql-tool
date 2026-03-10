@@ -6,27 +6,49 @@ import * as connectionManager from '../services/connection-manager'
 import { format } from 'sql-formatter'
 
 const STMT_KEYWORDS = /^(?:CREATE|INSERT|DROP|ALTER|LOCK|UNLOCK|SET|DELETE|UPDATE|REPLACE)\s/i
+const PARSE_YIELD_EVERY = 5000
 
-/** 按分号拆分 SQL，尊重字符串/注释 */
-function splitStatements(sql: string): string[] {
+const yieldToEventLoop = async () => new Promise<void>((resolve) => setImmediate(resolve))
+
+/** 按分号拆分 SQL，尊重字符串/注释，并周期性上报解析进度 */
+async function splitStatementsWithProgress(
+  sql: string,
+  onProgress?: (progress: { current: number; total: number; stage: 'parsing' }) => void,
+): Promise<string[]> {
   const stmts: string[] = []
+  const total = Math.max(sql.length, 1)
   let cur = '', i = 0, inSQ = false, inDQ = false, inBT = false, inLC = false, inBC = false
+  let lastReported = -1
+
+  const maybeReport = async (force = false) => {
+    if (!onProgress) return
+    const current = Math.min(i, total)
+    if (!force && current - lastReported < PARSE_YIELD_EVERY && current < total) return
+    lastReported = current
+    onProgress({ current, total, stage: 'parsing' })
+    await yieldToEventLoop()
+  }
+
   while (i < sql.length) {
     const c = sql[i], n = sql[i + 1]
-    if (inLC) { if (c === '\n') inLC = false; cur += c; i++; continue }
-    if (inBC) { if (c === '*' && n === '/') { cur += '*/'; i += 2; inBC = false; continue } cur += c; i++; continue }
-    if (inSQ) { if (c === "'" && n === "'") { cur += "''"; i += 2; continue } if (c === '\\') { cur += c + (n || ''); i += 2; continue } if (c === "'") inSQ = false; cur += c; i++; continue }
-    if (inDQ) { if (c === '"' && n === '"') { cur += '""'; i += 2; continue } if (c === '\\') { cur += c + (n || ''); i += 2; continue } if (c === '"') inDQ = false; cur += c; i++; continue }
-    if (inBT) { if (c === '`') inBT = false; cur += c; i++; continue }
-    if (c === '-' && n === '-') { inLC = true; cur += c; i++; continue }
-    if (c === '/' && n === '*') { inBC = true; cur += '/*'; i += 2; continue }
-    if (c === "'") { inSQ = true; cur += c; i++; continue }
-    if (c === '"') { inDQ = true; cur += c; i++; continue }
-    if (c === '`') { inBT = true; cur += c; i++; continue }
-    if (c === ';') { const t = cur.trim(); if (t) stmts.push(t); cur = ''; i++; continue }
+    if (inLC) { if (c === '\n') inLC = false; cur += c; i++; await maybeReport(); continue }
+    if (inBC) { if (c === '*' && n === '/') { cur += '*/'; i += 2; await maybeReport(); inBC = false; continue } cur += c; i++; await maybeReport(); continue }
+    if (inSQ) { if (c === "'" && n === "'") { cur += "''"; i += 2; await maybeReport(); continue } if (c === '\\') { cur += c + (n || ''); i += 2; await maybeReport(); continue } if (c === "'") inSQ = false; cur += c; i++; await maybeReport(); continue }
+    if (inDQ) { if (c === '"' && n === '"') { cur += '""'; i += 2; await maybeReport(); continue } if (c === '\\') { cur += c + (n || ''); i += 2; await maybeReport(); continue } if (c === '"') inDQ = false; cur += c; i++; await maybeReport(); continue }
+    if (inBT) { if (c === '`') inBT = false; cur += c; i++; await maybeReport(); continue }
+    if (c === '-' && n === '-') { inLC = true; cur += c; i++; await maybeReport(); continue }
+    if (c === '/' && n === '*') { inBC = true; cur += '/*'; i += 2; await maybeReport(); continue }
+    if (c === "'") { inSQ = true; cur += c; i++; await maybeReport(); continue }
+    if (c === '"') { inDQ = true; cur += c; i++; await maybeReport(); continue }
+    if (c === '`') { inBT = true; cur += c; i++; await maybeReport(); continue }
+    if (c === ';') { const t = cur.trim(); if (t) stmts.push(t); cur = ''; i++; await maybeReport(); continue }
     cur += c; i++
+    await maybeReport()
   }
+
   const t = cur.trim(); if (t) stmts.push(t)
+  i = total
+  await maybeReport(true)
   return stmts
 }
 
@@ -131,24 +153,64 @@ export function registerQueryIPC() {
       await conn.query(`SET FOREIGN_KEY_CHECKS=0`)
       await conn.query(`SET NAMES utf8mb4`)
       const sender = _e.sender
+      type ImportProgressPayload = {
+        current: number
+        total: number
+        fail: number
+        stage: 'parsing' | 'executing'
+        originalStatementTotal?: number
+        executableStatementTotal?: number
+      }
+      const sendProgress = (payload: ImportProgressPayload) => {
+        const window = BrowserWindow.fromWebContents(sender)
+        if (!window?.isDestroyed()) {
+          sender.send('import:progress', payload)
+        }
+      }
 
       cleaned = cleaned.replace(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`(\w+)`/gi,
         (m, name) => `DROP TABLE IF EXISTS \`${name}\`;\n${m}`)
       cleaned = ensureSemicolons(cleaned)
-      const stmts = splitStatements(cleaned)
+      sendProgress({ current: 0, total: Math.max(cleaned.length, 1), fail: 0, stage: 'parsing' })
+      const stmts = await splitStatementsWithProgress(cleaned, ({ current, total, stage }) => {
+        sendProgress({ current, total, fail: 0, stage })
+      })
+      const originalStatementTotal = stmts.length
+      const executableStmts = stmts.filter((stmt) => STMT_KEYWORDS.test(stmt))
       let ok = 0, fail = 0
       const errors: string[] = []
-      const total = stmts.length
-      sender.send('import:progress', { current: 0, total, fail: 0 })
-      const BATCH = 200
-      for (let i = 0; i < stmts.length; i += BATCH) {
-        const batch = stmts.slice(i, i + BATCH)
+      const total = executableStmts.length
+      sendProgress({
+        current: 0,
+        total,
+        fail: 0,
+        stage: total > 0 ? 'executing' : 'parsing',
+        originalStatementTotal,
+        executableStatementTotal: total,
+      })
+      const BATCH = 50
+      const emitProgress = () => {
+        sendProgress({
+          current: ok + fail,
+          total,
+          fail,
+          stage: 'executing',
+          originalStatementTotal,
+          executableStatementTotal: total,
+        })
+      }
+      for (let i = 0; i < executableStmts.length; i += BATCH) {
+        const batch = executableStmts.slice(i, i + BATCH)
         try {
           await conn.query(batch.join(';\n'))
           ok += batch.length
+          emitProgress()
         } catch {
           for (const stmt of batch) {
-            try { await conn.query(stmt); ok++ }
+            try {
+              await conn.query(stmt)
+              ok++
+            }
             catch (e: any) {
               fail++
               if (errors.length < 10) {
@@ -156,9 +218,10 @@ export function registerQueryIPC() {
                 errors.push(`[${ok + fail}] ${e.message}\n  SQL: ${preview}`)
               }
             }
+            emitProgress()
           }
         }
-        sender.send('import:progress', { current: ok + fail, total, fail })
+        emitProgress()
       }
       if (fail > 0) {
         throw new Error(`执行完成：${ok} 条成功，${fail} 条失败\n\n` + errors.join('\n\n'))

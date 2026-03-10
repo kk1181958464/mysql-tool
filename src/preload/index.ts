@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/types/ipc-channels'
-import type { ElectronAPI } from './types'
+import type { ElectronAPI, ImportProgressPayload } from './types'
 
 const api: ElectronAPI = {
   connection: {
@@ -34,7 +34,7 @@ const api: ElectronAPI = {
   },
   design: {
     createTable: (connId, db, design) => ipcRenderer.invoke(IPC.DESIGN_CREATE_TABLE, connId, db, design),
-    alterTable: (connId, db, tableName, diff) => ipcRenderer.invoke(IPC.DESIGN_ALTER_TABLE, connId, db, tableName, diff),
+    alterTable: (connId, db, tableName, diff, newDesign) => ipcRenderer.invoke(IPC.DESIGN_ALTER_TABLE, connId, db, tableName, diff, newDesign),
     dropTable: (connId, db, table) => ipcRenderer.invoke(IPC.DESIGN_DROP_TABLE, connId, db, table),
     diff: (oldDesign, newDesign) => ipcRenderer.invoke(IPC.DESIGN_DIFF, oldDesign, newDesign),
   },
@@ -88,10 +88,15 @@ const api: ElectronAPI = {
     openFile: (options) => ipcRenderer.invoke('dialog:openFile', options),
     readFile: (filePath) => ipcRenderer.invoke('dialog:readFile', filePath),
   },
-  onImportProgress: (cb: (data: { current: number; total: number; fail: number }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { current: number; total: number; fail: number }) => cb(data)
+  onImportProgress: (cb: (data: ImportProgressPayload) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: ImportProgressPayload) => cb(data)
     ipcRenderer.on('import:progress', handler)
     return () => ipcRenderer.removeListener('import:progress', handler)
+  },
+  onExportProgress: (cb: (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => cb(data)
+    ipcRenderer.on(IPC.EXPORT_PROGRESS, handler)
+    return () => ipcRenderer.removeListener(IPC.EXPORT_PROGRESS, handler)
   },
   win: {
     minimize: () => ipcRenderer.send(IPC.WIN_MINIMIZE),

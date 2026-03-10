@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 import { IPC } from '../../shared/types/ipc-channels'
 import * as importExport from '../services/import-export'
 import * as path from 'path'
@@ -47,13 +47,18 @@ export function registerImportExportIPC() {
     return importExport.previewImport(filePath)
   })
 
-  ipcMain.handle(IPC.EXPORT_DATA, async (_e, connId: string, db: string, sql: string, filePath: string, format: string, options?: ExportDataOptions) => {
+  ipcMain.handle(IPC.EXPORT_DATA, async (e, connId: string, db: string, sql: string, filePath: string, format: string, options?: ExportDataOptions) => {
     validateFilePath(filePath, EXPORT_EXTS)
     if (format === 'csv') return importExport.exportToCSV(connId, db, sql, filePath)
     if (format === 'json') return importExport.exportToJSON(connId, db, sql, filePath)
     if (format === 'sql') {
       const tables = options?.tables || []
-      return importExport.exportToSQL(connId, db, tables, filePath, options)
+      const win = BrowserWindow.fromWebContents(e.sender)
+      const sendProgress = (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => {
+        if (!win || win.isDestroyed()) return
+        win.webContents.send(IPC.EXPORT_PROGRESS, data)
+      }
+      return importExport.exportToSQL(connId, db, tables, filePath, { ...options, onProgress: sendProgress })
     }
   })
 

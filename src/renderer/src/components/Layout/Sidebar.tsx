@@ -143,7 +143,7 @@ export default function Sidebar() {
       case 'refresh':
         await loadConnections()
         if (connectionStatuses[conn.id]?.connected) {
-          useDatabaseStore.getState().loadDatabases(conn.id)
+          await useDatabaseStore.getState().loadDatabases(conn.id, true)
         }
         break
       case 'createDb':
@@ -298,7 +298,9 @@ export default function Sidebar() {
               <button
                 className="nav-btn"
                 style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                onClick={() => useDatabaseStore.getState().loadDatabases(activeConnection.id)}
+                onClick={async () => {
+                  await useDatabaseStore.getState().loadDatabases(activeConnection.id, true)
+                }}
               >
                 <ReloadOutlined style={{ fontSize: 12 }} />
               </button>

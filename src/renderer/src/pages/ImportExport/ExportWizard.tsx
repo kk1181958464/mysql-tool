@@ -16,7 +16,7 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
   const [format, setFormat] = useState<'csv' | 'json' | 'sql' | 'excel'>('csv')
   const [csvOptions, setCsvOptions] = useState({ delimiter: ',', quote: '"', headers: true, encoding: 'utf-8' })
   const [jsonOptions, setJsonOptions] = useState({ pretty: true, arrayMode: true })
-  const [sqlOptions, setSqlOptions] = useState({ insertStyle: 'multi', dropTable: false, createTable: true })
+  const [sqlOptions, setSqlOptions] = useState({ insertStyle: 'single', dropTable: true, createTable: true })
   const [excelOptions, setExcelOptions] = useState({ sheetName: 'Sheet1' })
   const [outputPath, setOutputPath] = useState('')
   const [progress, setProgress] = useState(0)
@@ -37,9 +37,16 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
     setLoading(true)
     setProgress(0)
     try {
+      const defaultName = outputPath || `export_${Date.now()}.${format}`
       const sql = sourceType === 'sql' ? customSql : `SELECT * FROM ${selectedTables.map(t => `\`${t}\``).join(', ')}`
-      await api.importExport.exportData(connId, selectedDb, sql, outputPath || `export_${Date.now()}.${format}`, format,
-        format === 'csv' ? csvOptions : format === 'json' ? jsonOptions : format === 'sql' ? sqlOptions : excelOptions
+      await api.importExport.exportData(connId, selectedDb, sql, defaultName, format,
+        format === 'csv'
+          ? csvOptions
+          : format === 'json'
+            ? jsonOptions
+            : format === 'sql'
+              ? { ...sqlOptions, tables: selectedTables, includeData: true }
+              : excelOptions
       )
       setProgress(100)
       setResult({ success: true, message: `导出完成: ${outputPath || `export_${Date.now()}.${format}`}` })

@@ -3,6 +3,15 @@ import type { QueryResult, ExplainResult, QueryHistoryItem, Snippet } from '../s
 import type { DatabaseInfo, TableInfo, ColumnDetail, IndexInfo, ForeignKeyInfo, ViewInfo, ProcedureInfo, TriggerInfo, EventInfo, ObjectSearchResult } from '../shared/types/metadata'
 import type { TableDesign, TableDiff, BackupConfig, BackupRecord, BackupSchedule } from '../shared/types/table-design'
 
+export interface ImportProgressPayload {
+  current: number
+  total: number
+  fail: number
+  stage?: 'parsing' | 'executing'
+  originalStatementTotal?: number
+  executableStatementTotal?: number
+}
+
 export interface PerfMetricPayload {
   name: string
   value: number
@@ -42,7 +51,7 @@ export interface ElectronAPI {
   }
   design: {
     createTable(connId: string, db: string, design: TableDesign): Promise<string>
-    alterTable(connId: string, db: string, tableName: string, diff: TableDiff): Promise<string>
+    alterTable(connId: string, db: string, tableName: string, diff: TableDiff, newDesign: TableDesign): Promise<string>
     dropTable(connId: string, db: string, table: string): Promise<string>
     diff(oldDesign: TableDesign, newDesign: TableDesign): Promise<TableDiff>
   }
@@ -96,7 +105,8 @@ export interface ElectronAPI {
     openFile(options: { filters?: { name: string; extensions: string[] }[] }): Promise<string | null>
     readFile(filePath: string): Promise<string>
   }
-  onImportProgress(cb: (data: { current: number; total: number; fail: number }) => void): () => void
+  onImportProgress(cb: (data: ImportProgressPayload) => void): () => void
+  onExportProgress(cb: (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => void): () => void
   win: {
     minimize(): void
     maximize(): void

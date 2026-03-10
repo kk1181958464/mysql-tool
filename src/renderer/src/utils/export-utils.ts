@@ -38,25 +38,6 @@ export function rowsToJSON(rows: Record<string, unknown>[], pretty = true): stri
   return pretty ? JSON.stringify(rows, null, 2) : JSON.stringify(rows)
 }
 
-export function rowsToInsertSQL(
-  table: string,
-  columns: string[],
-  rows: Record<string, unknown>[]
-): string {
-  if (rows.length === 0) return ''
-  const colList = columns.map((c) => `\`${c}\``).join(', ')
-  const valuesList = rows.map((row) => {
-    const vals = columns.map((col) => {
-      const v = row[col]
-      if (v == null) return 'NULL'
-      if (typeof v === 'number') return String(v)
-      return `'${String(v).replace(/'/g, "\\'")}'`
-    })
-    return `(${vals.join(', ')})`
-  })
-  return `INSERT INTO \`${table}\` (${colList}) VALUES\n${valuesList.join(',\n')};\n`
-}
-
 export function downloadFile(content: string, filename: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType })
   const url = URL.createObjectURL(blob)

@@ -22,7 +22,7 @@ interface Props {
 
 const TableDesigner: React.FC<Props> = ({ tabId }) => {
   const { tabs, activeTabId, updateDesign, updateTabTitle, setDesignDirty } = useTabStore()
-  const { loadTables } = useDatabaseStore()
+  const { loadTables, loadColumns } = useDatabaseStore()
   const tab = tabs.find((t) => t.id === tabId) as DesignTab | undefined
 
   const connectionId = tab?.connectionId
@@ -144,7 +144,9 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       if (isEdit && original) {
         // 编辑模式：先计算差异再提交
         const diff = await api.design.diff(original, design)
-        await api.design.alterTable(connectionId, database, design.name, diff)
+        console.log('Table diff:', diff)
+        const alterSQL = await api.design.alterTable(connectionId, database, design.name, diff, design)
+        console.log('Generated SQL:', alterSQL)
         setOriginal(JSON.parse(JSON.stringify(design)))  // 更新原始状态
       } else {
         await api.design.createTable(connectionId, database, design)
@@ -152,6 +154,8 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       }
       // 刷新左侧表列表
       await loadTables(connectionId, database)
+      // 强制重新加载该表的列信息（清除缓存）
+      await loadColumns(connectionId, database, design.name, true)
       setSuccessMsg(isEdit ? '表已修改' : '表已创建')
       setDesignDirty(tabId, false)
       setTimeout(() => setSuccessMsg(null), 3000)

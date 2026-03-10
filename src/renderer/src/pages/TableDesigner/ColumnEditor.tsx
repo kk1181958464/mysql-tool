@@ -176,6 +176,14 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
     setSelectedIndex(target)
   }
 
+  const insertColumn = (index: number) => {
+    const next = [...columns]
+    next.splice(index, 0, { ...emptyCol })
+    onChange(next)
+    setSelectedIndex(index)
+    setRowSelect({ anchor: index, selected: new Set([index]) })
+  }
+
   const handleMouseDown = useCallback((e: React.MouseEvent, index: number) => {
     e.preventDefault()
     resizing.current = { index, startX: e.clientX, startWidth: colWidths[index] }
@@ -206,6 +214,7 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
       {/* 工具栏 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexShrink: 0 }}>
         <Button size="small" icon={<PlusOutlined />} onClick={add}>添加字段</Button>
+        <Button size="small" icon={<PlusOutlined />} onClick={() => selectedIndex !== null && insertColumn(selectedIndex)} disabled={selectedIndex === null}>插入字段</Button>
         <Button size="small" icon={<DeleteOutlined />} onClick={() => selectedIndex !== null && remove(selectedIndex)} disabled={selectedIndex === null}>删除字段</Button>
         <Button size="small" icon={<KeyOutlined />} onClick={() => selectedIndex !== null && updateSelected('primaryKey', !selectedCol?.primaryKey)} disabled={selectedIndex === null}>主键</Button>
         <Button size="small" icon={<ArrowUpOutlined />} onClick={() => selectedIndex !== null && move(selectedIndex, -1)} disabled={selectedIndex === null || selectedIndex === 0}>上移</Button>

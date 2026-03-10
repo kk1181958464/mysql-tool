@@ -20,6 +20,7 @@ interface DatabaseState {
   toggleDatabaseOpen: (connectionId: string, dbName: string) => void
   resetDatabaseOpenStates: (connectionId?: string) => void
   clearCache: (connectionId?: string) => void
+  clearDatabaseData: (connectionId: string, dbName: string) => void
 }
 
 function isFresh(ts: Record<string, number>, key: string): boolean {
@@ -189,6 +190,29 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
         if (k.startsWith(connectionId + ':')) { delete columns[k]; delete _ts[k]; delete _inflight[`columns:${k}`] }
       }
       return { databases, tables, columns, databaseOpenStates, _ts, _inflight }
+    })
+  },
+
+  clearDatabaseData: (connectionId, dbName) => {
+    const tableKey = `${connectionId}:${dbName}`
+    set((s) => {
+      const tables = { ...s.tables }
+      const columns = { ...s.columns }
+      const databaseOpenStates = { ...s.databaseOpenStates }
+      const _ts = { ...s._ts }
+
+      delete tables[tableKey]
+      delete databaseOpenStates[tableKey]
+      delete _ts[tableKey]
+
+      for (const k of Object.keys(columns)) {
+        if (k.startsWith(tableKey + ':')) {
+          delete columns[k]
+          delete _ts[k]
+        }
+      }
+
+      return { tables, columns, databaseOpenStates, _ts }
     })
   },
 }))

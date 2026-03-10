@@ -39,7 +39,7 @@ interface Props {
 export default function ConnectionTree({ filterText = '' }: Props) {
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId)
   const connectionStatuses = useConnectionStore((s) => s.connectionStatuses)
-  const { databases, tables, databaseOpenStates, loadDatabases, loadTables, loadingDatabases, isDatabaseOpen, setDatabaseOpen, resetDatabaseOpenStates } = useDatabaseStore()
+  const { databases, tables, databaseOpenStates, loadDatabases, loadTables, loadingDatabases, isDatabaseOpen, setDatabaseOpen, resetDatabaseOpenStates, clearDatabaseData } = useDatabaseStore()
   const { addDataTab, addDesignTab, addQueryTab, addObjectsTab, renameTable: renameTableInTabs, tabs: mainTabs, removeTabsByIds, clearQueryDatabaseByConnectionAndDb } = useTabStore()
   const selectedDatabase = useAppStore((s) => s.selectedDatabase)
   const setSelectedDatabase = useAppStore((s) => s.setSelectedDatabase)
@@ -55,18 +55,44 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const [editDb, setEditDb] = useState<{ dbName: string; charset: string; collation: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [exportSql, setExportSql] = useState<{ dbName: string; tableName: string; includeData: boolean; sql: string; isDb?: boolean } | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewLoadingText, setPreviewLoadingText] = useState('正在生成导出预览...')
   const [exporting, setExporting] = useState(false)
-  const [exportProgress, setExportProgress] = useState<{ current: string; done: number; total: number; rows: number; finished?: boolean; cancelled?: boolean } | null>(null)
+  const [exportModalOpen, setExportModalOpen] = useState(false)
+  const [exportProgress, setExportProgress] = useState<{ current: string; done: number; total: number; rows: number; totalRows?: number; finished?: boolean; cancelled?: boolean } | null>(null)
   const exportCancelledRef = useRef(false)
+  const exportSessionActiveRef = useRef(false)
   const [dbRemarks, setDbRemarks] = useState<Record<string, string>>({})
   const [remarkEdit, setRemarkEdit] = useState<{ dbName: string; value: string } | null>(null)
   const [closeDbConfirm, setCloseDbConfirm] = useState<{ dbName: string; tabIdsToClose: string[]; dirtyCount: number } | null>(null)
 
-  // 加载数据库备注
   useEffect(() => {
-    api.store.getSettings('db-remarks').then((v) => {
-      if (v) try { setDbRemarks(JSON.parse(v)) } catch {}
+    const off = api.onExportProgress((data) => {
+      if (!exportSessionActiveRef.current) return
+      setExportProgress((prev) => {
+        if (!prev) return data
+        if (prev.cancelled || prev.finished) return prev
+        return { ...prev, ...data }
+      })
     })
+    return off
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try {
+        const remarks = await api.store.getSettings('db-remarks')
+        if (!mounted || !remarks) return
+        const parsed = typeof remarks === 'string' ? JSON.parse(remarks) : remarks
+        if (parsed && typeof parsed === 'object') {
+          setDbRemarks(parsed as Record<string, string>)
+        }
+      } catch {
+        // ignore invalid persisted remarks
+      }
+    })()
+    return () => { mounted = false }
   }, [])
 
   const dbs = activeConnectionId ? databases[activeConnectionId] ?? [] : []
@@ -215,7 +241,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       const titleNode = remark
         ? (
           <span className={dbOpen ? 'db-node-open' : 'db-node-closed'}>
-            {db.name} <span style={{ color: 'var(--text-muted)', fontSize: 11, marginLeft: 4 }}>({remark})</span>
+            {db.name} <span style={{ color: 'var(--accent)', fontSize: 11, marginLeft: 4 }}>{remark}</span>
           </span>
         )
         : (
@@ -417,7 +443,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           await exportDbSql(dbName, true)
           break
         case 'refresh':
-          await loadTables(activeConnectionId, dbName)
+          await loadDatabases(activeConnectionId, true)
           break
         case 'edit':
           try {
@@ -456,7 +482,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       } else if (action === 'exportAll') {
         await exportDbSql(dbName, true)
       } else if (action === 'refresh') {
-        await loadTables(activeConnectionId, dbName)
+        await loadDatabases(activeConnectionId, true)
       }
     } else if (nodeKey.startsWith('table:')) {
       const [, dbName, tableName] = nodeKey.split(':')
@@ -488,16 +514,41 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           break
       }
     } else if (action === 'refresh') {
-      await loadDatabases(activeConnectionId)
+      await loadDatabases(activeConnectionId, true)
     }
   }
 
   const handleDeleteDb = async () => {
     if (!deleteConfirm || !activeConnectionId) return
+    const { dbName } = deleteConfirm
     setDeleting(true)
     try {
-      await api.query.execute(activeConnectionId, `DROP DATABASE \`${deleteConfirm.dbName}\``)
-      await loadDatabases(activeConnectionId)
+      await api.query.execute(activeConnectionId, `DROP DATABASE \`${dbName}\``)
+
+      const tabIdsToClose = mainTabs
+        .filter((tab) =>
+          tab.connectionId === activeConnectionId &&
+          tab.database === dbName &&
+          (tab.type === 'objects' || tab.type === 'data' || tab.type === 'design')
+        )
+        .map((tab) => tab.id)
+      removeTabsByIds(tabIdsToClose)
+
+      clearQueryDatabaseByConnectionAndDb(activeConnectionId, dbName)
+
+      clearDatabaseData(activeConnectionId, dbName)
+
+      if (selectedDatabase === dbName) {
+        setSelectedDatabase(null)
+      }
+      setExpandedKeys((prev) => prev.filter((k) =>
+        k !== `db:${dbName}` &&
+        !k.startsWith(`folder:${dbName}:`) &&
+        !k.startsWith(`table:${dbName}:`) &&
+        !k.startsWith(`view:${dbName}:`)
+      ))
+
+      await loadDatabases(activeConnectionId, true)
       setDeleteConfirm(null)
     } catch (e: any) {
       alert(e.message || '删除失败')
@@ -551,85 +602,62 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   const exportTableSql = async (dbName: string, tableName: string, includeData: boolean) => {
     if (!activeConnectionId) return
-    if (includeData) {
-      const filePath = await api.dialog.saveFile({ defaultPath: `${tableName}.sql`, filters: [{ name: 'SQL Files', extensions: ['sql'] }] })
-      if (!filePath) return
-      setExporting(true)
-      exportCancelledRef.current = false
-      try {
-        setExportProgress({ current: tableName, done: 0, total: 1, rows: 0 })
-        const sql = await fullExportTable(dbName, tableName, (n) => setExportProgress({ current: tableName, done: 0, total: 1, rows: n }))
-        if (exportCancelledRef.current) {
-          setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
-        } else {
-          await api.dialog.writeFile(filePath, sql)
-          setExportProgress(prev => prev ? { ...prev, finished: true } : null)
-        }
-      } catch (e: any) {
-        alert(e.message || '导出失败')
-        setExportProgress(null); setExporting(false)
-      }
-      return
-    }
+    setPreviewLoading(true)
+    setPreviewLoadingText(includeData ? '正在生成结构 + 数据摘要预览...' : '正在生成结构预览...')
     try {
       const ddl = await api.meta.tableDDL(activeConnectionId, dbName, tableName)
       let sql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
       if (!sql.trimEnd().endsWith(';')) sql += ';'
+      if (includeData) {
+        sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
+      }
       setExportSql({ dbName, tableName, includeData, sql })
     } catch (e: any) {
       alert(e.message || '导出失败')
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
   const exportDbSql = async (dbName: string, includeData: boolean) => {
     if (!activeConnectionId) return
-    if (includeData) {
-      const filePath = await api.dialog.saveFile({ defaultPath: `${dbName}.sql`, filters: [{ name: 'SQL Files', extensions: ['sql'] }] })
-      if (!filePath) return
-      setExporting(true)
-      exportCancelledRef.current = false
-      try {
-        await loadTables(activeConnectionId, dbName)
-        const tbls = useDatabaseStore.getState().tables[`${activeConnectionId}:${dbName}`] || []
-        const parts: string[] = []
-        let baseRows = 0
-        for (let i = 0; i < tbls.length; i++) {
-          if (exportCancelledRef.current) break
-          setExportProgress({ current: tbls[i].name, done: i, total: tbls.length, rows: baseRows })
-          const b = baseRows
-          let lastN = 0
-          parts.push(await fullExportTable(dbName, tbls[i].name, (n) => {
-            lastN = n
-            setExportProgress({ current: tbls[i].name, done: i, total: tbls.length, rows: b + n })
-          }))
-          baseRows = b + lastN
-        }
-        if (exportCancelledRef.current) {
-          setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
-        } else {
-          await api.dialog.writeFile(filePath, parts.join('\n\n-- ----------------------------\n\n'))
-          setExportProgress(prev => prev ? { ...prev, finished: true } : null)
-        }
-      } catch (e: any) {
-        alert(e.message || '导出失败')
-        setExportProgress(null); setExporting(false)
-      }
-      return
-    }
+    setPreviewLoading(true)
+    setPreviewLoadingText(includeData ? '正在生成结构 + 数据摘要预览...' : '正在生成结构预览...')
     try {
       await loadTables(activeConnectionId, dbName)
       const tbls = useDatabaseStore.getState().tables[`${activeConnectionId}:${dbName}`] || []
+      const previewTables = includeData ? tbls.slice(0, 3) : tbls
       const parts: string[] = []
-      for (const t of tbls) {
+      if (includeData) {
+        parts.push('-- Preview summary only: showing the first 3 tables. Click "Download File" to export the full structure and data.')
+        if (tbls.length > previewTables.length) {
+          parts.push(`-- ${tbls.length - previewTables.length} more tables omitted from preview.`)
+        }
+        parts.push('')
+      }
+      for (const t of previewTables) {
         const ddl = await api.meta.tableDDL(activeConnectionId, dbName, t.name)
         let d = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
         if (!d.trimEnd().endsWith(';')) d += ';'
+        parts.push('-- ----------------------------')
+        parts.push(`-- Table structure for \`${t.name}\``)
+        parts.push('-- ----------------------------')
         parts.push(d)
+        if (includeData) {
+          parts.push('')
+          parts.push('-- ----------------------------')
+          parts.push(`-- Records of \`${t.name}\``)
+          parts.push('-- ----------------------------')
+          parts.push('-- INSERT statements omitted in preview. Click "Download File" to export the full structure and data.')
+        }
+        parts.push('')
       }
-      const sql = parts.join('\n\n-- ----------------------------\n\n')
+      const sql = parts.join('\n')
       setExportSql({ dbName, tableName: dbName, includeData, sql, isDb: true })
     } catch (e: any) {
       alert(e.message || '导出失败')
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -684,6 +712,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
     // 含数据，分批导出
     setExporting(true)
+    setExportModalOpen(true)
+    exportSessionActiveRef.current = true
     exportCancelledRef.current = false
     try {
       let fullSql: string
@@ -699,9 +729,11 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         }
         fullSql = parts.join('\n\n-- ----------------------------\n\n')
       } else {
-        setExportProgress({ current: tableName, done: 0, total: 1, rows: 0 })
+        const countRes = await api.query.execute(activeConnectionId, `SELECT COUNT(*) AS total FROM \`${dbName}\`.\`${tableName}\``, dbName)
+        const totalRows = Number((countRes.rows?.[0] as any)?.total ?? 0)
+        setExportProgress({ current: tableName, done: 0, total: 1, rows: 0, totalRows })
         fullSql = await fullExportTable(dbName, tableName, (n) => {
-          setExportProgress({ current: tableName, done: 0, total: 1, rows: n })
+          setExportProgress({ current: tableName, done: 0, total: 1, rows: n, totalRows })
         })
       }
 
@@ -1125,6 +1157,14 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         )}
       </Modal>
 
+      {/* 生成预览中 */}
+      <Modal open={previewLoading} title="正在生成预览..." width={420} onClose={() => {}} footer={null}>
+        <div style={{ padding: '12px 0', color: 'var(--text-secondary)' }}>
+          <div style={{ marginBottom: 8 }}>{previewLoadingText}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>将先展示摘要预览；完整结构 + 数据需点击「下载文件」后导出。</div>
+        </div>
+      </Modal>
+
       {/* 导出SQL */}
       <Modal
         open={!!exportSql}
@@ -1142,7 +1182,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         {exportSql && (
           <div>
             <div style={{ marginBottom: 8, color: 'var(--text-muted)', fontSize: 12 }}>
-              {exportSql.includeData ? '结构 + 数据（预览前1000行）' : '仅结构'} | {exportSql.sql.length.toLocaleString()} 字符 | {exportSql.sql.split('\n').length.toLocaleString()} 行
+              {exportSql.includeData ? '结构 + 数据（摘要预览）' : '仅结构'} | {exportSql.sql.length.toLocaleString()} 字符 | {exportSql.sql.split('\n').length.toLocaleString()} 行
             </div>
             <textarea
               readOnly
@@ -1166,17 +1206,17 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
       {/* 导出进度 */}
       <Modal
-        open={!!exportProgress}
+        open={exportModalOpen}
         title={exportProgress?.finished ? '导出完成' : exportProgress?.cancelled ? '导出已取消' : '正在导出...'}
         width={400}
         onClose={() => {}}
         footer={
           exportProgress?.finished ? (
-            <Button variant="primary" onClick={() => { setExportProgress(null); setExporting(false) }}>完成</Button>
+            <Button variant="primary" onClick={() => { exportSessionActiveRef.current = false; setExportModalOpen(false); setExportProgress(null); setExporting(false) }}>完成</Button>
           ) : exportProgress?.cancelled ? (
-            <Button variant="default" onClick={() => { setExportProgress(null); setExporting(false) }}>关闭</Button>
+            <Button variant="default" onClick={() => { exportSessionActiveRef.current = false; setExportModalOpen(false); setExportProgress(null); setExporting(false) }}>关闭</Button>
           ) : (
-            <Button variant="danger" onClick={() => { exportCancelledRef.current = true }}>取消</Button>
+            <Button variant="danger" onClick={() => { exportCancelledRef.current = true; exportSessionActiveRef.current = false; setExportProgress(prev => prev ? { ...prev, cancelled: true } : prev); setExporting(false) }}>取消</Button>
           )
         }
       >
@@ -1185,22 +1225,31 @@ export default function ConnectionTree({ filterText = '' }: Props) {
             {exportProgress.finished ? (
               <div style={{ color: 'var(--color-green, #22c55e)' }}>✓ 所有数据已成功导出到文件</div>
             ) : exportProgress.cancelled ? (
-              <div style={{ color: 'var(--color-red, #ef4444)' }}>导出已中断，已导出的数据未保存</div>
+              <div style={{ color: 'var(--color-red, #ef4444)' }}>导出已中断，目标文件中可能已包含部分导出数据</div>
             ) : (
               <>
                 <div style={{ marginBottom: 12 }}>
                   正在导出表：<strong>{exportProgress.current}</strong>
                 </div>
-                {exportProgress.total > 1 && (
+                {exportProgress.total > 1 ? (
                   <div style={{ marginBottom: 8 }}>
                     表进度：{exportProgress.done}/{exportProgress.total}
                     <div style={{ height: 6, background: 'var(--border)', borderRadius: 3, marginTop: 4 }}>
                       <div style={{ height: '100%', background: 'var(--accent)', borderRadius: 3, width: `${(exportProgress.done / exportProgress.total) * 100}%`, transition: 'width 0.3s' }} />
                     </div>
                   </div>
-                )}
+                ) : typeof exportProgress.totalRows === 'number' && exportProgress.totalRows >= 0 ? (
+                  <div style={{ marginBottom: 8 }}>
+                    导出进度：{exportProgress.totalRows === 0 ? 100 : Math.min(100, Math.round((exportProgress.rows / exportProgress.totalRows) * 100))}%
+                    <div style={{ height: 6, background: 'var(--border)', borderRadius: 3, marginTop: 4 }}>
+                      <div style={{ height: '100%', background: 'var(--accent)', borderRadius: 3, width: `${exportProgress.totalRows === 0 ? 100 : Math.min(100, Math.round((exportProgress.rows / exportProgress.totalRows) * 100))}%`, transition: 'width 0.3s' }} />
+                    </div>
+                  </div>
+                ) : null}
                 <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                  已导出 {exportProgress.rows.toLocaleString()} 行数据...
+                  {exportProgress.total > 1
+                    ? `当前表已导出 ${exportProgress.rows.toLocaleString()} 行数据，正在写入 SQL 文件...`
+                    : `已导出 ${exportProgress.rows.toLocaleString()} 行数据...`}
                 </div>
               </>
             )}

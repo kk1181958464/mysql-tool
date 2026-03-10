@@ -241,22 +241,7 @@ export function Table<T extends Record<string, any>>({
                   <div className="ui-table-skeleton-line" />
                 </td>
               </tr>
-            ) : dataSource.length === 0 ? (
-              <tr><td colSpan={columns.length} className="ui-table-empty">
-                <div className="ui-table-empty-icon">
-                  <svg width="64" height="48" viewBox="0 0 64 48" fill="none">
-                    <ellipse cx="32" cy="44" rx="32" ry="4" fill="currentColor" opacity="0.08"/>
-                    <rect x="12" y="8" width="40" height="30" rx="4" stroke="currentColor" opacity="0.15" strokeWidth="1.5" fill="none"/>
-                    <line x1="12" y1="16" x2="52" y2="16" stroke="currentColor" opacity="0.1" strokeWidth="1.5"/>
-                    <rect x="18" y="21" width="12" height="2" rx="1" fill="currentColor" opacity="0.12"/>
-                    <rect x="18" y="27" width="20" height="2" rx="1" fill="currentColor" opacity="0.08"/>
-                    <rect x="18" y="33" width="8" height="2" rx="1" fill="currentColor" opacity="0.06"/>
-                  </svg>
-                </div>
-                <div className="ui-table-empty-text">暂无数据</div>
-                <div className="ui-table-empty-hint">当前没有可显示的记录</div>
-              </td></tr>
-            ) : (
+            ) : dataSource.length === 0 ? null : (
               <>
                 {virtualEnabled && virtualWindow.topSpacerHeight > 0 && (
                   <tr className="ui-table-virtual-spacer" aria-hidden>
@@ -284,6 +269,24 @@ export function Table<T extends Record<string, any>>({
             )}
           </tbody>
         </table>
+        {!loading && dataSource.length === 0 && (
+          <div className="ui-table-empty-overlay" aria-label="empty">
+            <div className="ui-table-empty-overlay-content">
+              <div className="ui-table-empty-icon">
+                <svg width="64" height="48" viewBox="0 0 64 48" fill="none">
+                  <ellipse cx="32" cy="44" rx="32" ry="4" fill="currentColor" opacity="0.08"/>
+                  <rect x="12" y="8" width="40" height="30" rx="4" stroke="currentColor" opacity="0.15" strokeWidth="1.5" fill="none"/>
+                  <line x1="12" y1="16" x2="52" y2="16" stroke="currentColor" opacity="0.1" strokeWidth="1.5"/>
+                  <rect x="18" y="21" width="12" height="2" rx="1" fill="currentColor" opacity="0.12"/>
+                  <rect x="18" y="27" width="20" height="2" rx="1" fill="currentColor" opacity="0.08"/>
+                  <rect x="18" y="33" width="8" height="2" rx="1" fill="currentColor" opacity="0.06"/>
+                </svg>
+              </div>
+              <div className="ui-table-empty-text">暂无数据</div>
+              <div className="ui-table-empty-hint">当前没有可显示的记录</div>
+            </div>
+          </div>
+        )}
         {loading && (
           <div className="ui-table-loading-overlay">
             <div className="ui-table-loading-content">
