@@ -132,6 +132,15 @@ function createWindow() {
   mainWindow.on('maximize', () => mainWindow?.webContents.send('win:maximized', true))
   mainWindow.on('unmaximize', () => mainWindow?.webContents.send('win:maximized', false))
 
+  // 生产环境禁用 Ctrl+R 刷新功能
+  if (!process.env.VITE_DEV_SERVER_URL) {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'r' && (input.control || input.meta)) {
+        event.preventDefault()
+      }
+    })
+  }
+
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {

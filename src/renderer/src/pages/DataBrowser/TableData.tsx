@@ -594,7 +594,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement | null
     if (!target) return
-    if (target.closest('.ui-table td, .ui-table th, .ui-btn, .ui-input, input, textarea, select, a, [role="button"], .context-menu, .ui-modal')) return
+    // 排除表格内容、滚动容器（滚动条点击）等
+    if (target.closest('.ui-table td, .ui-table th, .ui-table-scroll, .ui-btn, .ui-input, input, textarea, select, a, [role="button"], .context-menu, .ui-modal')) return
     clearAllSelections()
     setHeaderContextMenu(null)
     setCellContextMenu(null)
@@ -906,7 +907,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     const onPointerDown = (evt: PointerEvent) => {
       const target = evt.target as HTMLElement | null
       if (!target) return
-      if (target.closest('.ui-table td, .ui-table th, .context-menu, .ui-modal, .header-menu-btn, .ui-btn, .ui-input, input, textarea, select, a, [role="button"]')) return
+      // 排除表格内容、滚动容器（滚动条点击）等
+      if (target.closest('.ui-table td, .ui-table th, .ui-table-scroll, .context-menu, .ui-modal, .header-menu-btn, .ui-btn, .ui-input, input, textarea, select, a, [role="button"]')) return
       clearAllSelections()
       setHeaderContextMenu(null)
       setCellContextMenu(null)
@@ -1201,9 +1203,20 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           dataSource={tableDataSource}
           columns={columns}
           rowKey={getRowKey}
-          onRow={(record: Record<string, unknown>) => ({
-            style: record._newKey ? { background: 'rgba(34,197,94,0.12)' } : undefined,
-          })}
+          onRow={(record: Record<string, unknown>) => {
+            const rk = getRowKey(record)
+            const isSelected = selectedRowKeys.has(rk)
+            const isNew = !!record._newKey
+            let style: React.CSSProperties | undefined
+            if (isSelected && isNew) {
+              style = { background: 'rgba(114, 104, 232, 0.15)' }
+            } else if (isSelected) {
+              style = { background: 'rgba(114, 104, 232, 0.12)' }
+            } else if (isNew) {
+              style = { background: 'rgba(34,197,94,0.12)' }
+            }
+            return { style }
+          }}
           scroll={{ x: 'max-content' }}
           virtual={{
             enabled: tableDataSource.length >= TABLEDATA_VIRTUAL_THRESHOLD,

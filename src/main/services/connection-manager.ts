@@ -311,6 +311,7 @@ function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overr
     connectionLimit: config.poolMax,
     waitForConnections: true,
     enableKeepAlive: true,
+    multipleStatements: true,
     typeCast: function (field: any, next: any) {
       if (field.type === 'DATETIME' || field.type === 'DATE' || field.type === 'TIMESTAMP' || field.type === 'NEWDATE') {
         return field.string()

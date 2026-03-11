@@ -20,7 +20,58 @@ export async function execute(connectionId: string, sql: string, database?: stri
     const elapsed = Date.now() - start
     const isSelect = /^\s*(SELECT|SHOW|DESCRIBE|DESC|EXPLAIN)/i.test(sql)
 
-    if (isSelect && Array.isArray(rows)) {
+    // 检查是否是多语句执行的结果（数组中包含数组）
+    const isMultipleStatements = Array.isArray(rows) && rows.length > 0 && Array.isArray((rows as any[])[0])
+
+    if (isMultipleStatements) {
+      // 多语句执行：汇总所有语句的结果
+      let totalAffectedRows = 0
+      let lastInsertId = 0
+      const allRows: Record<string, unknown>[] = []
+      const allColumns: { name: string; type: string; nullable: boolean; defaultValue: null; primaryKey: boolean; autoIncrement: boolean; comment: string }[] = []
+      let hasSelectResult = false
+
+      for (let i = 0; i < (rows as any[]).length; i++) {
+        const statementResult = (rows as any[])[i]
+        const statementFields = (fields as any[])?.[i]
+
+        if (Array.isArray(statementResult)) {
+          // SELECT 语句结果
+          hasSelectResult = true
+          allRows.push(...statementResult)
+          if (allColumns.length === 0 && statementFields) {
+            statementFields.forEach((f: any) => {
+              allColumns.push({
+                name: f.name,
+                type: f.type?.toString() || '',
+                nullable: f.flags ? !(f.flags & 1) : true,
+                defaultValue: null,
+                primaryKey: f.flags ? !!(f.flags & 2) : false,
+                autoIncrement: f.flags ? !!(f.flags & 512) : false,
+                comment: '',
+              })
+            })
+          }
+        } else if (statementResult && typeof statementResult === 'object') {
+          // INSERT/UPDATE/DELETE 语句结果
+          totalAffectedRows += statementResult.affectedRows || 0
+          if (statementResult.insertId && statementResult.insertId > lastInsertId) {
+            lastInsertId = statementResult.insertId
+          }
+        }
+      }
+
+      result = {
+        columns: allColumns,
+        rows: allRows,
+        affectedRows: totalAffectedRows,
+        insertId: lastInsertId,
+        executionTime: elapsed,
+        rowCount: allRows.length,
+        sql,
+        isSelect: hasSelectResult,
+      }
+    } else if (isSelect && Array.isArray(rows)) {
       result = {
         columns: (fields as any[])?.map(f => ({
           name: f.name,
