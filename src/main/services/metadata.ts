@@ -1,12 +1,13 @@
 import mysql from 'mysql2/promise'
 import * as connectionManager from './connection-manager'
+import { quoteId } from '../utils/sql'
 import type {
   DatabaseInfo, TableInfo, ColumnDetail, IndexInfo, ForeignKeyInfo,
   ViewInfo, ProcedureInfo, TriggerInfo, EventInfo, ObjectSearchResult
 } from '../../shared/types/metadata'
 
 async function runQuery(conn: mysql.PoolConnection, sql: string, params?: unknown[], db?: string): Promise<Record<string, unknown>[]> {
-  if (db) await conn.query(`USE \`${db}\``)
+  if (db) await conn.query(`USE ${quoteId(db)}`)
   const [rows] = await conn.query(sql, params)
   return rows as Record<string, unknown>[]
 }
@@ -20,7 +21,7 @@ async function query(connId: string, sql: string, params?: unknown[], db?: strin
       throw err
     }
 
-    try { conn.destroy() } catch { conn.release() }
+    try { conn.destroy() } catch { /* 连接已断开，忽略 */ }
     conn = await connectionManager.ensureConnection(connId)
     return await runQuery(conn, sql, params, db)
   } finally {
@@ -72,7 +73,7 @@ export async function getColumns(connId: string, db: string, table: string): Pro
 }
 
 export async function getIndexes(connId: string, db: string, table: string): Promise<IndexInfo[]> {
-  const rows = await query(connId, `SHOW INDEX FROM \`${db}\`.\`${table}\``)
+  const rows = await query(connId, `SHOW INDEX FROM ${quoteId(db)}.${quoteId(table)}`)
   const map = new Map<string, IndexInfo>()
   for (const r of rows) {
     const name = r.Key_name
@@ -86,11 +87,18 @@ export async function getIndexes(connId: string, db: string, table: string): Pro
 
 export async function getForeignKeys(connId: string, db: string, table: string): Promise<ForeignKeyInfo[]> {
   const rows = await query(connId, `SELECT CONSTRAINT_NAME as name, COLUMN_NAME as col, REFERENCED_TABLE_NAME as refTable, REFERENCED_COLUMN_NAME as refCol FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION`, [db, table])
+  if (!rows.length) return []
+  // 批量查询所有约束的 UPDATE_RULE / DELETE_RULE，消除 N+1
+  const refRules = await query(connId, `SELECT CONSTRAINT_NAME, UPDATE_RULE, DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=? AND TABLE_NAME=?`, [db, table])
+  const ruleMap = new Map<string, { update: string; delete: string }>()
+  for (const r of refRules) {
+    ruleMap.set(String(r.CONSTRAINT_NAME), { update: String(r.UPDATE_RULE || 'RESTRICT'), delete: String(r.DELETE_RULE || 'RESTRICT') })
+  }
   const map = new Map<string, ForeignKeyInfo>()
   for (const r of rows) {
     if (!map.has(r.name)) {
-      const ref = await query(connId, `SELECT UPDATE_RULE, DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=? AND CONSTRAINT_NAME=?`, [db, r.name])
-      map.set(r.name, { name: r.name, columns: [], referencedTable: r.refTable, referencedColumns: [], onUpdate: ref[0]?.UPDATE_RULE || 'RESTRICT', onDelete: ref[0]?.DELETE_RULE || 'RESTRICT' })
+      const rule = ruleMap.get(String(r.name))
+      map.set(r.name, { name: r.name, columns: [], referencedTable: r.refTable, referencedColumns: [], onUpdate: rule?.update || 'RESTRICT', onDelete: rule?.delete || 'RESTRICT' })
     }
     map.get(r.name)!.columns.push(r.col)
     map.get(r.name)!.referencedColumns.push(r.refCol)
@@ -99,12 +107,12 @@ export async function getForeignKeys(connId: string, db: string, table: string):
 }
 
 export async function getTableDDL(connId: string, db: string, table: string): Promise<string> {
-  const rows = await query(connId, `SHOW CREATE TABLE \`${db}\`.\`${table}\``)
+  const rows = await query(connId, `SHOW CREATE TABLE ${quoteId(db)}.${quoteId(table)}`)
   return rows[0]?.['Create Table'] || rows[0]?.['Create View'] || ''
 }
 
 export async function getTableStatus(connId: string, db: string): Promise<TableInfo[]> {
-  const rows = await query(connId, `SHOW TABLE STATUS FROM \`${db}\``)
+  const rows = await query(connId, `SHOW TABLE STATUS FROM ${quoteId(db)}`)
   return rows.map(r => ({
     name: r.Name,
     type: r.Comment === 'VIEW' ? 'VIEW' as const : 'TABLE' as const,

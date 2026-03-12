@@ -32,7 +32,7 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
     try {
       const res = await api.backup.schedule({ connectionId: connId, action: 'list' })
       setSchedules(Array.isArray(res) ? res : [])
-    } catch { /* ignore */ } finally { setLoading(false) }
+    } catch (e) { console.warn('[BackupSchedule] 加载失败:', e) } finally { setLoading(false) }
   }, [connId])
 
   useEffect(() => { load() }, [load])

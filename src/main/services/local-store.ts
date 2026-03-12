@@ -173,7 +173,7 @@ export const connections = {
     return db.prepare('SELECT * FROM connections ORDER BY sortOrder, name').all().map(rowToConnection)
   },
   getById(id: string): ConnectionConfig | undefined {
-    const row = db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as any
+    const row = db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as Record<string, unknown> | undefined
     return row ? rowToConnection(row) : undefined
   },
   save(conn: ConnectionSavePayload) {
@@ -229,7 +229,7 @@ export const snippets = {
 
 export const settings = {
   get(key: string): string | null {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
     return row ? row.value : null
   },
   set(key: string, value: string) {

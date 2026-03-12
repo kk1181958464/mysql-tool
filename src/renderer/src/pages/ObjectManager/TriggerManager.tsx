@@ -25,7 +25,7 @@ const TriggerManager: React.FC = () => {
     try {
       const res = await api.meta.triggers(connId, db)
       setTriggers(Array.isArray(res) ? res : [])
-    } catch { /* ignore */ } finally { setLoading(false) }
+    } catch (e) { console.warn('[TriggerManager] 加载失败:', e) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])

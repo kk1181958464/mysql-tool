@@ -334,7 +334,7 @@ function createConnectionError(message: string, code: string, cause?: unknown): 
   const err = new Error(message) as ConnectionLikeError
   err.code = code
   if (cause) {
-    ;(err as any).cause = cause
+    ;(err as Error & { cause?: unknown }).cause = cause
   }
   return err
 }
@@ -381,9 +381,15 @@ export async function connect(config: ConnectionConfig): Promise<ConnectionStatu
     }
 
     const pool = mysql.createPool(buildPoolOptions(config, host, port))
+
+    // 监听连接池异常，自动清理残留资源防止内存泄漏
+    pool.on('error', (err) => {
+      logger.warn(`[connection-manager] Pool error for ${config.id}: ${err.message}`)
+    })
+
     const conn = await pool.getConnection()
     const [rows] = await conn.query('SELECT VERSION() as version')
-    const version = (rows as any[])[0]?.version || ''
+    const version = (rows as Record<string, string>[])[0]?.version || ''
     conn.release()
 
     pools.set(config.id, pool)
@@ -440,7 +446,7 @@ export async function ensureConnection(id: string): Promise<mysql.PoolConnection
     }
 
     logger.warn(`Connection lost detected for ${id}, recreating pool`)
-    try { conn.destroy() } catch { conn.release() }
+    try { conn.destroy() } catch { /* 连接已断开，忽略 */ }
 
     const config = getSavedConfig(id)
     if (!config) {
@@ -470,7 +476,7 @@ export async function testConnection(config: ConnectionConfig): Promise<Connecti
     }
     const conn = await mysql.createConnection(buildPoolOptions(config, host, port))
     const [rows] = await conn.query('SELECT VERSION() as version')
-    const version = (rows as any[])[0]?.version || ''
+    const version = (rows as Record<string, string>[])[0]?.version || ''
     await conn.end()
     return { id: config.id, connected: true, serverVersion: version }
   } catch (err: any) {

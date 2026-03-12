@@ -1,7 +1,8 @@
 import type { TableDesign, TableDiff, ColumnDesign, IndexDesign, ForeignKeyDesign } from '../../shared/types/table-design'
+import { quoteId } from '../utils/sql'
 
 function colDef(c: ColumnDesign): string {
-  let s = `\`${c.name}\` ${c.type}`
+  let s = `${quoteId(c.name)} ${c.type}`
   if (c.length) s += `(${c.length}${c.decimals ? `,${c.decimals}` : ''})`
   if (c.unsigned) s += ' UNSIGNED'
   if (c.zerofill) s += ' ZEROFILL'
@@ -14,12 +15,12 @@ function colDef(c: ColumnDesign): string {
 }
 
 function indexDef(idx: IndexDesign): string {
-  const cols = idx.columns.map(c => `\`${c.name}\`${c.length ? `(${c.length})` : ''} ${c.order}`).join(', ')
+  const cols = idx.columns.map(c => `${quoteId(c.name)}${c.length ? `(${c.length})` : ''} ${c.order}`).join(', ')
   let s = ''
-  if (idx.type === 'UNIQUE') s = `UNIQUE INDEX \`${idx.name}\``
-  else if (idx.type === 'FULLTEXT') s = `FULLTEXT INDEX \`${idx.name}\``
-  else if (idx.type === 'SPATIAL') s = `SPATIAL INDEX \`${idx.name}\``
-  else s = `INDEX \`${idx.name}\``
+  if (idx.type === 'UNIQUE') s = `UNIQUE INDEX ${quoteId(idx.name)}`
+  else if (idx.type === 'FULLTEXT') s = `FULLTEXT INDEX ${quoteId(idx.name)}`
+  else if (idx.type === 'SPATIAL') s = `SPATIAL INDEX ${quoteId(idx.name)}`
+  else s = `INDEX ${quoteId(idx.name)}`
   s += ` (${cols})`
   if (idx.method) s += ` USING ${idx.method}`
   if (idx.comment) s += ` COMMENT '${idx.comment.replace(/'/g, "\\'")}'`
@@ -27,20 +28,20 @@ function indexDef(idx: IndexDesign): string {
 }
 
 function fkDef(fk: ForeignKeyDesign): string {
-  const cols = fk.columns.map(c => `\`${c}\``).join(', ')
-  const refCols = fk.referencedColumns.map(c => `\`${c}\``).join(', ')
-  return `CONSTRAINT \`${fk.name}\` FOREIGN KEY (${cols}) REFERENCES \`${fk.referencedTable}\` (${refCols}) ON UPDATE ${fk.onUpdate} ON DELETE ${fk.onDelete}`
+  const cols = fk.columns.map(c => quoteId(c)).join(', ')
+  const refCols = fk.referencedColumns.map(c => quoteId(c)).join(', ')
+  return `CONSTRAINT ${quoteId(fk.name)} FOREIGN KEY (${cols}) REFERENCES ${quoteId(fk.referencedTable)} (${refCols}) ON UPDATE ${fk.onUpdate} ON DELETE ${fk.onDelete}`
 }
 
 export function generateCreateTableSQL(design: TableDesign): string {
   const parts: string[] = []
   for (const c of design.columns) parts.push('  ' + colDef(c))
-  const pks = design.columns.filter(c => c.primaryKey).map(c => `\`${c.name}\``)
+  const pks = design.columns.filter(c => c.primaryKey).map(c => quoteId(c.name))
   if (pks.length) parts.push(`  PRIMARY KEY (${pks.join(', ')})`)
   for (const idx of design.indexes) parts.push('  ' + indexDef(idx))
   for (const fk of design.foreignKeys) parts.push('  ' + fkDef(fk))
 
-  let sql = `CREATE TABLE \`${design.name}\` (\n${parts.join(',\n')}\n)`
+  let sql = `CREATE TABLE ${quoteId(design.name)} (\n${parts.join(',\n')}\n)`
   if (design.engine) sql += ` ENGINE=${design.engine}`
   if (design.charset) sql += ` DEFAULT CHARSET=${design.charset}`
   if (design.collation) sql += ` COLLATE=${design.collation}`
@@ -53,7 +54,7 @@ export function generateAlterTableSQL(tableName: string, diff: TableDiff, newDes
   // 兼容处理：如果 diff 结构不完整，返回空
   if (!diff) return ''
   if (diff.dropColumns) {
-    for (const col of diff.dropColumns) stmts.push(`DROP COLUMN \`${col}\``)
+    for (const col of diff.dropColumns) stmts.push(`DROP COLUMN ${quoteId(col)}`)
   }
   if (diff.addColumns) {
     for (const col of diff.addColumns) {
@@ -62,7 +63,7 @@ export function generateAlterTableSQL(tableName: string, diff: TableDiff, newDes
         stmts.push(`ADD COLUMN ${colDef(col)} FIRST`)
       } else if (colIndex > 0) {
         const prevCol = newDesign.columns[colIndex - 1]
-        stmts.push(`ADD COLUMN ${colDef(col)} AFTER \`${prevCol.name}\``)
+        stmts.push(`ADD COLUMN ${colDef(col)} AFTER ${quoteId(prevCol.name)}`)
       } else {
         stmts.push(`ADD COLUMN ${colDef(col)}`)
       }
@@ -72,18 +73,18 @@ export function generateAlterTableSQL(tableName: string, diff: TableDiff, newDes
     for (const m of diff.modifyColumns) {
       const colIndex = newDesign.columns.findIndex(c => c.name === m.new.name)
       if (colIndex === 0) {
-        stmts.push(`CHANGE COLUMN \`${m.old}\` ${colDef(m.new)} FIRST`)
+        stmts.push(`CHANGE COLUMN ${quoteId(m.old)} ${colDef(m.new)} FIRST`)
       } else if (colIndex > 0) {
         const prevCol = newDesign.columns[colIndex - 1]
-        stmts.push(`CHANGE COLUMN \`${m.old}\` ${colDef(m.new)} AFTER \`${prevCol.name}\``)
+        stmts.push(`CHANGE COLUMN ${quoteId(m.old)} ${colDef(m.new)} AFTER ${quoteId(prevCol.name)}`)
       } else {
-        stmts.push(`CHANGE COLUMN \`${m.old}\` ${colDef(m.new)}`)
+        stmts.push(`CHANGE COLUMN ${quoteId(m.old)} ${colDef(m.new)}`)
       }
     }
   }
-  for (const idx of diff.dropIndexes || []) stmts.push(`DROP INDEX \`${idx}\``)
+  for (const idx of diff.dropIndexes || []) stmts.push(`DROP INDEX ${quoteId(idx)}`)
   for (const idx of diff.addIndexes || []) stmts.push(`ADD ${indexDef(idx)}`)
-  for (const fk of diff.dropForeignKeys || []) stmts.push(`DROP FOREIGN KEY \`${fk}\``)
+  for (const fk of diff.dropForeignKeys || []) stmts.push(`DROP FOREIGN KEY ${quoteId(fk)}`)
   for (const fk of diff.addForeignKeys || []) stmts.push(`ADD ${fkDef(fk)}`)
   const opts = diff.changeOptions
   if (opts?.engine) stmts.push(`ENGINE=${opts.engine}`)
@@ -91,11 +92,11 @@ export function generateAlterTableSQL(tableName: string, diff: TableDiff, newDes
   if (opts?.collation) stmts.push(`COLLATE=${opts.collation}`)
   if (opts?.comment) stmts.push(`COMMENT='${opts.comment.replace(/'/g, "\\'")}'`)
   if (!stmts.length) return ''
-  return `ALTER TABLE \`${tableName}\`\n  ${stmts.join(',\n  ')};`
+  return `ALTER TABLE ${quoteId(tableName)}\n  ${stmts.join(',\n  ')};`
 }
 
 export function generateDropTableSQL(db: string, table: string): string {
-  return `DROP TABLE \`${db}\`.\`${table}\`;`
+  return `DROP TABLE ${quoteId(db)}.${quoteId(table)};`
 }
 
 export function diffTables(oldDesign: TableDesign, newDesign: TableDesign): TableDiff {

@@ -27,7 +27,7 @@ const Backup: React.FC = () => {
     try {
       const res = await api.backup.list(connId)
       setRecords(Array.isArray(res) ? res : [])
-    } catch { /* ignore */ } finally { setLoading(false) }
+    } catch (e) { console.warn('[Backup] 加载失败:', e) } finally { setLoading(false) }
   }, [connId])
 
   useEffect(() => { load() }, [load])

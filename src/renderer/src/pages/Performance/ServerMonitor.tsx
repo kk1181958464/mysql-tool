@@ -43,7 +43,7 @@ const ServerMonitor: React.FC = () => {
         threads: parseInt(findStat('Threads_running')),
         bufferPool: `${(parseInt(findStat('Innodb_buffer_pool_pages_data')) / Math.max(1, parseInt(findStat('Innodb_buffer_pool_pages_total'))) * 100).toFixed(1)}%`,
       })
-    } catch { /* ignore */ } finally { setLoading(false) }
+    } catch (e) { console.warn('[ServerMonitor] 加载失败:', e) } finally { setLoading(false) }
   }, [connId])
 
   useEffect(() => { load() }, [load])

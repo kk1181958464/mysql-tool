@@ -32,7 +32,7 @@ const ProcedureManager: React.FC = () => {
       const [procs, funcs] = await Promise.all([api.meta.procedures(connId, db), api.meta.functions(connId, db)])
       setProcedures(Array.isArray(procs) ? procs : [])
       setFunctions(Array.isArray(funcs) ? funcs : [])
-    } catch { /* ignore */ } finally { setLoading(false) }
+    } catch (e) { console.warn('[ProcedureManager] 加载失败:', e) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])

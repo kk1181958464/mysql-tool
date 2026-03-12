@@ -6,6 +6,7 @@ import * as connectionManager from './connection-manager'
 import * as metadata from './metadata'
 import * as localStore from './local-store'
 import * as logger from '../utils/logger'
+import { quoteId } from '../utils/sql'
 import type { BackupConfig, BackupRecord } from '../../shared/types/table-design'
 
 const gzip = promisify(zlib.gzip)
@@ -29,23 +30,23 @@ export async function createBackup(config: BackupConfig): Promise<BackupRecord> 
     const conn = await connectionManager.getConnection(config.connectionId)
     let sql = ''
     try {
-      await conn.query(`USE \`${config.databaseName}\``)
-      const [tableRows] = await conn.query(`SHOW TABLES FROM \`${config.databaseName}\``)
-      const tables = (tableRows as any[]).map(r => Object.values(r)[0] as string)
+      await conn.query(`USE ${quoteId(config.databaseName)}`)
+      const [tableRows] = await conn.query(`SHOW TABLES FROM ${quoteId(config.databaseName)}`)
+      const tables = (tableRows as Record<string, string>[]).map(r => Object.values(r)[0] as string)
 
       sql += `-- Backup of ${config.databaseName}\n-- Date: ${new Date().toISOString()}\n\nSET FOREIGN_KEY_CHECKS=0;\n\n`
 
       for (const table of tables) {
         if (config.backupType !== 'data') {
-          const [ddlRows] = await conn.query(`SHOW CREATE TABLE \`${config.databaseName}\`.\`${table}\``)
-          const ddl = (ddlRows as any[])[0]?.['Create Table']
-          if (ddl) sql += `DROP TABLE IF EXISTS \`${table}\`;\n${ddl};\n\n`
+          const [ddlRows] = await conn.query(`SHOW CREATE TABLE ${quoteId(config.databaseName)}.${quoteId(table)}`)
+          const ddl = (ddlRows as Record<string, string>[])[0]?.['Create Table']
+          if (ddl) sql += `DROP TABLE IF EXISTS ${quoteId(table)};\n${ddl};\n\n`
         }
         if (config.backupType !== 'structure') {
-          const [rows] = await conn.query(`SELECT * FROM \`${config.databaseName}\`.\`${table}\``)
-          const dataRows = rows as any[]
+          const [rows] = await conn.query(`SELECT * FROM ${quoteId(config.databaseName)}.${quoteId(table)}`)
+          const dataRows = rows as Record<string, unknown>[]
           if (dataRows.length) {
-            const cols = Object.keys(dataRows[0]).map(c => `\`${c}\``).join(', ')
+            const cols = Object.keys(dataRows[0]).map(c => quoteId(c)).join(', ')
             for (let i = 0; i < dataRows.length; i += 1000) {
               const batch = dataRows.slice(i, i + 1000)
               const values = batch.map(r => {
@@ -57,7 +58,7 @@ export async function createBackup(config: BackupConfig): Promise<BackupRecord> 
                 })
                 return `(${vals.join(', ')})`
               }).join(',\n')
-              sql += `INSERT INTO \`${table}\` (${cols}) VALUES\n${values};\n\n`
+              sql += `INSERT INTO ${quoteId(table)} (${cols}) VALUES\n${values};\n\n`
             }
           }
         }

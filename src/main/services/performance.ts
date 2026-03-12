@@ -1,16 +1,18 @@
 import * as connectionManager from './connection-manager'
 
-async function query(connId: string, sql: string): Promise<any[]> {
+type DbRow = Record<string, unknown>
+
+async function query(connId: string, sql: string): Promise<DbRow[]> {
   const conn = await connectionManager.getConnection(connId)
   try {
     const [rows] = await conn.query(sql)
-    return rows as any[]
+    return rows as DbRow[]
   } finally {
     conn.release()
   }
 }
 
-export async function getProcessList(connId: string): Promise<any[]> {
+export async function getProcessList(connId: string): Promise<DbRow[]> {
   return query(connId, 'SHOW PROCESSLIST')
 }
 

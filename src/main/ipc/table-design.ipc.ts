@@ -2,6 +2,8 @@ import { ipcMain } from 'electron'
 import { IPC } from '../../shared/types/ipc-channels'
 import * as tableDesigner from '../services/table-designer'
 import * as connectionManager from '../services/connection-manager'
+import { quoteId } from '../utils/sql'
+import type { ResultSetHeader } from 'mysql2/promise'
 
 type BatchUpdateItem = {
   data: Record<string, any>
@@ -14,7 +16,7 @@ function buildWhereClause(where: Record<string, any>) {
     throw new Error('缺少 WHERE 条件，已拒绝执行批量操作')
   }
   return {
-    clause: entries.map(([c]) => `\`${c}\` = ?`).join(' AND '),
+    clause: entries.map(([c]) => `${quoteId(c)} = ?`).join(' AND '),
     values: entries.map(([, v]) => v),
   }
 }
@@ -24,7 +26,7 @@ export function registerTableDesignIPC() {
     const sql = tableDesigner.generateCreateTableSQL(design)
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
+      await conn.query(`USE ${quoteId(db)}`)
       await conn.query(sql)
       return sql
     } finally {
@@ -37,7 +39,7 @@ export function registerTableDesignIPC() {
     if (!sql) return ''
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
+      await conn.query(`USE ${quoteId(db)}`)
       await conn.query(sql)
       return sql
     } finally {
@@ -61,13 +63,16 @@ export function registerTableDesignIPC() {
   })
 
   ipcMain.handle(IPC.DATA_INSERT, async (_e, connId: string, db: string, table: string, data: Record<string, any>) => {
-    const cols = Object.keys(data).map(c => `\`${c}\``).join(', ')
+    if (!data || typeof data !== 'object' || !Object.keys(data).length) {
+      throw new Error('插入数据不能为空')
+    }
+    const cols = Object.keys(data).map(c => quoteId(c)).join(', ')
     const placeholders = Object.keys(data).map(() => '?').join(', ')
     const values = Object.values(data)
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
-      const [result] = await conn.query(`INSERT INTO \`${table}\` (${cols}) VALUES (${placeholders})`, values)
+      await conn.query(`USE ${quoteId(db)}`)
+      const [result] = await conn.query(`INSERT INTO ${quoteId(table)} (${cols}) VALUES (${placeholders})`, values)
       return result
     } finally {
       conn.release()
@@ -75,13 +80,19 @@ export function registerTableDesignIPC() {
   })
 
   ipcMain.handle(IPC.DATA_UPDATE, async (_e, connId: string, db: string, table: string, data: Record<string, any>, where: Record<string, any>) => {
-    const sets = Object.keys(data).map(c => `\`${c}\` = ?`).join(', ')
-    const wheres = Object.keys(where).map(c => `\`${c}\` = ?`).join(' AND ')
+    if (!data || typeof data !== 'object' || !Object.keys(data).length) {
+      throw new Error('更新数据不能为空')
+    }
+    if (!where || typeof where !== 'object' || !Object.keys(where).length) {
+      throw new Error('缺少 WHERE 条件，已拒绝执行更新操作')
+    }
+    const sets = Object.keys(data).map(c => `${quoteId(c)} = ?`).join(', ')
+    const wheres = Object.keys(where).map(c => `${quoteId(c)} = ?`).join(' AND ')
     const values = [...Object.values(data), ...Object.values(where)]
-    const sql = `UPDATE \`${table}\` SET ${sets} WHERE ${wheres}`
+    const sql = `UPDATE ${quoteId(table)} SET ${sets} WHERE ${wheres}`
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
+      await conn.query(`USE ${quoteId(db)}`)
       const [result] = await conn.query(sql, values)
       return result
     } finally {
@@ -90,12 +101,15 @@ export function registerTableDesignIPC() {
   })
 
   ipcMain.handle(IPC.DATA_DELETE, async (_e, connId: string, db: string, table: string, where: Record<string, any>) => {
-    const wheres = Object.keys(where).map(c => `\`${c}\` = ?`).join(' AND ')
+    if (!where || typeof where !== 'object' || !Object.keys(where).length) {
+      throw new Error('缺少 WHERE 条件，已拒绝执行删除操作')
+    }
+    const wheres = Object.keys(where).map(c => `${quoteId(c)} = ?`).join(' AND ')
     const values = Object.values(where)
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
-      const [result] = await conn.query(`DELETE FROM \`${table}\` WHERE ${wheres}`, values)
+      await conn.query(`USE ${quoteId(db)}`)
+      const [result] = await conn.query(`DELETE FROM ${quoteId(table)} WHERE ${wheres}`, values)
       return result
     } finally {
       conn.release()
@@ -106,15 +120,15 @@ export function registerTableDesignIPC() {
     if (!rows?.length) return { affectedRows: 0 }
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
+      await conn.query(`USE ${quoteId(db)}`)
       await conn.beginTransaction()
       const cols = Object.keys(rows[0])
       if (!cols.length) throw new Error('批量插入缺少字段')
-      const colStr = cols.map(c => `\`${c}\``).join(', ')
+      const colStr = cols.map(c => quoteId(c)).join(', ')
       const placeholder = `(${cols.map(() => '?').join(', ')})`
       const placeholders = rows.map(() => placeholder).join(', ')
       const values = rows.flatMap(r => cols.map(c => r[c] ?? null))
-      const [result] = await conn.query(`INSERT INTO \`${table}\` (${colStr}) VALUES ${placeholders}`, values)
+      const [result] = await conn.query(`INSERT INTO ${quoteId(table)} (${colStr}) VALUES ${placeholders}`, values)
       await conn.commit()
       return result
     } catch (err) {
@@ -129,7 +143,7 @@ export function registerTableDesignIPC() {
     if (!items?.length) return { affectedRows: 0 }
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
+      await conn.query(`USE ${quoteId(db)}`)
       await conn.beginTransaction()
       let affectedRows = 0
       for (let i = 0; i < items.length; i++) {
@@ -139,10 +153,10 @@ export function registerTableDesignIPC() {
         }
         const setEntries = Object.entries(item.data)
         if (setEntries.length === 0) continue
-        const sets = setEntries.map(([c]) => `\`${c}\` = ?`).join(', ')
+        const sets = setEntries.map(([c]) => `${quoteId(c)} = ?`).join(', ')
         const setValues = setEntries.map(([, v]) => v)
         const { clause, values: whereValues } = buildWhereClause(item.where)
-        const [result] = await conn.query(`UPDATE \`${table}\` SET ${sets} WHERE ${clause}`, [...setValues, ...whereValues]) as any
+        const [result] = await conn.query(`UPDATE ${quoteId(table)} SET ${sets} WHERE ${clause}`, [...setValues, ...whereValues]) as [ResultSetHeader, unknown]
         affectedRows += Number(result?.affectedRows ?? 0)
       }
       await conn.commit()
@@ -159,13 +173,13 @@ export function registerTableDesignIPC() {
     if (!wheres?.length) return { affectedRows: 0 }
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
+      await conn.query(`USE ${quoteId(db)}`)
       await conn.beginTransaction()
       let affectedRows = 0
       for (let i = 0; i < wheres.length; i++) {
         const where = wheres[i]
         const { clause, values } = buildWhereClause(where)
-        const [result] = await conn.query(`DELETE FROM \`${table}\` WHERE ${clause}`, values) as any
+        const [result] = await conn.query(`DELETE FROM ${quoteId(table)} WHERE ${clause}`, values) as [ResultSetHeader, unknown]
         affectedRows += Number(result?.affectedRows ?? 0)
       }
       await conn.commit()

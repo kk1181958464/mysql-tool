@@ -4,6 +4,7 @@ import { IPC } from '../../shared/types/ipc-channels'
 import * as queryExecutor from '../services/query-executor'
 import * as connectionManager from '../services/connection-manager'
 import { format } from 'sql-formatter'
+import { quoteId } from '../utils/sql'
 
 const STMT_KEYWORDS = /^(?:CREATE|INSERT|DROP|ALTER|LOCK|UNLOCK|SET|DELETE|UPDATE|REPLACE)\s/i
 const PARSE_YIELD_EVERY = 5000
@@ -169,8 +170,8 @@ export function registerQueryIPC() {
   })
 
   ipcMain.handle(IPC.QUERY_EXECUTE_MULTI, async (_e, connectionId: string, sql: string, database?: string) => {
-    const pool = connectionManager.getPool(connectionId)
-    const poolConfig = (pool as any).pool?.config?.connectionConfig || (pool as any).config?.connectionConfig || {}
+    const pool = connectionManager.getPool(connectionId) as { pool?: { config?: { connectionConfig?: Record<string, unknown> } }; config?: { connectionConfig?: Record<string, unknown> } }
+    const poolConfig = pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {} as Record<string, unknown>
     const conn = await mysql.createConnection({
       host: poolConfig.host,
       port: poolConfig.port,
@@ -182,7 +183,7 @@ export function registerQueryIPC() {
     })
     try {
       let cleaned = sql.replace(/^\uFEFF/, '')
-      if (database) await conn.query(`USE \`${database}\``)
+      if (database) await conn.query(`USE ${quoteId(database)}`)
       await conn.query(`SET SQL_MODE=''`)
       await conn.query(`SET FOREIGN_KEY_CHECKS=0`)
       await conn.query(`SET NAMES utf8mb4`)
@@ -231,10 +232,9 @@ export function registerQueryIPC() {
         return { db, table }
       }
 
-      const quote = (id: string) => `\`${id.replace(/`/g, '``')}\``
       const buildDropStmt = (db: string | undefined, table: string) => {
         const dbName = db || defaultDb
-        return dbName ? `DROP TABLE IF EXISTS ${quote(dbName)}.${quote(table)}` : `DROP TABLE IF EXISTS ${quote(table)}`
+        return dbName ? `DROP TABLE IF EXISTS ${quoteId(dbName)}.${quoteId(table)}` : `DROP TABLE IF EXISTS ${quoteId(table)}`
       }
 
       const withDrop: string[] = []
@@ -318,8 +318,8 @@ export function registerQueryIPC() {
       return { success: true }
     } catch (err: any) {
       if (err.message.startsWith('执行完成')) throw err
-      const preview = sql.split('\n').slice(0, 30).join('\n')
-      throw new Error(err.message + '\n\n--- SQL前30行 ---\n' + preview)
+      // 脱敏：不将 SQL 内容返回前端，仅返回错误消息
+      throw new Error(err.message)
     } finally {
       await conn.end()
     }

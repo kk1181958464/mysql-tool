@@ -24,7 +24,7 @@ const ViewManager: React.FC = () => {
     try {
       const res = await api.meta.views(connId, db)
       setViews(Array.isArray(res) ? res : [])
-    } catch { /* ignore */ } finally { setLoading(false) }
+    } catch (e) { console.warn('[ViewManager] 加载失败:', e) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])

@@ -9,6 +9,7 @@ import { stringify as stringifySync } from 'csv-stringify/sync'
 import { finished } from 'stream/promises'
 import * as XLSX from 'xlsx'
 import * as connectionManager from './connection-manager'
+import { quoteId } from '../utils/sql'
 
 type Primitive = string | number | boolean | bigint | null | undefined
 type SqlValue = Primitive | Date | Buffer | Record<string, unknown> | unknown[]
@@ -63,7 +64,7 @@ function getRowValues(row: RowRecord, columns: string[]): SqlValue[] {
 }
 
 async function getTableColumns(conn: any, table: string): Promise<TableColumn[]> {
-  const [columnRows] = await conn.query(`SHOW COLUMNS FROM \`${table}\``)
+  const [columnRows] = await conn.query(`SHOW COLUMNS FROM ${quoteId(table)}`)
   return (columnRows as Array<{ Field: string; Type: string }>).map((column) => ({
     name: column.Field,
     type: String(column.Type || '').toLowerCase(),
@@ -95,8 +96,8 @@ async function buildNavicatHeader(connId: string, conn: any, db: string): Promis
   const [versionRows] = await conn.query('SELECT VERSION() AS version')
   const version = (versionRows as Array<{ version?: string }>)[0]?.version || 'unknown'
   const exportTime = formatNavicatDate()
-  const pool = connectionManager.getPool(connId) as any
-  const poolConfig = pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {}
+  const pool = connectionManager.getPool(connId) as { pool?: { config?: { connectionConfig?: Record<string, unknown> } }; config?: { connectionConfig?: Record<string, unknown> } }
+  const poolConfig = pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {} as Record<string, unknown>
   const host = poolConfig.host || 'unknown'
   const port = poolConfig.port || 3306
 
@@ -193,10 +194,10 @@ async function queryInBatches(
 ): Promise<void> {
   const conn = await connectionManager.getConnection(connId)
   try {
-    await conn.query(`USE \`${db}\``)
+    await conn.query(`USE ${quoteId(db)}`)
     let offset = 0
     while (true) {
-      const [rows] = await conn.query(`SELECT * FROM \`${table}\` LIMIT ${batchSize} OFFSET ${offset}`)
+      const [rows] = await conn.query(`SELECT * FROM ${quoteId(table)} LIMIT ${batchSize} OFFSET ${offset}`)
       const batch = rows as RowRecord[]
       if (!batch.length) break
       await onBatch(batch, offset)
@@ -224,11 +225,11 @@ export async function previewImport(filePath: string): Promise<{ columns: string
 async function insertRowsBatch(conn: any, table: string, rows: RowRecord[]): Promise<number> {
   if (!rows.length) return 0
   const cols = Object.keys(rows[0])
-  const colStr = cols.map(c => `\`${c}\``).join(', ')
+  const colStr = cols.map(c => quoteId(c)).join(', ')
   const placeholder = `(${cols.map(() => '?').join(', ')})`
   const placeholders = rows.map(() => placeholder).join(', ')
   const values = rows.flatMap(r => cols.map(c => r[c] ?? null))
-  await conn.query(`INSERT INTO \`${table}\` (${colStr}) VALUES ${placeholders}`, values)
+  await conn.query(`INSERT INTO ${quoteId(table)} (${colStr}) VALUES ${placeholders}`, values)
   return rows.length
 }
 
@@ -236,7 +237,7 @@ async function bulkInsert(connId: string, db: string, table: string, rows: RowRe
   if (!rows.length) return 0
   const conn = await connectionManager.getConnection(connId)
   try {
-    await conn.query(`USE \`${db}\``)
+    await conn.query(`USE ${quoteId(db)}`)
     let imported = 0
     for (let i = 0; i < rows.length; i += IMPORT_BATCH_SIZE) {
       imported += await insertRowsBatch(conn, table, rows.slice(i, i + IMPORT_BATCH_SIZE))
@@ -255,7 +256,7 @@ export async function importCSV(connId: string, db: string, table: string, fileP
   input.pipe(parser)
 
   try {
-    await conn.query(`USE \`${db}\``)
+    await conn.query(`USE ${quoteId(db)}`)
 
     let imported = 0
     let batch: RowRecord[] = []
@@ -295,6 +296,7 @@ export async function exportToCSV(connId: string, db: string, sql: string, fileP
     const out = fs.createWriteStream(filePath, { encoding: 'utf-8' })
     const csv = stringifyStream({ header: true })
     csv.pipe(out)
+    let success = false
 
     try {
       await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
@@ -306,17 +308,19 @@ export async function exportToCSV(connId: string, db: string, sql: string, fileP
       })
       csv.end()
       await finished(out)
-    } catch (e) {
-      csv.destroy()
-      out.destroy()
-      throw e
+      success = true
+    } finally {
+      if (!success) {
+        csv.destroy()
+        out.destroy()
+      }
     }
     return
   }
 
   const conn = await connectionManager.getConnection(connId)
   try {
-    await conn.query(`USE \`${db}\``)
+    await conn.query(`USE ${quoteId(db)}`)
     const [rows] = await conn.query(sql)
     const csv = stringifySync(rows as RowRecord[], { header: true })
     await writeFile(filePath, csv, 'utf-8')
@@ -331,10 +335,11 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
 
   if (table) {
     const out = fs.createWriteStream(filePath, { encoding: 'utf-8' })
+    let streamClosed = false
     try {
       const conn = await connectionManager.getConnection(connId)
       try {
-        await conn.query(`USE \`${db}\``)
+        await conn.query(`USE ${quoteId(db)}`)
         const columns = await getTableColumnNames(conn, table)
         await writeChunk(out, '[\n')
         let isFirst = true
@@ -348,19 +353,21 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
         })
         await writeChunk(out, '\n]\n')
         await closeStream(out)
+        streamClosed = true
       } finally {
         conn.release()
       }
-    } catch (e) {
-      out.destroy()
-      throw e
+    } finally {
+      if (!streamClosed) {
+        out.destroy()
+      }
     }
     return
   }
 
   const conn = await connectionManager.getConnection(connId)
   try {
-    await conn.query(`USE \`${db}\``)
+    await conn.query(`USE ${quoteId(db)}`)
     const [rows] = await conn.query(sql)
     const normalizedRows = (rows as RowRecord[]).map((row) => normalizeRowForJson(row, Object.keys(row)))
     await writeFile(filePath, JSON.stringify(normalizedRows, null, 2), 'utf-8')
@@ -373,7 +380,7 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
   const conn = await connectionManager.getConnection(connId)
 
   try {
-    await conn.query(`USE \`${db}\``)
+    await conn.query(`USE ${quoteId(db)}`)
     const existingTables = await getExistingTableNames(conn)
     assertTablesExist(existingTables, tables)
     await mkdir(path.dirname(filePath), { recursive: true })
@@ -409,14 +416,14 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
         reportProgress(0)
         const tableColumns = await getTableColumns(conn, table)
         const columnNames = tableColumns.map((column) => column.name)
-        const cols = columnNames.map((column) => `\`${column}\``).join(', ')
+        const cols = columnNames.map((column) => quoteId(column)).join(', ')
 
         if (createTable) {
-          const [ddlRows] = await conn.query(`SHOW CREATE TABLE \`${table}\``)
+          const [ddlRows] = await conn.query(`SHOW CREATE TABLE ${quoteId(table)}`)
           const ddl = (ddlRows as Record<string, string>[])[0]?.['Create Table']
           if (ddl) {
-            let ddlBlock = `-- ----------------------------\n-- Table structure for \`${table}\`\n-- ----------------------------\n`
-            if (dropTable) ddlBlock += `DROP TABLE IF EXISTS \`${table}\`;\n`
+            let ddlBlock = `-- ----------------------------\n-- Table structure for ${quoteId(table)}\n-- ----------------------------\n`
+            if (dropTable) ddlBlock += `DROP TABLE IF EXISTS ${quoteId(table)};\n`
             ddlBlock += `${ddl};\n\n`
             await writeChunk(out, ddlBlock)
           }
@@ -430,13 +437,13 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
           if (!rows.length) return
 
           if (!wroteHeader) {
-            const header = `-- ----------------------------\n-- Records of \`${table}\`\n-- ----------------------------\n`
+            const header = `-- ----------------------------\n-- Records of ${quoteId(table)}\n-- ----------------------------\n`
             await writeChunk(out, header)
             wroteHeader = true
           }
 
           if (insertStyle === 'multi') {
-            await writeChunk(out, `${insertHead} \`${table}\` (${cols}) VALUES\n`)
+            await writeChunk(out, `${insertHead} ${quoteId(table)} (${cols}) VALUES\n`)
             for (let i = 0; i < rows.length; i += 1) {
               const row = rows[i]
               const prefix = i === 0 ? '' : ',\n'
@@ -452,7 +459,7 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
           for (const row of rows) {
             const vals = getRowSqlValues(row, tableColumns).join(', ')
             const columnClause = useColumnList ? ` (${cols})` : ''
-            await writeChunk(out, `${insertHead} \`${table}\`${columnClause} VALUES (${vals});\n`)
+            await writeChunk(out, `${insertHead} ${quoteId(table)}${columnClause} VALUES (${vals});\n`)
           }
           exportedRows += rows.length
           reportProgress(exportedRows)
@@ -466,9 +473,10 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
 
       await writeChunk(out, 'SET FOREIGN_KEY_CHECKS = 1;\n')
       await closeStream(out)
-    } catch (e) {
-      out.destroy()
-      throw e
+    } finally {
+      if (!out.writableFinished) {
+        out.destroy()
+      }
     }
   } finally {
     conn.release()
@@ -478,17 +486,17 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
 export async function exportStructure(connId: string, db: string, tables: string[], filePath: string): Promise<void> {
   const conn = await connectionManager.getConnection(connId)
   try {
-    await conn.query(`USE \`${db}\``)
+    await conn.query(`USE ${quoteId(db)}`)
     await mkdir(path.dirname(filePath), { recursive: true })
 
     let sql = `SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n`
 
     for (const table of tables) {
-      const [ddlRows] = await conn.query(`SHOW CREATE TABLE \`${table}\``)
+      const [ddlRows] = await conn.query(`SHOW CREATE TABLE ${quoteId(table)}`)
       const ddl = (ddlRows as Record<string, string>[])[0]?.['Create Table'] || (ddlRows as Record<string, string>[])[0]?.['Create View']
       if (!ddl) continue
-      sql += `-- ----------------------------\n-- Table structure for \`${table}\`\n-- ----------------------------\n`
-      sql += `DROP TABLE IF EXISTS \`${table}\`;\n${ddl};\n\n`
+      sql += `-- ----------------------------\n-- Table structure for ${quoteId(table)}\n-- ----------------------------\n`
+      sql += `DROP TABLE IF EXISTS ${quoteId(table)};\n${ddl};\n\n`
     }
 
     sql += 'SET FOREIGN_KEY_CHECKS = 1;\n'

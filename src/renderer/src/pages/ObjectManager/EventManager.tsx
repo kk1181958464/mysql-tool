@@ -25,7 +25,7 @@ const EventManager: React.FC = () => {
     try {
       const res = await api.meta.events(connId, db)
       setEvents(Array.isArray(res) ? res : [])
-    } catch { /* ignore */ } finally { setLoading(false) }
+    } catch (e) { console.warn('[EventManager] 加载失败:', e) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])

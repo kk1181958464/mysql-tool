@@ -44,7 +44,9 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
           for (const c of preview.columns || []) mapping[c] = c
           setColumnMapping(mapping)
         }
-      } catch { /* ignore */ }
+      } catch (e) {
+        console.warn('[ImportWizard] 预览文件失败:', e)
+      }
     }
   }
 

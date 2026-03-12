@@ -11,6 +11,7 @@ import { registerMetadataIPC } from './metadata.ipc'
 import { registerTableDesignIPC } from './table-design.ipc'
 import { registerImportExportIPC } from './import-export.ipc'
 import { registerBackupIPC } from './backup.ipc'
+import { quoteId } from '../utils/sql'
 import {
   HEARTBEAT_SETTING_KEY,
   HEARTBEAT_TIMEOUT_SETTING_KEY,
@@ -41,37 +42,37 @@ export function registerAllIPC() {
 
   ipcMain.handle(IPC.OBJECT_CREATE_VIEW, async (_e, connId: string, db: string, sql: string) => {
     const conn = await connectionManager.getConnection(connId)
-    try { await conn.query(`USE \`${db}\``); await conn.query(sql) } finally { conn.release() }
+    try { await conn.query(`USE ${quoteId(db)}`); await conn.query(sql) } finally { conn.release() }
   })
 
   ipcMain.handle(IPC.OBJECT_CREATE_PROCEDURE, async (_e, connId: string, db: string, sql: string) => {
     const conn = await connectionManager.getConnection(connId)
-    try { await conn.query(`USE \`${db}\``); await conn.query(sql) } finally { conn.release() }
+    try { await conn.query(`USE ${quoteId(db)}`); await conn.query(sql) } finally { conn.release() }
   })
 
   ipcMain.handle(IPC.OBJECT_CREATE_TRIGGER, async (_e, connId: string, db: string, sql: string) => {
     const conn = await connectionManager.getConnection(connId)
-    try { await conn.query(`USE \`${db}\``); await conn.query(sql) } finally { conn.release() }
+    try { await conn.query(`USE ${quoteId(db)}`); await conn.query(sql) } finally { conn.release() }
   })
 
   ipcMain.handle(IPC.OBJECT_CREATE_EVENT, async (_e, connId: string, db: string, sql: string) => {
     const conn = await connectionManager.getConnection(connId)
-    try { await conn.query(`USE \`${db}\``); await conn.query(sql) } finally { conn.release() }
+    try { await conn.query(`USE ${quoteId(db)}`); await conn.query(sql) } finally { conn.release() }
   })
 
   ipcMain.handle(IPC.OBJECT_DROP, async (_e, connId: string, db: string, type: string, name: string) => {
     const conn = await connectionManager.getConnection(connId)
-    try { await conn.query(`USE \`${db}\``); await conn.query(`DROP ${type} IF EXISTS \`${name}\``) } finally { conn.release() }
+    try { await conn.query(`USE ${quoteId(db)}`); await conn.query(`DROP ${type} IF EXISTS ${quoteId(name)}`) } finally { conn.release() }
   })
 
   ipcMain.handle(IPC.OBJECT_EXEC_ROUTINE, async (_e, connId: string, db: string, name: string, type: 'PROCEDURE' | 'FUNCTION', params: string[]) => {
     const conn = await connectionManager.getConnection(connId)
     try {
-      await conn.query(`USE \`${db}\``)
+      await conn.query(`USE ${quoteId(db)}`)
       const placeholders = params.map(() => '?').join(', ')
       const sql = type === 'FUNCTION'
-        ? `SELECT \`${name}\`(${placeholders}) AS result`
-        : `CALL \`${name}\`(${placeholders})`
+        ? `SELECT ${quoteId(name)}(${placeholders}) AS result`
+        : `CALL ${quoteId(name)}(${placeholders})`
       const [rows] = await conn.query(sql, params)
       return { rows: rows as unknown[] }
     } finally { conn.release() }

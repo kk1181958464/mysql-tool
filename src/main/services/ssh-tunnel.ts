@@ -1,4 +1,4 @@
-import { Client } from 'ssh2'
+import { Client, type ConnectConfig } from 'ssh2'
 import * as net from 'net'
 import type { ConnectionConfig } from '../../shared/types/connection'
 import * as logger from '../utils/logger'
@@ -18,7 +18,7 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
   const localPort = await findFreePort()
   const sshClient = new Client()
 
-  const authConfig: Record<string, unknown> = {
+  const authConfig: ConnectConfig = {
     host: config.sshHost,
     port: config.sshPort || 22,
     username: config.sshUser,
@@ -44,7 +44,7 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
       })
     })
     sshClient.on('error', reject)
-    sshClient.connect(authConfig as any)
+    sshClient.connect(authConfig)
   })
 
   return {
