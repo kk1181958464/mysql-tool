@@ -129,8 +129,10 @@ export function registerAllIPC() {
     await writeFile(filePath, content, 'utf-8')
   })
 
-  ipcMain.handle('dialog:openFile', async (_e, options: { filters?: { name: string; extensions: string[] }[] }) => {
-    const result = await dialog.showOpenDialog({ filters: options.filters, properties: ['openFile'] })
+  ipcMain.handle('dialog:openFile', async (_e, options: { defaultPath?: string; filters?: { name: string; extensions: string[] }[]; properties?: string[] }) => {
+    const properties = Array.isArray(options.properties) && options.properties.length ? options.properties : ['openFile']
+    if (!properties.includes('openFile')) properties.push('openFile')
+    const result = await dialog.showOpenDialog({ defaultPath: options.defaultPath, filters: options.filters, properties: properties as any })
     return result.canceled ? null : result.filePaths[0]
   })
 

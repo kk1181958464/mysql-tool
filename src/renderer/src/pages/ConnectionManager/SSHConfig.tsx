@@ -12,8 +12,9 @@ export const SSHConfig: React.FC<Props> = ({ form, updateField }) => {
 
   const pickFile = async () => {
     try {
+      // OpenSSH 私钥（如 id_ed25519 / id_rsa）常无扩展名；这里彻底放开过滤，并允许显示隐藏文件
       const filePath = await (window as any).api.dialog.openFile({
-        filters: [{ name: 'Private Key', extensions: ['pem', 'ppk', 'key'] }],
+        properties: ['openFile', 'showHiddenFiles'],
       })
       if (filePath) {
         updateField('sshPrivateKey', filePath)

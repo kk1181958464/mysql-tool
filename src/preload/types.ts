@@ -102,7 +102,7 @@ export interface ElectronAPI {
   dialog: {
     saveFile(options: { defaultPath?: string; filters?: { name: string; extensions: string[] }[] }): Promise<string | null>
     writeFile(filePath: string, content: string): Promise<void>
-    openFile(options: { filters?: { name: string; extensions: string[] }[] }): Promise<string | null>
+    openFile(options: { defaultPath?: string; filters?: { name: string; extensions: string[] }[]; properties?: string[] }): Promise<string | null>
     readFile(filePath: string): Promise<string>
   }
   onImportProgress(cb: (data: ImportProgressPayload) => void): () => void
