@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Input, Switch } from '../../components/ui'
 import { FolderOpenOutlined } from '@ant-design/icons'
 
@@ -9,6 +9,11 @@ interface Props {
 
 export const SSHConfig: React.FC<Props> = ({ form, updateField }) => {
   const [authMethod, setAuthMethod] = useState<'password' | 'key'>('password')
+
+  // 根据表单内容初始化/同步认证方式，避免 UI 显示与实际连接方式不一致
+  useEffect(() => {
+    setAuthMethod(form.sshPrivateKey ? 'key' : 'password')
+  }, [form.sshPrivateKey])
 
   const pickFile = async () => {
     try {
