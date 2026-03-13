@@ -12,14 +12,15 @@ export const SSHConfig: React.FC<Props> = ({ form, updateField }) => {
 
   const pickFile = async () => {
     try {
-      const result = await (window as any).api.showOpenDialog({
-        properties: ['openFile'],
-        filters: [{ name: 'Private Key', extensions: ['pem', 'ppk', 'key', '*'] }],
+      const filePath = await (window as any).api.dialog.openFile({
+        filters: [{ name: 'Private Key', extensions: ['pem', 'ppk', 'key'] }],
       })
-      if (result && !result.canceled && result.filePaths?.[0]) {
-        updateField('sshPrivateKey', result.filePaths[0])
+      if (filePath) {
+        updateField('sshPrivateKey', filePath)
       }
-    } catch { /* cancelled */ }
+    } catch {
+      /* cancelled */
+    }
   }
 
   return (
