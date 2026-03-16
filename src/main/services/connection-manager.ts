@@ -430,6 +430,10 @@ export function getPool(id: string): mysql.Pool {
   return pool
 }
 
+export function getConnectionConfig(id: string): ConnectionConfig | undefined {
+  return connectionConfigs.get(id) || getSavedConfig(id) || undefined
+}
+
 export async function getConnection(id: string): Promise<mysql.PoolConnection> {
   return getPool(id).getConnection()
 }

@@ -102,6 +102,16 @@ const placeholderStyle: React.CSSProperties = { color: 'var(--text-muted)' }
 const TABLEDATA_VIRTUAL_THRESHOLD = 400
 const TABLEDATA_WORKER_THRESHOLD = 2000
 
+// 保存错误尽量“人话化”
+const normalizeIpcErrorMessage = (raw: unknown): string => {
+  if (!raw) return ''
+  const msg = String((raw as any).message ?? raw)
+  return msg
+    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    .trim()
+}
+
 // 可编辑单元格 - Navicat 风格
 const EditableCell: React.FC<{
   value: unknown
@@ -273,6 +283,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [exportOpen, setExportOpen] = useState(false)
   const [totalCount, setTotalCount] = useState(0)
   const [error, setError] = useState('')
+  const [saveErrorModalOpen, setSaveErrorModalOpen] = useState(false)
+  const [saveErrorText, setSaveErrorText] = useState('')
   const [pendingChanges, setPendingChanges] = useState<Map<string, Record<string, unknown>>>(new Map())
   const [editingDirtyCells, setEditingDirtyCells] = useState<Set<string>>(new Set())
   const [isSaving, setIsSaving] = useState(false)
@@ -749,9 +761,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
   const handleSaveChanges = useCallback(async () => {
     if (isSaving) return
+    const cols = result?.columns || []
     const hasUpdates = pk && pendingChanges.size > 0
     const hasInserts = newRows.length > 0
     if (!hasUpdates && !hasInserts) return
+
     setIsSaving(true)
     try {
       // 保存修改行：直接本地合并，避免整表刷新闪烁
@@ -768,7 +782,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
       // 保存新增行：需要拿到数据库真实主键，静默刷新一次
       if (hasInserts) {
-        const cols = result?.columns || []
         const rows = newRows.map((row) => {
           const data: Record<string, unknown> = {}
           for (const col of cols) {
@@ -788,7 +801,10 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         await fetchData('reset', true, undefined, false)
       }
     } catch (e: any) {
-      setError(e.message || '保存失败')
+      const cleaned = normalizeIpcErrorMessage(e)
+      setError(cleaned || '保存失败')
+      setSaveErrorText(cleaned || '保存失败')
+      setSaveErrorModalOpen(true)
     } finally {
       setIsSaving(false)
     }
@@ -1195,6 +1211,25 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       </Space>
 
       {error && <div style={{ color: 'var(--color-red)', marginBottom: 8 }}>{error}</div>}
+
+      <Modal
+        open={saveErrorModalOpen}
+        title={'保存失败'}
+        onClose={() => setSaveErrorModalOpen(false)}
+        onOk={() => setSaveErrorModalOpen(false)}
+        okText="知道了"
+        cancelText=""
+        footer={(
+          <Button variant="primary" onClick={() => setSaveErrorModalOpen(false)}>
+            知道了
+          </Button>
+        )}
+        width={560}
+      >
+        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
+          {saveErrorText}
+        </div>
+      </Modal>
 
       <div style={{ flex: 1, minHeight: 0 }} onClick={handleCanvasClick}>
         <Table

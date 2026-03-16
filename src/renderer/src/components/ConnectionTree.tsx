@@ -626,7 +626,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     setPreviewLoading(true)
     setPreviewLoadingText(includeData ? '正在生成结构 + 数据摘要预览...' : '正在生成结构预览...')
     try {
-      await loadTables(activeConnectionId, dbName)
+      // 强制刷新一次 tables，避免 UI 缓存不全导致主进程拿到残缺列表
+      await loadTables(activeConnectionId, dbName, true)
       const tbls = useDatabaseStore.getState().tables[`${activeConnectionId}:${dbName}`] || []
       const previewTables = includeData ? tbls.slice(0, 3) : tbls
       const parts: string[] = []
@@ -732,13 +733,11 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         dropTable: true,
         createTable: true,
         includeData: true,
-        insertStyle: 'multi',
+        insertStyle: 'single',
       })
 
       if (exportCancelledRef.current) {
         setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
-      } else {
-        setExportProgress(prev => prev ? { ...prev, finished: true } : null)
       }
     } catch (e: any) {
       alert(e.message || '导出失败')

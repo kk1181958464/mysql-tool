@@ -443,8 +443,6 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         })
         if (exportCancelledRef.current) {
           setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
-        } else {
-          setExportProgress(prev => prev ? { ...prev, done: prev.total, finished: true } : null)
         }
         exportSessionActiveRef.current = false
       } else {

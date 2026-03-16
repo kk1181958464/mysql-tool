@@ -27,7 +27,11 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
     debugLines.push(line)
     // 避免无限增长：只保留最后 N 行调试信息
     if (debugLines.length > 200) debugLines.shift()
-    logger.debug(`[ssh2] ${line}`)
+
+    // 仅开发模式输出 ssh2 debug，生产环境不刷屏
+    if (process.env.VITE_DEV_SERVER_URL) {
+      logger.debug(`[ssh2] ${line}`)
+    }
   }
 
   const sshHost = String(config.sshHost || '').trim()
