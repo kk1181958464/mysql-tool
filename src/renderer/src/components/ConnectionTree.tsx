@@ -264,6 +264,11 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       return
     }
 
+    // 若关闭的是当前库，则尝试切到“仍处于打开状态”的其他库，避免对象页消失
+    const fallbackDb = (selectedDatabase === dbName)
+      ? (dbs.find((d) => d.name !== dbName && databaseOpenStates[`${activeConnectionId}:${d.name}`] === true)?.name ?? null)
+      : null
+
     const tabIdsToClose = mainTabs
       .filter((tab) =>
         tab.connectionId === activeConnectionId &&
@@ -286,6 +291,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       tabIdsToClose,
       selectedDatabase,
       expandedKeys,
+      fallbackDb,
     })
 
     if (dirtyCount > 0) {
@@ -295,14 +301,26 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     }
 
     setDatabaseOpen(activeConnectionId, dbName, false)
-    if (selectedDatabase === dbName) {
-      setSelectedDatabase(null)
-    }
     removeTabsByIds(tabIdsToClose)
     clearQueryDatabaseByConnectionAndDb(activeConnectionId, dbName)
+
+    // 切换到其它仍打开的库（若存在）
+    if (selectedDatabase === dbName) {
+      if (fallbackDb) {
+        setSelectedDatabase(fallbackDb)
+        setSelectedKeys([`db:${fallbackDb}`])
+        addObjectsTab(activeConnectionId, fallbackDb)
+      } else {
+        setSelectedDatabase(null)
+      }
+    }
+
     setExpandedKeys((prev) => {
-      const next = prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`))
-      logTreeDebug('closeDatabase.expanded-keys-updated', { dbName, prev, next })
+      const removed = prev.filter((k) => k !== `db:${dbName}` && !k.startsWith(`folder:${dbName}:`) && !k.startsWith(`table:${dbName}:`) && !k.startsWith(`view:${dbName}:`))
+      const next = (fallbackDb && selectedDatabase === dbName && !removed.includes(`db:${fallbackDb}`))
+        ? [...removed, `db:${fallbackDb}`]
+        : removed
+      logTreeDebug('closeDatabase.expanded-keys-updated', { dbName, prev, next, fallbackDb })
       return next
     })
   }
