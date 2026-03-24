@@ -52,6 +52,7 @@ export function Table<T extends Record<string, any>>({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(0)
   const resizing = useRef<{ key: string; startX: number; startWidth: number } | null>(null)
+  const resizeHandlersRef = useRef<{ move: ((event: MouseEvent) => void) | null; up: (() => void) | null }>({ move: null, up: null })
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const rafIdRef = useRef<number | null>(null)
   const latestScrollTopRef = useRef(0)
@@ -62,20 +63,35 @@ export function Table<T extends Record<string, any>>({
     resizing.current = { key: colKey, startX: e.clientX, startWidth: currentWidth }
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (!resizing.current) return
-      const diff = e.clientX - resizing.current.startX
-      const newWidth = Math.max(50, resizing.current.startWidth + diff)
-      setColWidths(prev => ({ ...prev, [resizing.current!.key]: newWidth }))
+      const currentResize = resizing.current
+      if (!currentResize) return
+      const diff = e.clientX - currentResize.startX
+      const newWidth = Math.max(50, currentResize.startWidth + diff)
+      setColWidths(prev => ({ ...prev, [currentResize.key]: newWidth }))
     }
 
     const handleMouseUp = () => {
       resizing.current = null
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
+      resizeHandlersRef.current = { move: null, up: null }
     }
 
+    resizeHandlersRef.current = { move: handleMouseMove, up: handleMouseUp }
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      resizing.current = null
+      if (resizeHandlersRef.current.move) {
+        document.removeEventListener('mousemove', resizeHandlersRef.current.move)
+      }
+      if (resizeHandlersRef.current.up) {
+        document.removeEventListener('mouseup', resizeHandlersRef.current.up)
+      }
+    }
   }, [])
 
   const getRowKey = (record: T, index: number) => {

@@ -15,6 +15,7 @@ import { useTabStore, QueryTab } from '../../stores/tab.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+import type { QueryResult } from '../../../../shared/types/query'
 
 // QueryEditor 首次加载时再初始化 Monaco，避免主入口首包引入
 if (!(self as any).__MYSQL_TOOL_MONACO_READY__) {
@@ -250,6 +251,19 @@ const updateCompletionData = (tables: string[], columns: Map<string, string[]>) 
   globalColumns = columns
 }
 
+const shouldUseBatchExecution = (sql: string): boolean => {
+  const trimmed = sql.trim()
+  if (!trimmed) return false
+
+  const withoutTrailingSemicolon = trimmed.replace(/;\s*$/, '')
+  if (/;\s*\S/.test(withoutTrailingSemicolon)) {
+    return true
+  }
+
+  const createTableMatches = withoutTrailingSemicolon.match(/\bCREATE\s+TABLE\b/gi)
+  return (createTableMatches?.length ?? 0) > 1
+}
+
 interface Props {
   tabId: string
 }
@@ -348,7 +362,25 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
     }
     setQueryExecuting(tab.id, true)
     try {
-      const result = await api.query.execute(activeConnectionId, tab.content, activeDatabase || '')
+      const startedAt = Date.now()
+      let result: QueryResult
+
+      if (shouldUseBatchExecution(tab.content)) {
+        await api.query.executeMulti(activeConnectionId, tab.content, activeDatabase || '')
+        result = {
+          columns: [],
+          rows: [],
+          affectedRows: 0,
+          insertId: 0,
+          executionTime: Date.now() - startedAt,
+          rowCount: 0,
+          sql: tab.content,
+          isSelect: false,
+        }
+      } else {
+        result = await api.query.execute(activeConnectionId, tab.content, activeDatabase || '')
+      }
+
       setQueryResult(tab.id, result)
     } catch (e: any) {
       setQueryError(tab.id, e.message || '执行失败')

@@ -284,26 +284,30 @@ export const useTabStore = create<TabState>((set, get) => ({
 
   // 对象列表标签
   addObjectsTab: (connectionId, database) => {
-    // 检查是否已存在相同的对象标签
-    const existing = get().tabs.find(
-      (t) => t.type === 'objects' && t.connectionId === connectionId && t.database === database
-    )
-    if (existing) {
-      set({ activeTabId: existing.id })
-      return
-    }
+    set((s) => {
+      const existing = s.tabs.find((t) => t.type === 'objects') as ObjectsTab | undefined
+      const tab: ObjectsTab = existing
+        ? {
+            ...existing,
+            connectionId,
+            database,
+            title: '对象',
+            closable: false,
+          }
+        : {
+            id: `objects-${Date.now()}-${tabCounter++}`,
+            type: 'objects',
+            title: '对象',
+            connectionId,
+            database,
+            closable: false,
+          }
 
-    const id = `objects-${connectionId}-${database}`
-    const tab: ObjectsTab = {
-      id,
-      type: 'objects',
-      title: `对象`,
-      connectionId,
-      database,
-      closable: false,
-    }
-    // 插入到最前面
-    set((s) => ({ tabs: [tab, ...s.tabs.filter(t => t.type !== 'objects' || t.connectionId !== connectionId)], activeTabId: id }))
+      return {
+        tabs: [tab, ...s.tabs.filter((t) => t.type !== 'objects')],
+        activeTabId: tab.id,
+      }
+    })
   },
 
   // 工具标签

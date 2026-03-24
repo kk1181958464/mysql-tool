@@ -53,6 +53,7 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
   const [rowSelect, setRowSelect] = useState<RowSelectState>({ anchor: null, selected: new Set() })
   const [colWidths, setColWidths] = useState<number[]>(defaultWidths)
   const resizing = useRef<{ index: number; startX: number; startWidth: number } | null>(null)
+  const resizeHandlersRef = useRef<{ move: ((event: MouseEvent) => void) | null; up: (() => void) | null }>({ move: null, up: null })
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   const selectedCol = selectedIndex !== null ? columns[selectedIndex] : null
@@ -188,8 +189,9 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
     e.preventDefault()
     resizing.current = { index, startX: e.clientX, startWidth: colWidths[index] }
     const handleMouseMove = (e: MouseEvent) => {
-      if (!resizing.current) return
-      const { index, startX, startWidth } = resizing.current
+      const currentResize = resizing.current
+      if (!currentResize) return
+      const { index, startX, startWidth } = currentResize
       const diff = e.clientX - startX
       const newWidth = Math.max(40, startWidth + diff)
       setColWidths(prev => {
@@ -202,10 +204,24 @@ export const ColumnEditor: React.FC<Props> = ({ columns, onChange }) => {
       resizing.current = null
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
+      resizeHandlersRef.current = { move: null, up: null }
     }
+    resizeHandlersRef.current = { move: handleMouseMove, up: handleMouseUp }
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
   }, [colWidths])
+
+  useEffect(() => {
+    return () => {
+      resizing.current = null
+      if (resizeHandlersRef.current.move) {
+        document.removeEventListener('mousemove', resizeHandlersRef.current.move)
+      }
+      if (resizeHandlersRef.current.up) {
+        document.removeEventListener('mouseup', resizeHandlersRef.current.up)
+      }
+    }
+  }, [])
 
   const headers = ['名称', '类型', '长度', '小数', '不是Null', '键', '注释']
 
