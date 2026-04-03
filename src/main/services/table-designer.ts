@@ -1,9 +1,22 @@
 import type { TableDesign, TableDiff, ColumnDesign, IndexDesign, ForeignKeyDesign } from '../../shared/types/table-design'
 import { quoteId } from '../utils/sql'
 
+const LENGTH_TYPES = new Set([
+  'CHAR', 'VARCHAR', 'BINARY', 'VARBINARY', 'BIT',
+  'TINYINT', 'SMALLINT', 'MEDIUMINT', 'INT', 'INTEGER', 'BIGINT',
+  'FLOAT', 'DOUBLE', 'DECIMAL', 'NUMERIC',
+])
+
+const SCALE_TYPES = new Set(['DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE'])
+
 function colDef(c: ColumnDesign): string {
   let s = `${quoteId(c.name)} ${c.type}`
-  if (c.length) s += `(${c.length}${c.decimals ? `,${c.decimals}` : ''})`
+  const type = c.type.toUpperCase()
+  const length = c.length.trim()
+  const decimals = c.decimals.trim()
+  if (length && LENGTH_TYPES.has(type)) {
+    s += `(${length}${decimals && SCALE_TYPES.has(type) ? `,${decimals}` : ''})`
+  }
   if (c.unsigned) s += ' UNSIGNED'
   if (c.zerofill) s += ' ZEROFILL'
   s += c.nullable ? ' NULL' : ' NOT NULL'

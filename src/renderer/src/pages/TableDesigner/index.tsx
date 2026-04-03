@@ -16,6 +16,14 @@ const emptyDesign: TableDesign = {
   comment: '', columns: [], indexes: [], foreignKeys: [],
 }
 
+const LENGTH_TYPES = new Set([
+  'CHAR', 'VARCHAR', 'BINARY', 'VARBINARY', 'BIT',
+  'TINYINT', 'SMALLINT', 'MEDIUMINT', 'INT', 'INTEGER', 'BIGINT',
+  'FLOAT', 'DOUBLE', 'DECIMAL', 'NUMERIC',
+])
+
+const SCALE_TYPES = new Set(['DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE'])
+
 interface Props {
   tabId: string
 }
@@ -36,6 +44,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
   const [ddlPreview, setDdlPreview] = useState('')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
 
   useEffect(() => {
     if (isEdit && connectionId && database && tableName) {
@@ -93,7 +102,12 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
     const lines: string[] = [`CREATE TABLE \`${d.name}\` (`]
     const colDefs: string[] = d.columns.map((c) => {
       let def = `  \`${c.name}\` ${c.type}`
-      if (c.length) def += `(${c.length}${c.decimals ? `,${c.decimals}` : ''})`
+      const type = c.type.toUpperCase()
+      const length = c.length.trim()
+      const decimals = c.decimals.trim()
+      if (length && LENGTH_TYPES.has(type)) {
+        def += `(${length}${decimals && SCALE_TYPES.has(type) ? `,${decimals}` : ''})`
+      }
       if (c.unsigned) def += ' UNSIGNED'
       if (!c.nullable) def += ' NOT NULL'
       if (c.autoIncrement) def += ' AUTO_INCREMENT'
@@ -140,6 +154,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
     // 如果没有改动，不执行保存
     if (isEdit && !tab?.isDirty) { return }
 
+    setIsSaving(true)
     try {
       if (isEdit && original) {
         // 编辑模式：先计算差异再提交
@@ -167,6 +182,8 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       else if (msg.includes('Table') && msg.includes('already exists')) setErrorMsg('表名已存在')
       else if (msg.includes('syntax')) setErrorMsg('SQL语法错误，请检查字段定义')
       else setErrorMsg(msg)
+    } finally {
+      setIsSaving(false)
     }
   }, [connectionId, database, design, isEdit, original, tabId, tab?.isDirty, setDesignDirty])
 
@@ -211,8 +228,10 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
           <span>注释</span>
           <input value={design.comment} onChange={(e) => handleDesignChange({ ...design, comment: e.target.value })} />
         </label>
-        <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSave}>保存</Button>
-        {isEdit && <Button size="small" icon={<DiffOutlined />} onClick={() => setDiffOpen(true)}>查看差异</Button>}
+        <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={isSaving} disabled={isSaving}>
+          {isSaving ? '保存中...' : '保存'}
+        </Button>
+        {isEdit && <Button size="small" icon={<DiffOutlined />} onClick={() => setDiffOpen(true)} disabled={isSaving}>查看差异</Button>}
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
@@ -226,6 +245,31 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       </div>
 
       {original && <StructureDiff open={diffOpen} onClose={() => setDiffOpen(false)} original={original} current={design} />}
+
+      {isSaving && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.12)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 999,
+          pointerEvents: 'none',
+        }}>
+          <div style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: '14px 20px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+            color: 'var(--text-primary)',
+            fontSize: 13,
+          }}>
+            正在保存表结构...
+          </div>
+        </div>
+      )}
 
       {/* 成功提示 - 顶部浮动 */}
       {successMsg && (
