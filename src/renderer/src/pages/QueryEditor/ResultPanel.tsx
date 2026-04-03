@@ -113,6 +113,13 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
         } satisfies QueryStatementResult]
       : []
   const selectedStatement = statementResults[activeStatementIndex] || statementResults[0] || null
+  const hasMultipleStatements = statementResults.length > 1
+  const aggregateAffectedRows = statementResults.reduce((sum, item) => sum + item.affectedRows, 0)
+  const aggregateExecutionTime = statementResults.reduce((sum, item) => sum + item.executionTime, 0)
+  const aggregateSuccessCount = statementResults.filter((item) => item.success).length
+  const aggregateFailCount = statementResults.filter((item) => !item.success).length
+  const aggregateSelectRows = statementResults.reduce((sum, item) => sum + item.rowCount, 0)
+  const hasAnySelect = statementResults.some((item) => item.isSelect)
 
   useEffect(() => {
     setActiveStatementIndex(0)
@@ -240,11 +247,33 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   }
 
   const isExplain = selectedStatement?.sql?.toUpperCase().startsWith('EXPLAIN ')
-  const resultCount = selectedStatement ? (selectedStatement.isSelect ? selectedStatement.rowCount : selectedStatement.affectedRows) : 0
+  const resultCount = hasMultipleStatements
+    ? (hasAnySelect ? aggregateSelectRows : aggregateAffectedRows)
+    : (selectedStatement ? (selectedStatement.isSelect ? selectedStatement.rowCount : selectedStatement.affectedRows) : 0)
 
   const historyPaginationTotal = historyHasMore
     ? historyPage * historyPageSize + 1
     : (historyPage - 1) * historyPageSize + historyRows.length
+
+  const multiStatementSummary = hasMultipleStatements ? (
+    <div style={{
+      padding: '10px 12px',
+      borderBottom: '1px solid var(--border)',
+      background: 'var(--bg-hover)',
+      display: 'flex',
+      flexWrap: 'wrap',
+      gap: 12,
+      fontSize: 12,
+      color: 'var(--text-secondary)',
+    }}>
+      <span>共执行 {statementResults.length} 条语句</span>
+      <span>成功 {aggregateSuccessCount} 条</span>
+      <span>失败 {aggregateFailCount} 条</span>
+      <span>总影响行数 {aggregateAffectedRows}</span>
+      <span>总返回行数 {aggregateSelectRows}</span>
+      <span>总耗时 {aggregateExecutionTime}ms</span>
+    </div>
+  ) : null
 
   const tabItems = [
     {
@@ -255,6 +284,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       ) : selectedStatement ? (
         isExplain ? (
           <div style={{ height: '100%', overflow: 'auto' }}>
+            {multiStatementSummary}
             {statementResults.length > 1 && (
               <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>当前语句</span>
@@ -276,6 +306,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
           </div>
         ) : selectedStatement.isSelect ? (
           <div style={{ height: '100%', overflow: 'auto' }}>
+            {multiStatementSummary}
             {statementResults.length > 1 && (
               <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>当前语句</span>
@@ -325,6 +356,21 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
         ) : (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
             <div style={{ textAlign: 'center', maxWidth: 400 }}>
+              {hasMultipleStatements && (
+                <div style={{
+                  marginBottom: 16,
+                  padding: '10px 14px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  background: 'var(--bg-hover)',
+                  fontSize: 13,
+                  color: 'var(--text-secondary)',
+                }}>
+                  <div>共执行 {statementResults.length} 条语句</div>
+                  <div>成功 {aggregateSuccessCount} 条，失败 {aggregateFailCount} 条</div>
+                  <div>总影响行数 {aggregateAffectedRows} | 总返回行数 {aggregateSelectRows} | 总耗时 {aggregateExecutionTime}ms</div>
+                </div>
+              )}
               <div style={{ fontSize: 48, color: selectedStatement.success ? 'var(--accent)' : 'var(--error)', marginBottom: 16 }}>
                 {selectedStatement.success ? '✓' : '!'}
               </div>

@@ -452,8 +452,9 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         })
         if (exportCancelledRef.current) {
           setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
+        } else {
+          setExportProgress(prev => prev ? { ...prev, done: prev.total, finished: true } : prev)
         }
-        exportSessionActiveRef.current = false
       } else {
         await api.dialog.writeFile(filePath, exportSql.sql)
         setExportSql(null)
