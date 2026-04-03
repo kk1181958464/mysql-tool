@@ -5,9 +5,13 @@ import * as queryExecutor from '../services/query-executor'
 import * as connectionManager from '../services/connection-manager'
 import { format } from 'sql-formatter'
 import { quoteId } from '../utils/sql'
+import type { QueryResult, QueryStatementResult } from '../../shared/types/query'
+import type { ResultSetHeader } from 'mysql2/promise'
 
-const STMT_KEYWORDS = /^(?:CREATE|INSERT|DROP|ALTER|LOCK|UNLOCK|SET|DELETE|UPDATE|REPLACE)\s/i
+const STMT_KEYWORDS = /^(?:CREATE|INSERT|DROP|ALTER|LOCK|UNLOCK|SET|DELETE|UPDATE|REPLACE|SELECT|WITH|CALL|TRUNCATE|USE|GRANT|REVOKE|COMMIT|ROLLBACK|START\s+TRANSACTION|BEGIN|SHOW|DESCRIBE|DESC|EXPLAIN|ANALYZE|OPTIMIZE|RENAME)\s/i
 const PARSE_YIELD_EVERY = 5000
+const COMPOUND_CREATE_START = /^CREATE\s+(?:DEFINER\s*=\s*(?:`[^`]+`|[^`\s]+)@(?:`[^`]+`|[^`\s]+)\s+)?(?:OR\s+REPLACE\s+)?(?:TRIGGER|PROCEDURE|FUNCTION|EVENT)\b/i
+const BLOCK_START_KEYWORDS = new Set(['BEGIN', 'CASE', 'IF', 'LOOP', 'REPEAT', 'WHILE'])
 
 const yieldToEventLoop = async () => new Promise<void>((resolve) => setImmediate(resolve))
 
@@ -45,6 +49,130 @@ function stripLeadingTrivia(stmt: string): string {
   }
 }
 
+function isWordBoundaryChar(ch: string | undefined): boolean {
+  return !ch || !/[A-Za-z0-9_$]/.test(ch)
+}
+
+function matchKeywordAt(sql: string, index: number): string | null {
+  for (const keyword of BLOCK_START_KEYWORDS) {
+    if (sql.slice(index, index + keyword.length).toUpperCase() !== keyword) continue
+    const prev = sql[index - 1]
+    const next = sql[index + keyword.length]
+    if (isWordBoundaryChar(prev) && isWordBoundaryChar(next)) {
+      return keyword
+    }
+  }
+  return null
+}
+
+function mapFields(fields: Array<{ name: string; type?: number; flags?: number }> = []): QueryResult['columns'] {
+  return fields.map((f) => ({
+    name: f.name,
+    type: f.type?.toString() || '',
+    nullable: f.flags ? !(f.flags & 1) : true,
+    defaultValue: null,
+    primaryKey: f.flags ? !!(f.flags & 2) : false,
+    autoIncrement: f.flags ? !!(f.flags & 512) : false,
+    comment: '',
+  }))
+}
+
+async function executeStatement(conn: mysql.Connection, stmt: string, index: number): Promise<QueryStatementResult> {
+  const startedAt = Date.now()
+  try {
+    const [rows, fields] = await conn.query(stmt)
+    const executionTime = Date.now() - startedAt
+    const isMultipleStatements = Array.isArray(rows) && rows.length > 0 && Array.isArray((rows as unknown[])[0])
+
+    if (isMultipleStatements) {
+      let totalAffectedRows = 0
+      let lastInsertId = 0
+      const allRows: Record<string, unknown>[] = []
+      let allColumns: QueryResult['columns'] = []
+      let hasSelectResult = false
+      const multiRows = rows as unknown[]
+      const multiFields = fields as unknown[]
+
+      for (let i = 0; i < multiRows.length; i++) {
+        const statementResult = multiRows[i]
+        const statementFields = multiFields?.[i] as Array<{ name: string; type?: number; flags?: number }> | undefined
+        if (Array.isArray(statementResult)) {
+          hasSelectResult = true
+          allRows.push(...statementResult as Record<string, unknown>[])
+          if (allColumns.length === 0 && statementFields) {
+            allColumns = mapFields(statementFields)
+          }
+        } else if (statementResult && typeof statementResult === 'object') {
+          const header = statementResult as ResultSetHeader
+          totalAffectedRows += Number(header.affectedRows || 0)
+          if (header.insertId && header.insertId > lastInsertId) {
+            lastInsertId = header.insertId
+          }
+        }
+      }
+
+      return {
+        index,
+        sql: stmt,
+        isSelect: hasSelectResult,
+        success: true,
+        columns: allColumns,
+        rows: allRows,
+        affectedRows: totalAffectedRows,
+        insertId: lastInsertId,
+        executionTime,
+        rowCount: allRows.length,
+        error: null,
+      }
+    }
+
+    if (Array.isArray(rows)) {
+      return {
+        index,
+        sql: stmt,
+        isSelect: true,
+        success: true,
+        columns: mapFields(fields as Array<{ name: string; type?: number; flags?: number }>),
+        rows: rows as Record<string, unknown>[],
+        affectedRows: 0,
+        insertId: 0,
+        executionTime,
+        rowCount: rows.length,
+        error: null,
+      }
+    }
+
+    const info = rows as ResultSetHeader
+    return {
+      index,
+      sql: stmt,
+      isSelect: false,
+      success: true,
+      columns: [],
+      rows: [],
+      affectedRows: Number(info.affectedRows || 0),
+      insertId: Number(info.insertId || 0),
+      executionTime,
+      rowCount: 0,
+      error: null,
+    }
+  } catch (e: any) {
+    return {
+      index,
+      sql: stmt,
+      isSelect: false,
+      success: false,
+      columns: [],
+      rows: [],
+      affectedRows: 0,
+      insertId: 0,
+      executionTime: Date.now() - startedAt,
+      rowCount: 0,
+      error: e?.message || '执行失败',
+    }
+  }
+}
+
 /** 按分号拆分 SQL，尊重字符串/注释，并周期性上报解析进度 */
 async function splitStatementsWithProgress(
   sql: string,
@@ -53,7 +181,21 @@ async function splitStatementsWithProgress(
   const stmts: string[] = []
   const total = Math.max(sql.length, 1)
   let cur = '', i = 0, inSQ = false, inDQ = false, inBT = false, inLC = false, inBC = false
+  let delimiter = ';'
+  let statementStart = 0
+  let inCompoundStatement = false
+  let compoundDepth = 0
   let lastReported = -1
+
+  const finalizeCurrent = async (endIndex: number) => {
+    const t = cur.trim()
+    if (t) stmts.push(t)
+    cur = ''
+    statementStart = endIndex
+    inCompoundStatement = false
+    compoundDepth = 0
+    await maybeReport()
+  }
 
   const maybeReport = async (force = false) => {
     if (!onProgress) return
@@ -76,7 +218,61 @@ async function splitStatementsWithProgress(
     if (c === "'") { inSQ = true; cur += c; i++; await maybeReport(); continue }
     if (c === '"') { inDQ = true; cur += c; i++; await maybeReport(); continue }
     if (c === '`') { inBT = true; cur += c; i++; await maybeReport(); continue }
-    if (c === ';') { const t = cur.trim(); if (t) stmts.push(t); cur = ''; i++; await maybeReport(); continue }
+
+    if (!cur.trim()) {
+      const lineStart = i === 0 || sql[i - 1] === '\n'
+      if (lineStart && sql.slice(i, i + 9).toUpperCase() === 'DELIMITER' && isWordBoundaryChar(sql[i + 9])) {
+        let j = i + 9
+        while (j < sql.length && /\s/.test(sql[j])) j++
+        let k = j
+        while (k < sql.length && sql[k] !== '\n' && sql[k] !== '\r') k++
+        delimiter = sql.slice(j, k).trim() || ';'
+        i = k
+        statementStart = i
+        await maybeReport()
+        continue
+      }
+    }
+
+    if (!inCompoundStatement && !cur.trim()) {
+      const upcoming = sql.slice(i)
+      if (COMPOUND_CREATE_START.test(stripLeadingTrivia(upcoming))) {
+        inCompoundStatement = true
+        compoundDepth = 0
+      }
+    }
+
+    if (inCompoundStatement) {
+      const keyword = matchKeywordAt(sql, i)
+      if (keyword) {
+        if (keyword === 'BEGIN') {
+          compoundDepth += 1
+        } else if (compoundDepth > 0) {
+          compoundDepth += 1
+        }
+        cur += sql.slice(i, i + keyword.length)
+        i += keyword.length
+        await maybeReport()
+        continue
+      }
+
+      if (sql.slice(i, i + 3).toUpperCase() === 'END' && isWordBoundaryChar(sql[i - 1]) && isWordBoundaryChar(sql[i + 3])) {
+        if (compoundDepth > 0) compoundDepth -= 1
+        cur += 'END'
+        i += 3
+        await maybeReport()
+        continue
+      }
+    }
+
+    if (delimiter && sql.slice(i, i + delimiter.length) === delimiter) {
+      if (!inCompoundStatement || compoundDepth === 0) {
+        await finalizeCurrent(i + delimiter.length)
+        i += delimiter.length
+        continue
+      }
+    }
+
     cur += c; i++
     await maybeReport()
   }
@@ -96,8 +292,20 @@ function ensureSemicolons(sql: string): string {
   let inBacktick = false // 反引号内
   let inLineComment = false
   let inBlockComment = false
+  let statementBuffer = ''
+  let inCompoundStatement = false
+  let compoundDepth = 0
   // 记录最后一个非空白字符（字符串外部）
   let lastNonWS = ''
+
+  const refreshCompoundState = () => {
+    const trimmed = stripLeadingTrivia(statementBuffer)
+    if (!trimmed) return
+    if (!inCompoundStatement && COMPOUND_CREATE_START.test(trimmed)) {
+      inCompoundStatement = true
+      compoundDepth = 0
+    }
+  }
 
   while (i < sql.length) {
     const ch = sql[i]
@@ -106,40 +314,66 @@ function ensureSemicolons(sql: string): string {
     // --- 注释状态 ---
     if (inLineComment) {
       if (ch === '\n') inLineComment = false
-      out.push(ch); i++; continue
+      out.push(ch); statementBuffer += ch; i++; continue
     }
     if (inBlockComment) {
-      if (ch === '*' && next === '/') { out.push('*/'); i += 2; inBlockComment = false; continue }
-      out.push(ch); i++; continue
+      if (ch === '*' && next === '/') { out.push('*/'); statementBuffer += '*/'; i += 2; inBlockComment = false; continue }
+      out.push(ch); statementBuffer += ch; i++; continue
     }
 
     // --- 字符串/反引号状态 ---
     if (inSingle) {
-      if (ch === "'" && next === "'") { out.push("''"); i += 2; continue } // 转义
-      if (ch === '\\') { out.push(ch, next || ''); i += 2; continue }      // 反斜杠转义
+      if (ch === "'" && next === "'") { out.push("''"); statementBuffer += "''"; i += 2; continue } // 转义
+      if (ch === '\\') { out.push(ch, next || ''); statementBuffer += ch + (next || ''); i += 2; continue }      // 反斜杠转义
       if (ch === "'") inSingle = false
-      out.push(ch); i++; continue
+      out.push(ch); statementBuffer += ch; i++; continue
     }
     if (inDouble) {
-      if (ch === '"' && next === '"') { out.push('""'); i += 2; continue }
-      if (ch === '\\') { out.push(ch, next || ''); i += 2; continue }
+      if (ch === '"' && next === '"') { out.push('""'); statementBuffer += '""'; i += 2; continue }
+      if (ch === '\\') { out.push(ch, next || ''); statementBuffer += ch + (next || ''); i += 2; continue }
       if (ch === '"') inDouble = false
-      out.push(ch); i++; continue
+      out.push(ch); statementBuffer += ch; i++; continue
     }
     if (inBacktick) {
       if (ch === '`') inBacktick = false
-      out.push(ch); i++; continue
+      out.push(ch); statementBuffer += ch; i++; continue
     }
 
     // --- 普通状态：检测进入 ---
-    if (ch === '-' && next === '-') { inLineComment = true; out.push(ch); i++; continue }
-    if (ch === '/' && next === '*') { inBlockComment = true; out.push('/*'); i += 2; continue }
-    if (ch === "'") { inSingle = true; out.push(ch); i++; continue }
-    if (ch === '"') { inDouble = true; out.push(ch); i++; continue }
-    if (ch === '`') { inBacktick = true; out.push(ch); i++; continue }
+    if (ch === '-' && next === '-') { inLineComment = true; out.push(ch); statementBuffer += ch; i++; continue }
+    if (ch === '/' && next === '*') { inBlockComment = true; out.push('/*'); statementBuffer += '/*'; i += 2; continue }
+    if (ch === "'") { inSingle = true; out.push(ch); statementBuffer += ch; i++; continue }
+    if (ch === '"') { inDouble = true; out.push(ch); statementBuffer += ch; i++; continue }
+    if (ch === '`') { inBacktick = true; out.push(ch); statementBuffer += ch; i++; continue }
+
+    const keyword = matchKeywordAt(sql, i)
+    if (keyword) {
+      refreshCompoundState()
+      if (inCompoundStatement) {
+        if (keyword === 'BEGIN') {
+          compoundDepth += 1
+        } else if (compoundDepth > 0) {
+          compoundDepth += 1
+        }
+      }
+      out.push(keyword)
+      statementBuffer += keyword
+      if (keyword.length > 1) lastNonWS = keyword[keyword.length - 1]
+      i += keyword.length
+      continue
+    }
+
+    if (sql.slice(i, i + 3).toUpperCase() === 'END' && isWordBoundaryChar(sql[i - 1]) && isWordBoundaryChar(sql[i + 3])) {
+      if (inCompoundStatement && compoundDepth > 0) compoundDepth -= 1
+      out.push('END')
+      statementBuffer += 'END'
+      lastNonWS = 'D'
+      i += 3
+      continue
+    }
 
     // --- 换行处：检查是否需要补分号 ---
-    if (ch === '\n' && lastNonWS && lastNonWS !== ';' && lastNonWS !== '{' && lastNonWS !== '}') {
+    if (ch === '\n' && !inCompoundStatement && lastNonWS && lastNonWS !== ';' && lastNonWS !== '{' && lastNonWS !== '}') {
       // 向前看：跳过空白 + 行注释(-- ...)，找到下一个实际语句
       let j = i + 1
       while (j < sql.length) {
@@ -158,6 +392,12 @@ function ensureSemicolons(sql: string): string {
 
     if (ch !== ' ' && ch !== '\t' && ch !== '\r' && ch !== '\n') lastNonWS = ch
     out.push(ch)
+    statementBuffer += ch
+    if (ch === ';') {
+      statementBuffer = ''
+      inCompoundStatement = false
+      compoundDepth = 0
+    }
     i++
   }
   return out.join('')
@@ -265,10 +505,13 @@ export function registerQueryIPC() {
       }
 
       const originalStatementTotal = stmts.length
-      const executableStmts = withDrop.filter((stmt) => STMT_KEYWORDS.test(stripLeadingTrivia(stmt)))
+      const executableStmts = withDrop
+        .map((stmt) => stmt.trim())
+        .filter((stmt) => !!stmt)
       let ok = 0, fail = 0
       const errors: string[] = []
       const total = executableStmts.length
+      const statementResults: QueryStatementResult[] = []
       sendProgress({
         current: 0,
         total,
@@ -277,7 +520,6 @@ export function registerQueryIPC() {
         originalStatementTotal,
         executableStatementTotal: total,
       })
-      const BATCH = 50
       const emitProgress = () => {
         sendProgress({
           current: ok + fail,
@@ -288,36 +530,40 @@ export function registerQueryIPC() {
           executableStatementTotal: total,
         })
       }
-      for (let i = 0; i < executableStmts.length; i += BATCH) {
-        const batch = executableStmts.slice(i, i + BATCH)
-        try {
-          await conn.query(batch.join(';\n'))
-          ok += batch.length
-          emitProgress()
-        } catch {
-          for (const stmt of batch) {
-            try {
-              await conn.query(stmt)
-              ok++
-            }
-            catch (e: any) {
-              fail++
-              if (errors.length < 10) {
-                const preview = stmt.length > 120 ? stmt.slice(0, 120) + '...' : stmt
-                errors.push(`[${ok + fail}] ${e.message}\n  SQL: ${preview}`)
-              }
-            }
-            emitProgress()
+      for (let i = 0; i < executableStmts.length; i++) {
+        const stmt = executableStmts[i]
+        const result = await executeStatement(conn, stmt, i + 1)
+        statementResults.push(result)
+        if (result.success) {
+          ok++
+        } else {
+          fail++
+          if (errors.length < 10) {
+            const preview = stmt.length > 120 ? stmt.slice(0, 120) + '...' : stmt
+            errors.push(`[${result.index}] ${result.error}\n  SQL: ${preview}`)
           }
         }
         emitProgress()
       }
-      if (fail > 0) {
-        throw new Error(`执行完成：${ok} 条成功，${fail} 条失败\n\n` + errors.join('\n\n'))
+
+      const lastSelect = [...statementResults].reverse().find((item) => item.success && item.isSelect)
+      const lastMutation = [...statementResults].reverse().find((item) => item.success && !item.isSelect)
+      const aggregate: QueryResult = {
+        columns: lastSelect?.columns || [],
+        rows: lastSelect?.rows || [],
+        affectedRows: statementResults.reduce((sum, item) => sum + item.affectedRows, 0),
+        insertId: lastMutation?.insertId || lastSelect?.insertId || 0,
+        executionTime: statementResults.reduce((sum, item) => sum + item.executionTime, 0),
+        rowCount: lastSelect?.rowCount || 0,
+        sql,
+        isSelect: !!lastSelect,
+        statementResults,
+        successCount: ok,
+        failCount: fail,
       }
-      return { success: true }
+
+      return aggregate
     } catch (err: any) {
-      if (err.message.startsWith('执行完成')) throw err
       // 脱敏：不将 SQL 内容返回前端，仅返回错误消息
       throw new Error(err.message)
     } finally {

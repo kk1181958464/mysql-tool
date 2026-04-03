@@ -80,8 +80,17 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     const unsub = api.onImportProgress((data) => setImportProgress(data))
     const run = async () => {
       try {
-        await api.query.executeMulti(connectionId, content, database)
-        setImportMsg('SQL 导入执行成功')
+        const result = await api.query.executeMulti(connectionId, content, database)
+        if ((result.failCount ?? 0) > 0) {
+          const failedItems = result.statementResults?.filter((item) => !item.success) ?? []
+          const detail = failedItems
+            .slice(0, 10)
+            .map((item) => `[${item.index}] ${item.error}`)
+            .join('\n')
+          setImportMsg(`导入完成：${result.successCount ?? 0} 条成功，${result.failCount ?? 0} 条失败${detail ? `\n\n${detail}` : ''}`)
+        } else {
+          setImportMsg(`SQL 导入执行成功，共执行 ${result.successCount ?? result.statementResults?.length ?? 0} 条语句`)
+        }
         handleRefresh()
       } catch (e: any) {
         setImportMsg('导入失败：' + (e.message || e))

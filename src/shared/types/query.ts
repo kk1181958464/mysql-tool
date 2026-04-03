@@ -1,3 +1,17 @@
+export interface QueryStatementResult {
+  index: number
+  sql: string
+  isSelect: boolean
+  success: boolean
+  columns: ColumnInfo[]
+  rows: Record<string, unknown>[]
+  affectedRows: number
+  insertId: number
+  executionTime: number
+  rowCount: number
+  error: string | null
+}
+
 export interface QueryResult {
   columns: ColumnInfo[]
   rows: Record<string, unknown>[]
@@ -7,6 +21,9 @@ export interface QueryResult {
   rowCount: number
   sql: string
   isSelect: boolean
+  statementResults?: QueryStatementResult[]
+  successCount?: number
+  failCount?: number
 }
 
 export interface ColumnInfo {

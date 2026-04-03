@@ -30,7 +30,7 @@ export interface ElectronAPI {
   }
   query: {
     execute(connectionId: string, sql: string, database?: string): Promise<QueryResult>
-    executeMulti(connectionId: string, sql: string, database?: string): Promise<{ success: boolean }>
+    executeMulti(connectionId: string, sql: string, database?: string): Promise<QueryResult>
     explain(connectionId: string, sql: string, database?: string): Promise<ExplainResult[]>
     cancel(connectionId: string): Promise<void>
     format(sql: string): Promise<string>

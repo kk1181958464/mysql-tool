@@ -362,26 +362,24 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
     }
     setQueryExecuting(tab.id, true)
     try {
-      const startedAt = Date.now()
       let result: QueryResult
 
       if (shouldUseBatchExecution(tab.content)) {
-        await api.query.executeMulti(activeConnectionId, tab.content, activeDatabase || '')
-        result = {
-          columns: [],
-          rows: [],
-          affectedRows: 0,
-          insertId: 0,
-          executionTime: Date.now() - startedAt,
-          rowCount: 0,
-          sql: tab.content,
-          isSelect: false,
-        }
+        result = await api.query.executeMulti(activeConnectionId, tab.content, activeDatabase || '')
       } else {
         result = await api.query.execute(activeConnectionId, tab.content, activeDatabase || '')
       }
 
       setQueryResult(tab.id, result)
+      if ((result.failCount ?? 0) > 0) {
+        const failedItems = result.statementResults?.filter((item) => !item.success) ?? []
+        const summary = `执行完成：${result.successCount ?? 0} 条成功，${result.failCount ?? 0} 条失败`
+        const detail = failedItems
+          .slice(0, 10)
+          .map((item) => `[${item.index}] ${item.error}`)
+          .join('\n')
+        setQueryError(tab.id, detail ? `${summary}\n${detail}` : summary)
+      }
     } catch (e: any) {
       setQueryError(tab.id, e.message || '执行失败')
     }

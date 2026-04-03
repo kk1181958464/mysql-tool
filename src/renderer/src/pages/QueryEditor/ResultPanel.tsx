@@ -4,7 +4,7 @@ import { DownloadOutlined, CheckCircleOutlined, WarningOutlined, CloseCircleOutl
 import { useTabStore, QueryTab } from '../../stores/tab.store'
 import { useConnectionStore } from '../../stores/connection.store'
 import { api } from '../../utils/ipc'
-import type { QueryHistoryItem } from '../../../../shared/types/query'
+import type { QueryHistoryItem, QueryStatementResult } from '../../../../shared/types/query'
 import tableTransformWorker from '../../workers/table-transform.worker?worker'
 
 interface Props {
@@ -87,6 +87,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const [historyHasMore, setHistoryHasMore] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [activeKey, setActiveKey] = useState('results')
+  const [activeStatementIndex, setActiveStatementIndex] = useState(0)
   const [transformedRows, setTransformedRows] = useState<Array<Record<string, unknown>>>([])
   const transformJobIdRef = useRef(0)
 
@@ -94,6 +95,28 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const result = tab?.result
   const error = tab?.error
   const executing = tab?.isExecuting
+  const statementResults = result?.statementResults?.length
+    ? result.statementResults
+    : result
+      ? [{
+          index: 1,
+          sql: result.sql,
+          isSelect: result.isSelect,
+          success: !error,
+          columns: result.columns,
+          rows: result.rows,
+          affectedRows: result.affectedRows,
+          insertId: result.insertId,
+          executionTime: result.executionTime,
+          rowCount: result.rowCount,
+          error: error ?? null,
+        } satisfies QueryStatementResult]
+      : []
+  const selectedStatement = statementResults[activeStatementIndex] || statementResults[0] || null
+
+  useEffect(() => {
+    setActiveStatementIndex(0)
+  }, [result?.sql, result?.executionTime, result?.statementResults?.length])
 
   useEffect(() => {
     setHistoryPage(1)
@@ -131,7 +154,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       .finally(() => setHistoryLoading(false))
   }, [activeKey, activeConnectionId, historyPage, historyPageSize])
 
-  const resultColumns = result?.columns.map((col) => ({
+  const resultColumns = selectedStatement?.columns.map((col) => ({
     key: col.name,
     title: <span>{col.name} <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{col.type}</span></span>,
     dataIndex: col.name,
@@ -144,7 +167,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   })) || []
 
   useEffect(() => {
-    const rows = result?.rows
+    const rows = selectedStatement?.rows
     if (!rows || rows.length === 0) {
       setTransformedRows([])
       return
@@ -182,15 +205,15 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     return () => {
       worker.terminate()
     }
-  }, [result?.rows, tabId])
+  }, [selectedStatement?.rows, tabId, activeStatementIndex])
 
   const normalizedRows = useMemo(() => {
-    const rows = transformedRows.length ? transformedRows : (result?.rows || [])
+    const rows = transformedRows.length ? transformedRows : (selectedStatement?.rows || [])
     return rows.map((r, i) => ({ ...r, _key: i }))
-  }, [transformedRows, result?.rows])
+  }, [transformedRows, selectedStatement?.rows])
 
   useEffect(() => {
-    if (activeKey !== 'results' || !result) return
+    if (activeKey !== 'results' || !selectedStatement) return
     const start = performance.now()
     requestAnimationFrame(() => {
       void api.perf.reportMetric({
@@ -200,24 +223,24 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
           page: 'query_editor',
           tab: 'results',
           rows: normalizedRows.length,
-          isSelect: result.isSelect,
+          isSelect: selectedStatement.isSelect,
         },
         ts: Date.now(),
       })
     })
-  }, [activeKey, result, normalizedRows.length])
+  }, [activeKey, selectedStatement, normalizedRows.length])
 
   const handleExport = async (format: string) => {
-    if (!result || !activeConnectionId) return
+    if (!selectedStatement || !activeConnectionId) return
     try {
-      await api.importExport.exportData(activeConnectionId, '', result.sql, '', format)
+      await api.importExport.exportData(activeConnectionId, '', selectedStatement.sql, '', format)
     } catch {
       // ignore
     }
   }
 
-  const isExplain = result?.sql?.toUpperCase().startsWith('EXPLAIN ')
-  const resultCount = result ? (result.isSelect ? result.rowCount : result.affectedRows) : 0
+  const isExplain = selectedStatement?.sql?.toUpperCase().startsWith('EXPLAIN ')
+  const resultCount = selectedStatement ? (selectedStatement.isSelect ? selectedStatement.rowCount : selectedStatement.affectedRows) : 0
 
   const historyPaginationTotal = historyHasMore
     ? historyPage * historyPageSize + 1
@@ -229,11 +252,47 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       label: `结果${result ? ` (${resultCount})` : ''}`,
       children: executing ? (
         <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="执行中..." /></div>
-      ) : result ? (
+      ) : selectedStatement ? (
         isExplain ? (
-          <ExplainView rows={result.rows} />
-        ) : result.isSelect ? (
           <div style={{ height: '100%', overflow: 'auto' }}>
+            {statementResults.length > 1 && (
+              <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>当前语句</span>
+                <select
+                  value={selectedStatement.index}
+                  onChange={(e) => setActiveStatementIndex(Math.max(0, statementResults.findIndex((item) => item.index === Number(e.target.value))))}
+                  style={{ minWidth: 220, padding: '4px 8px', background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 6 }}
+                >
+                  {statementResults.map((item) => (
+                    <option key={item.index} value={item.index}>
+                      {`#${item.index} ${item.success ? 'OK' : 'ERR'} ${item.sql.replace(/\s+/g, ' ').slice(0, 80)}`}
+                    </option>
+                  ))}
+                </select>
+                {selectedStatement.success ? <Tag type="success">成功</Tag> : <Tag type="error">失败</Tag>}
+              </div>
+            )}
+            <ExplainView rows={selectedStatement.rows} />
+          </div>
+        ) : selectedStatement.isSelect ? (
+          <div style={{ height: '100%', overflow: 'auto' }}>
+            {statementResults.length > 1 && (
+              <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>当前语句</span>
+                <select
+                  value={selectedStatement.index}
+                  onChange={(e) => setActiveStatementIndex(Math.max(0, statementResults.findIndex((item) => item.index === Number(e.target.value))))}
+                  style={{ minWidth: 220, padding: '4px 8px', background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 6 }}
+                >
+                  {statementResults.map((item) => (
+                    <option key={item.index} value={item.index}>
+                      {`#${item.index} ${item.success ? 'OK' : 'ERR'} ${item.sql.replace(/\s+/g, ' ').slice(0, 80)}`}
+                    </option>
+                  ))}
+                </select>
+                {selectedStatement.success ? <Tag type="success">成功</Tag> : <Tag type="error">失败</Tag>}
+              </div>
+            )}
             <Table
               columns={resultColumns}
               dataSource={normalizedRows}
@@ -249,7 +308,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
             />
             <Space style={{ padding: '4px 8px' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                {result.rowCount} 行 | {result.executionTime}ms
+                {selectedStatement.rowCount} 行 | {selectedStatement.executionTime}ms
               </span>
               <Dropdown
                 items={[
@@ -266,15 +325,33 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
         ) : (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40 }}>
             <div style={{ textAlign: 'center', maxWidth: 400 }}>
-              <div style={{ fontSize: 48, color: 'var(--accent)', marginBottom: 16 }}>✓</div>
-              <h3 style={{ marginBottom: 8, color: 'var(--text-primary)' }}>执行成功</h3>
+              <div style={{ fontSize: 48, color: selectedStatement.success ? 'var(--accent)' : 'var(--error)', marginBottom: 16 }}>
+                {selectedStatement.success ? '✓' : '!'}
+              </div>
+              <h3 style={{ marginBottom: 8, color: 'var(--text-primary)' }}>{selectedStatement.success ? '执行成功' : '执行失败'}</h3>
               <div style={{ color: 'var(--text-secondary)', marginBottom: 24, fontSize: 14 }}>
-                <div>影响行数: {result.affectedRows}</div>
-                {result.insertId > 0 && <div>插入ID: {result.insertId}</div>}
-                <div>执行时间: {result.executionTime}ms</div>
+                <div>影响行数: {selectedStatement.affectedRows}</div>
+                {selectedStatement.insertId > 0 && <div>插入ID: {selectedStatement.insertId}</div>}
+                <div>执行时间: {selectedStatement.executionTime}ms</div>
+                {selectedStatement.error && <div style={{ color: 'var(--error)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 8 }}>{selectedStatement.error}</div>}
               </div>
               <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5 }}>
-                <div>SQL: {result.sql.length > 100 ? result.sql.substring(0, 100) + '...' : result.sql}</div>
+                {statementResults.length > 1 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <select
+                      value={selectedStatement.index}
+                      onChange={(e) => setActiveStatementIndex(Math.max(0, statementResults.findIndex((item) => item.index === Number(e.target.value))))}
+                      style={{ minWidth: 220, padding: '4px 8px', background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 6 }}
+                    >
+                      {statementResults.map((item) => (
+                        <option key={item.index} value={item.index}>
+                          {`#${item.index} ${item.success ? 'OK' : 'ERR'} ${item.sql.replace(/\s+/g, ' ').slice(0, 80)}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>SQL: {selectedStatement.sql.length > 100 ? selectedStatement.sql.substring(0, 100) + '...' : selectedStatement.sql}</div>
               </div>
             </div>
           </div>
@@ -288,10 +365,45 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       label: '消息',
       children: (
         <div style={{ padding: 12 }}>
-          {error && <Tag type="error">{error}</Tag>}
-          {result && !result.isSelect && <span>影响行数: {result.affectedRows} | 耗时: {result.executionTime}ms</span>}
-          {result?.isSelect && <span>返回 {result.rowCount} 行 | 耗时: {result.executionTime}ms</span>}
-          {!error && !result && <span style={{ color: 'var(--text-muted)' }}>暂无消息</span>}
+          {error && <div style={{ marginBottom: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><Tag type="error">{error}</Tag></div>}
+          {statementResults.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {statementResults.map((item, idx) => (
+                <div
+                  key={item.index}
+                  onClick={() => {
+                    setActiveStatementIndex(idx)
+                    setActiveKey('results')
+                  }}
+                  style={{
+                    padding: 10,
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    background: idx === activeStatementIndex ? 'var(--bg-hover)' : 'var(--bg-surface)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <Tag type={item.success ? 'success' : 'error'}>{item.success ? 'OK' : 'ERR'}</Tag>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>#{item.index}</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {item.isSelect ? `返回 ${item.rowCount} 行` : `影响 ${item.affectedRows} 行`} | {item.executionTime}ms
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: item.error ? 6 : 0, wordBreak: 'break-word' }}>
+                    {item.sql}
+                  </div>
+                  {item.error && (
+                    <div style={{ fontSize: 12, color: 'var(--error)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {item.error}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            !error && !result && <span style={{ color: 'var(--text-muted)' }}>暂无消息</span>
+          )}
         </div>
       ),
     },
