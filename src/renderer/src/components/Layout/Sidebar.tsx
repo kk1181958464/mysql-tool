@@ -46,8 +46,14 @@ export default function Sidebar() {
       }
       setContextMenu(null)
     }
-    const handleScroll = () => {
-      setDropdownOpen(false)
+    const handleScroll = (e: Event) => {
+      const target = e.target
+      const isDropdownScroll = !!(dropdownRef.current && target instanceof Node && dropdownRef.current.contains(target))
+      const isSidebarTreeScroll = target instanceof Element && !!target.closest('.sidebar-tree')
+
+      if (!isDropdownScroll && !isSidebarTreeScroll) {
+        setDropdownOpen(false)
+      }
       setContextMenu(null)
     }
     document.addEventListener('click', handleClick)
