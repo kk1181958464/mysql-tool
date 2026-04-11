@@ -15,6 +15,56 @@ const RESULT_VIRTUAL_THRESHOLD = 1000
 const HISTORY_VIRTUAL_THRESHOLD = 12
 const RESULT_WORKER_THRESHOLD = 5000
 
+type StatementKind = 'select' | 'show' | 'describe' | 'explain' | 'ddl' | 'mutation' | 'session' | 'other'
+
+const DDL_PREFIXES = ['ALTER', 'CREATE', 'DROP', 'TRUNCATE', 'RENAME']
+const MUTATION_PREFIXES = ['INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'MERGE', 'LOAD', 'CALL']
+const SESSION_PREFIXES = ['USE', 'SET']
+const ROW_RESULT_PREFIXES = ['SELECT', 'SHOW', 'DESC', 'DESCRIBE', 'EXPLAIN', 'WITH']
+
+const getStatementKind = (sql: string, isSelect: boolean): StatementKind => {
+  const normalizedSql = sql.trim().replace(/^\(+/, '').toUpperCase()
+
+  if (normalizedSql.startsWith('EXPLAIN')) return 'explain'
+  if (normalizedSql.startsWith('SHOW')) return 'show'
+  if (normalizedSql.startsWith('DESC') || normalizedSql.startsWith('DESCRIBE')) return 'describe'
+  if (DDL_PREFIXES.some((prefix) => normalizedSql.startsWith(prefix))) return 'ddl'
+  if (MUTATION_PREFIXES.some((prefix) => normalizedSql.startsWith(prefix))) return 'mutation'
+  if (SESSION_PREFIXES.some((prefix) => normalizedSql.startsWith(prefix))) return 'session'
+  if (isSelect || ROW_RESULT_PREFIXES.some((prefix) => normalizedSql.startsWith(prefix))) return 'select'
+  return 'other'
+}
+
+const getStatementCount = (statement: QueryStatementResult) => {
+  const kind = getStatementKind(statement.sql, statement.isSelect)
+  if (kind === 'select' || kind === 'show' || kind === 'describe' || kind === 'explain') return statement.rowCount
+  if (kind === 'mutation') return statement.affectedRows
+  return 0
+}
+
+const getStatementMetricLabel = (statement: QueryStatementResult) => {
+  const kind = getStatementKind(statement.sql, statement.isSelect)
+  if (kind === 'select' || kind === 'show' || kind === 'describe' || kind === 'explain') return `返回 ${statement.rowCount} 行`
+  if (kind === 'ddl') return '结构变更'
+  if (kind === 'session') return statement.sql.trim().toUpperCase().startsWith('USE') ? '数据库已切换' : '会话变量已设置'
+  if (kind === 'mutation') return `影响 ${statement.affectedRows} 行`
+  return statement.affectedRows > 0 ? `影响 ${statement.affectedRows} 行` : '执行完成'
+}
+
+const getStatementStatusTag = (statement: QueryStatementResult): { type: 'success' | 'error' | 'warning'; label: string } => {
+  if (!statement.success) return { type: 'error', label: '失败' }
+
+  const kind = getStatementKind(statement.sql, statement.isSelect)
+  if (kind === 'ddl') return { type: 'warning', label: 'DDL' }
+  if (kind === 'mutation') return { type: 'success', label: 'DML' }
+  if (kind === 'session') return { type: 'warning', label: 'SESSION' }
+  if (kind === 'show') return { type: 'success', label: 'SHOW' }
+  if (kind === 'describe') return { type: 'success', label: 'DESCRIBE' }
+  if (kind === 'explain') return { type: 'warning', label: 'EXPLAIN' }
+  if (kind === 'select') return { type: 'success', label: 'QUERY' }
+  return { type: 'warning', label: 'SQL' }
+}
+
 // Explain 类型评级
 const getTypeLevel = (type: string): { color: string; icon: React.ReactNode; label: string } => {
   const t = type?.toLowerCase() || ''
@@ -114,12 +164,22 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       : []
   const selectedStatement = statementResults[activeStatementIndex] || statementResults[0] || null
   const hasMultipleStatements = statementResults.length > 1
-  const aggregateAffectedRows = statementResults.reduce((sum, item) => sum + item.affectedRows, 0)
   const aggregateExecutionTime = statementResults.reduce((sum, item) => sum + item.executionTime, 0)
   const aggregateSuccessCount = statementResults.filter((item) => item.success).length
   const aggregateFailCount = statementResults.filter((item) => !item.success).length
-  const aggregateSelectRows = statementResults.reduce((sum, item) => sum + item.rowCount, 0)
-  const hasAnySelect = statementResults.some((item) => item.isSelect)
+  const aggregateRowResults = statementResults.reduce((sum, item) => {
+    const kind = getStatementKind(item.sql, item.isSelect)
+    return kind === 'select' || kind === 'show' || kind === 'describe' || kind === 'explain'
+      ? sum + item.rowCount
+      : sum
+  }, 0)
+  const aggregateMutationAffectedRows = statementResults.reduce((sum, item) => {
+    return getStatementKind(item.sql, item.isSelect) === 'mutation' ? sum + item.affectedRows : sum
+  }, 0)
+  const aggregateDdlCount = statementResults.filter((item) => getStatementKind(item.sql, item.isSelect) === 'ddl').length
+  const aggregateSessionCount = statementResults.filter((item) => getStatementKind(item.sql, item.isSelect) === 'session').length
+  const selectedStatementKind = selectedStatement ? getStatementKind(selectedStatement.sql, selectedStatement.isSelect) : 'other'
+  const selectedStatementStatus = selectedStatement ? getStatementStatusTag(selectedStatement) : null
 
   useEffect(() => {
     setActiveStatementIndex(0)
@@ -246,10 +306,10 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     }
   }
 
-  const isExplain = selectedStatement?.sql?.toUpperCase().startsWith('EXPLAIN ')
+  const isExplain = selectedStatementKind === 'explain'
   const resultCount = hasMultipleStatements
-    ? (hasAnySelect ? aggregateSelectRows : aggregateAffectedRows)
-    : (selectedStatement ? (selectedStatement.isSelect ? selectedStatement.rowCount : selectedStatement.affectedRows) : 0)
+    ? aggregateRowResults + aggregateMutationAffectedRows
+    : (selectedStatement ? getStatementCount(selectedStatement) : 0)
 
   const historyPaginationTotal = historyHasMore
     ? historyPage * historyPageSize + 1
@@ -269,8 +329,10 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       <span>共执行 {statementResults.length} 条语句</span>
       <span>成功 {aggregateSuccessCount} 条</span>
       <span>失败 {aggregateFailCount} 条</span>
-      <span>总影响行数 {aggregateAffectedRows}</span>
-      <span>总返回行数 {aggregateSelectRows}</span>
+      <span>总影响行数 {aggregateMutationAffectedRows}</span>
+      {aggregateDdlCount > 0 && <span>结构变更 {aggregateDdlCount} 条</span>}
+      {aggregateSessionCount > 0 && <span>会话操作 {aggregateSessionCount} 条</span>}
+      <span>总返回行数 {aggregateRowResults}</span>
       <span>总耗时 {aggregateExecutionTime}ms</span>
     </div>
   ) : null
@@ -300,6 +362,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                   ))}
                 </select>
                 {selectedStatement.success ? <Tag type="success">成功</Tag> : <Tag type="error">失败</Tag>}
+                {selectedStatementStatus && <Tag type={selectedStatementStatus.type}>{selectedStatementStatus.label}</Tag>}
               </div>
             )}
             <ExplainView rows={selectedStatement.rows} />
@@ -322,6 +385,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                   ))}
                 </select>
                 {selectedStatement.success ? <Tag type="success">成功</Tag> : <Tag type="error">失败</Tag>}
+                {selectedStatementStatus && <Tag type={selectedStatementStatus.type}>{selectedStatementStatus.label}</Tag>}
               </div>
             )}
             <Table
@@ -368,16 +432,19 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                 }}>
                   <div>共执行 {statementResults.length} 条语句</div>
                   <div>成功 {aggregateSuccessCount} 条，失败 {aggregateFailCount} 条</div>
-                  <div>总影响行数 {aggregateAffectedRows} | 总返回行数 {aggregateSelectRows} | 总耗时 {aggregateExecutionTime}ms</div>
+                  <div>总影响行数 {aggregateMutationAffectedRows}{aggregateDdlCount > 0 ? ` | 结构变更 ${aggregateDdlCount} 条` : ''}{aggregateSessionCount > 0 ? ` | 会话操作 ${aggregateSessionCount} 条` : ''} | 总返回行数 {aggregateRowResults} | 总耗时 {aggregateExecutionTime}ms</div>
                 </div>
               )}
               <div style={{ fontSize: 48, color: selectedStatement.success ? 'var(--accent)' : 'var(--error)', marginBottom: 16 }}>
                 {selectedStatement.success ? '✓' : '!'}
               </div>
-              <h3 style={{ marginBottom: 8, color: 'var(--text-primary)' }}>{selectedStatement.success ? '执行成功' : '执行失败'}</h3>
+              <h3 style={{ marginBottom: 8, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <span>{selectedStatement.success ? '执行成功' : '执行失败'}</span>
+                {selectedStatementStatus && <Tag type={selectedStatementStatus.type}>{selectedStatementStatus.label}</Tag>}
+              </h3>
               <div style={{ color: 'var(--text-secondary)', marginBottom: 24, fontSize: 14 }}>
-                <div>影响行数: {selectedStatement.affectedRows}</div>
-                {selectedStatement.insertId > 0 && <div>插入ID: {selectedStatement.insertId}</div>}
+                <div>{getStatementMetricLabel(selectedStatement)}</div>
+                {selectedStatementKind === 'mutation' && selectedStatement.insertId > 0 && <div>插入ID: {selectedStatement.insertId}</div>}
                 <div>执行时间: {selectedStatement.executionTime}ms</div>
                 {selectedStatement.error && <div style={{ color: 'var(--error)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 8 }}>{selectedStatement.error}</div>}
               </div>
@@ -430,10 +497,11 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <Tag type={getStatementStatusTag(item).type}>{getStatementStatusTag(item).label}</Tag>
                     <Tag type={item.success ? 'success' : 'error'}>{item.success ? 'OK' : 'ERR'}</Tag>
                     <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>#{item.index}</span>
                     <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                      {item.isSelect ? `返回 ${item.rowCount} 行` : `影响 ${item.affectedRows} 行`} | {item.executionTime}ms
+                      {getStatementMetricLabel(item)} | {item.executionTime}ms
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: item.error ? 6 : 0, wordBreak: 'break-word' }}>
