@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Table, Input, Space, Button, DateTimePicker, Modal } from '../../components/ui'
-import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined, SearchOutlined } from '@ant-design/icons'
+import { Table, Input, Space, Button, DateTimePicker, Modal, Tag } from '../../components/ui'
+import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined } from '@ant-design/icons'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
 import type { ColumnDetail } from '../../../../shared/types/metadata'
 import { DataExport } from './DataExport'
+import { FilterModal, type FilterMode, type SimpleFilterCondition, type SimpleFilterGroup, type SimpleFilterNode } from './FilterModal'
 import { useAppStore } from '../../stores/app.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
@@ -23,7 +24,11 @@ interface KeysetCursor {
   lastPk: unknown
 }
 
+type SimpleFilterOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'contains' | 'startsWith' | 'endsWith' | 'like' | 'notLike' | 'between' | 'notBetween' | 'IN' | 'NOT IN' | 'IS NULL' | 'IS NOT NULL'
+
 type EffectivePagination = 'keyset' | 'offset'
+
+type SimpleFilterField = keyof Omit<SimpleFilterCondition, 'id' | 'type'>
 
 const PAGINATION_MODE_LABEL: Record<PaginationMode, string> = {
   auto: '自动',
@@ -58,12 +63,234 @@ const fmtValue = (val: unknown, isDateOnly = false): string => {
   return s
 }
 
+const quoteSqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`
+
+const isNumericType = (type: string) => /int|decimal|float|double|numeric|real|bit|serial/i.test(type)
+const isDateLikeType = (type: string) => /date|time|year|timestamp|datetime/i.test(type)
+
+const quoteSqlList = (value: string, options?: { treatAsNumeric?: boolean }): string => {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      if (options?.treatAsNumeric && /^-?\d+(\.\d+)?$/.test(item)) {
+        return item
+      }
+      return quoteSqlString(item)
+    })
+    .join(', ')
+}
+
+const buildConditionSql = (
+  filter: SimpleFilterCondition,
+  getColumnType: (columnName: string) => string,
+): string => {
+  const column = filter.column.trim()
+  const operator = filter.operator.trim() as SimpleFilterOperator
+  const value = filter.value.trim()
+  const secondValue = filter.secondValue?.trim() || ''
+  const columnType = getColumnType(column)
+  const treatListAsNumeric = isNumericType(columnType)
+  if (!column || !operator) return ''
+  if (operator === 'IS NULL' || operator === 'IS NOT NULL') {
+    return `\`${column}\` ${operator}`
+  }
+  if (operator === 'contains') {
+    if (!value) return ''
+    return `\`${column}\` LIKE ${quoteSqlString(`%${value}%`)}`
+  }
+  if (operator === 'startsWith') {
+    if (!value) return ''
+    return `\`${column}\` LIKE ${quoteSqlString(`${value}%`)}`
+  }
+  if (operator === 'endsWith') {
+    if (!value) return ''
+    return `\`${column}\` LIKE ${quoteSqlString(`%${value}`)}`
+  }
+  if (operator === 'like') {
+    if (!value) return ''
+    return `\`${column}\` LIKE ${quoteSqlString(value)}`
+  }
+  if (operator === 'notLike') {
+    if (!value) return ''
+    return `\`${column}\` NOT LIKE ${quoteSqlString(value)}`
+  }
+  if (operator === 'between') {
+    if (!value || !secondValue) return ''
+    return `\`${column}\` BETWEEN ${quoteSqlString(value)} AND ${quoteSqlString(secondValue)}`
+  }
+  if (operator === 'notBetween') {
+    if (!value || !secondValue) return ''
+    return `\`${column}\` NOT BETWEEN ${quoteSqlString(value)} AND ${quoteSqlString(secondValue)}`
+  }
+  if (operator === 'IN' || operator === 'NOT IN') {
+    const list = quoteSqlList(value, { treatAsNumeric: treatListAsNumeric })
+    if (!list) return ''
+    return `\`${column}\` ${operator} (${list})`
+  }
+  if (!value) return ''
+  return `\`${column}\` ${operator} ${quoteSqlString(value)}`
+}
+
+const buildSimpleFilterWhere = (
+  group: SimpleFilterGroup,
+  getColumnType: (columnName: string) => string,
+): string => {
+  const parts = group.children
+    .map((node) => {
+      if (node.type === 'group') {
+        return buildSimpleFilterWhere(node, getColumnType)
+      }
+      return buildConditionSql(node, getColumnType)
+    })
+    .filter(Boolean)
+
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return parts[0]
+  return `(${parts.join(` ${group.join} `)})`
+}
+
+const createFilterId = () => `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+const getDefaultSimpleFilter = (): SimpleFilterCondition => ({
+  id: createFilterId(),
+  type: 'condition',
+  column: '',
+  operator: 'contains',
+  value: '',
+  secondValue: '',
+})
+
+const getDefaultSimpleFilterGroup = (): SimpleFilterGroup => ({
+  id: createFilterId(),
+  type: 'group',
+  join: 'AND',
+  children: [getDefaultSimpleFilter()],
+})
+
+const cloneSimpleFilterNode = (node: SimpleFilterNode): SimpleFilterNode => {
+  if (node.type === 'group') {
+    return {
+      ...node,
+      children: node.children.map((child) => cloneSimpleFilterNode(child)),
+    }
+  }
+  return { ...node }
+}
+
+const cloneSimpleFilterGroup = (group: SimpleFilterGroup): SimpleFilterGroup => ({
+  ...group,
+  children: group.children.map((child) => cloneSimpleFilterNode(child)),
+})
+
+const ensureGroupHasChildren = (group: SimpleFilterGroup): SimpleFilterGroup => {
+  if (group.children.length > 0) return group
+  return { ...group, children: [getDefaultSimpleFilter()] }
+}
+
+const updateGroupInTree = (
+  group: SimpleFilterGroup,
+  groupId: string,
+  updater: (target: SimpleFilterGroup) => SimpleFilterGroup,
+): SimpleFilterGroup => {
+  if (group.id === groupId) {
+    return ensureGroupHasChildren(updater(group))
+  }
+
+  return {
+    ...group,
+    children: group.children.map((child) => {
+      if (child.type !== 'group') return child
+      return updateGroupInTree(child, groupId, updater)
+    }),
+  }
+}
+
+const updateConditionInTree = (
+  group: SimpleFilterGroup,
+  conditionId: string,
+  updater: (target: SimpleFilterCondition) => SimpleFilterCondition,
+): SimpleFilterGroup => ({
+  ...group,
+  children: group.children.map((child) => {
+    if (child.type === 'group') {
+      return updateConditionInTree(child, conditionId, updater)
+    }
+    return child.id === conditionId ? updater(child) : child
+  }),
+})
+
+const removeNodeFromTree = (group: SimpleFilterGroup, nodeId: string, isRoot = true): SimpleFilterGroup => {
+  const nextChildren = group.children
+    .filter((child) => child.id !== nodeId)
+    .map((child) => {
+      if (child.type !== 'group') return child
+      return removeNodeFromTree(child, nodeId, false)
+    })
+
+  if (isRoot && nextChildren.length === 0) {
+    return { ...group, children: [getDefaultSimpleFilter()] }
+  }
+
+  return { ...group, children: nextChildren }
+}
+
+const moveNodeInGroup = (
+  group: SimpleFilterGroup,
+  groupId: string,
+  fromIndex: number,
+  toIndex: number,
+): SimpleFilterGroup => {
+  if (group.id === groupId) {
+    const nextChildren = [...group.children]
+    if (fromIndex < 0 || toIndex < 0 || fromIndex >= nextChildren.length || toIndex >= nextChildren.length || fromIndex === toIndex) {
+      return group
+    }
+    const [moved] = nextChildren.splice(fromIndex, 1)
+    nextChildren.splice(toIndex, 0, moved)
+    return { ...group, children: nextChildren }
+  }
+
+  return {
+    ...group,
+    children: group.children.map((child) => {
+      if (child.type !== 'group') return child
+      return moveNodeInGroup(child, groupId, fromIndex, toIndex)
+    }),
+  }
+}
+
+const describeSimpleFilterNode = (node: SimpleFilterNode): string => {
+  if (node.type === 'group') {
+    const parts = node.children.map((child) => describeSimpleFilterNode(child)).filter(Boolean)
+    if (parts.length === 0) return ''
+    if (parts.length === 1) return parts[0]
+    return `(${parts.join(` ${node.join} `)})`
+  }
+
+  const column = node.column?.trim() || '未选字段'
+  const operator = node.operator || '未选操作符'
+  const value = node.value?.trim() || ''
+  const secondValue = node.secondValue?.trim() || ''
+
+  if (operator === 'IS NULL' || operator === 'IS NOT NULL') {
+    return `${column} ${operator}`
+  }
+  if (operator === 'between' || operator === 'notBetween') {
+    return value && secondValue ? `${column} ${operator} ${value} ~ ${secondValue}` : `${column} ${operator}`
+  }
+  if (operator === 'IN' || operator === 'NOT IN') {
+    return value ? `${column} ${operator} [${value}]` : `${column} ${operator}`
+  }
+  return value ? `${column} ${operator} ${value}` : `${column} ${operator}`
+}
+
 const valIsDate = (val: unknown): boolean => {
   if (isDateValue(val)) return true
   if (typeof val === 'string' && (/^[A-Z][a-z]{2}\s[A-Z][a-z]{2}\s\d/.test(val) || /^\d{4}-\d{2}-\d{2}/.test(val))) return true
   return false
 }
-
 // SQL 转义
 const escSQL = (v: unknown): string => {
   if (v === null || v === undefined) return 'NULL'
@@ -268,8 +495,15 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const { loadColumns, columns: columnCache } = useDatabaseStore()
   const setDataDirty = useTabStore((s) => s.setDataDirty)
   const [jumpPage, setJumpPage] = useState('')
+  const [filterMode, setFilterMode] = useState<FilterMode>('simple')
+  const [simpleFilterTree, setSimpleFilterTree] = useState<SimpleFilterGroup>(getDefaultSimpleFilterGroup())
+  const [appliedSimpleFilterTree, setAppliedSimpleFilterTree] = useState<SimpleFilterGroup>(getDefaultSimpleFilterGroup())
   const [whereInput, setWhereInput] = useState('')
   const [where, setWhere] = useState('')
+  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false)
+  const [draftFilterMode, setDraftFilterMode] = useState<FilterMode>('simple')
+  const [draftSimpleFilterTree, setDraftSimpleFilterTree] = useState<SimpleFilterGroup>(getDefaultSimpleFilterGroup())
+  const [draftWhereInput, setDraftWhereInput] = useState('')
   const [orderBy, setOrderBy] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set())
   const selectedRowKeyList = useMemo(() => Array.from(selectedRowKeys), [selectedRowKeys])
@@ -303,11 +537,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const fetchRequestIdRef = useRef(0)
   const transformJobIdRef = useRef(0)
 
-  const countCacheKey = useMemo(
-    () => `${connectionId}|${database}|${table}|${where.trim()}`,
-    [connectionId, database, table, where]
-  )
-
   const columnCacheKey = useMemo(
     () => `${connectionId}:${database}:${table}`,
     [connectionId, database, table]
@@ -318,6 +547,31 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     ;((columnCache[columnCacheKey] || []) as ColumnDetail[]).forEach((c) => map.set(c.name, c))
     return map
   }, [columnCache, columnCacheKey])
+
+  const simpleFilterColumnOptions = useMemo(
+    () => (result?.columns || []).map((col) => ({ value: col.name, label: col.name })),
+    [result?.columns]
+  )
+
+  const getFilterColumnType = useCallback((columnName: string) => {
+    const column = result?.columns.find((item) => item.name === columnName)
+    return column?.type || columnDetailsByName.get(columnName)?.dataType || ''
+  }, [result?.columns, columnDetailsByName])
+
+  const effectiveWhere = useMemo(
+    () => filterMode === 'simple' ? buildSimpleFilterWhere(appliedSimpleFilterTree, getFilterColumnType) : where,
+    [filterMode, appliedSimpleFilterTree, getFilterColumnType, where]
+  )
+
+  const filterSummary = useMemo(
+    () => filterMode === 'simple' ? describeSimpleFilterNode(appliedSimpleFilterTree) : (where.trim() ? `高级 WHERE: ${where.trim()}` : ''),
+    [filterMode, appliedSimpleFilterTree, where]
+  )
+
+  const countCacheKey = useMemo(
+    () => `${connectionId}|${database}|${table}|${effectiveWhere.trim()}`,
+    [connectionId, database, table, effectiveWhere]
+  )
 
   useEffect(() => {
     if (paginationMode !== 'auto') {
@@ -369,7 +623,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
 
       const whereParts: string[] = []
-      if (where.trim()) whereParts.push(`(${where})`)
+      if (effectiveWhere.trim()) whereParts.push(`(${effectiveWhere})`)
 
       let sql = `SELECT * FROM \`${table}\``
 
@@ -398,7 +652,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
 
       let countSql = `SELECT COUNT(*) as cnt FROM \`${table}\``
-      if (where.trim()) countSql += ` WHERE ${where}`
+      if (effectiveWhere.trim()) countSql += ` WHERE ${effectiveWhere}`
 
       const cache = countCacheRef.current
       const cachedCount = !forceRefreshCount ? cache.get(countCacheKey) : undefined
@@ -465,7 +719,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         setLoading(false)
       }
     }
-  }, [connectionId, database, table, rowsPerPage, where, orderBy, countCacheKey, paginationMode, page, cursor, result])
+  }, [connectionId, database, table, rowsPerPage, effectiveWhere, orderBy, countCacheKey, paginationMode, page, cursor, result])
 
   useEffect(() => {
     if (!connectionId || !database || !table) return
@@ -489,7 +743,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setHasNextPage(false)
     setPaginationFallbackHint('')
     fetchData('reset')
-  }, [connectionId, database, table, where, rowsPerPage, paginationMode])
+  }, [connectionId, database, table, effectiveWhere, rowsPerPage, paginationMode])
 
   const pk = result?.columns.find((c) => c.primaryKey)
   const pkCol = pk?.name || '_rowIndex'
@@ -566,6 +820,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   )
 
   useEffect(() => {
+    setDraftFilterMode(filterMode)
+    setDraftSimpleFilterTree(cloneSimpleFilterGroup(simpleFilterTree))
+    setDraftWhereInput(whereInput)
+  }, [filterMode, simpleFilterTree, whereInput])
+
+  useEffect(() => {
     return () => {
       if (clearUpdatedTimerRef.current !== null) {
         window.clearTimeout(clearUpdatedTimerRef.current)
@@ -617,12 +877,125 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     countCacheRef.current.delete(countCacheKey)
   }, [countCacheKey])
 
-  const applyWhereFilter = useCallback(() => {
+  const applyWhereFilter = useCallback((nextFilterMode: FilterMode, nextSimpleFilterTree: SimpleFilterGroup, nextWhereInput: string) => {
     setPage(1)
     setJumpPage('1')
     setCursor(null)
-    setWhere(whereInput)
-  }, [whereInput])
+    setFilterMode(nextFilterMode)
+    if (nextFilterMode === 'advanced') {
+      const trimmedWhere = nextWhereInput.trim()
+      setWhereInput(trimmedWhere)
+      setWhere(trimmedWhere)
+      return
+    }
+    const clonedTree = cloneSimpleFilterGroup(nextSimpleFilterTree)
+    setSimpleFilterTree(clonedTree)
+    setAppliedSimpleFilterTree(clonedTree)
+  }, [])
+
+  const handleSimpleFilterChange = useCallback((id: string, field: SimpleFilterField, value: string) => {
+    setDraftSimpleFilterTree((prev) => updateConditionInTree(prev, id, (target) => ({ ...target, [field]: value })))
+  }, [])
+
+  const getOperatorOptions = useCallback((columnName: string) => {
+    const type = getFilterColumnType(columnName)
+    const nullOptions = [
+      { value: 'IS NULL', label: '为空' },
+      { value: 'IS NOT NULL', label: '不为空' },
+    ]
+    const equalityOptions = [
+      { value: '=', label: '=' },
+      { value: '!=', label: '!=' },
+    ]
+
+    if (isNumericType(type) || isDateLikeType(type)) {
+      return [
+        // 常用
+        ...equalityOptions,
+        { value: '>', label: '>' },
+        { value: '>=', label: '>=' },
+        { value: '<', label: '<' },
+        { value: '<=', label: '<=' },
+        { value: 'between', label: '介于' },
+        { value: 'IN', label: '在列表中' },
+        // 不常用
+        { value: 'notBetween', label: '不在区间' },
+        { value: 'NOT IN', label: '不在列表中' },
+        ...nullOptions,
+      ]
+    }
+
+    return [
+      // 常用
+      { value: 'contains', label: '包含' },
+      { value: 'startsWith', label: '开头是' },
+      { value: 'endsWith', label: '结尾是' },
+      ...equalityOptions,
+      { value: 'like', label: '匹配(LIKE)' },
+      { value: 'IN', label: '在列表中' },
+      // 不常用
+      { value: 'notLike', label: '不匹配(NOT LIKE)' },
+      { value: 'NOT IN', label: '不在列表中' },
+      ...nullOptions,
+    ]
+  }, [getFilterColumnType])
+
+  const handleFilterColumnChange = useCallback((id: string, column: string) => {
+    setDraftSimpleFilterTree((prev) => updateConditionInTree(prev, id, (target) => {
+      const nextOperator = getOperatorOptions(column)[0]?.value as string || 'contains'
+      return { ...target, column, operator: nextOperator, value: '', secondValue: '' }
+    }))
+  }, [getOperatorOptions])
+
+  const syncFilterDraftFromApplied = useCallback(() => {
+    setDraftFilterMode(filterMode)
+    setDraftSimpleFilterTree(cloneSimpleFilterGroup(simpleFilterTree))
+    setDraftWhereInput(whereInput)
+  }, [filterMode, simpleFilterTree, whereInput])
+
+  const openFilterModal = useCallback(() => {
+    syncFilterDraftFromApplied()
+    setIsFilterModalOpen(true)
+  }, [syncFilterDraftFromApplied])
+
+  const closeFilterModal = useCallback(() => {
+    setIsFilterModalOpen(false)
+  }, [])
+
+  const handleDraftFilterModeChange = useCallback((mode: FilterMode) => {
+    setDraftFilterMode(mode)
+  }, [])
+
+  const handleGroupJoinChange = useCallback((groupId: string, join: 'AND' | 'OR') => {
+    setDraftSimpleFilterTree((prev) => updateGroupInTree(prev, groupId, (target) => ({ ...target, join })))
+  }, [])
+
+  const handleApplyFilterModal = useCallback(() => {
+    applyWhereFilter(draftFilterMode, draftSimpleFilterTree, draftWhereInput)
+    setIsFilterModalOpen(false)
+  }, [applyWhereFilter, draftFilterMode, draftSimpleFilterTree, draftWhereInput])
+
+  const handleAddSimpleFilter = useCallback((groupId: string) => {
+    setDraftSimpleFilterTree((prev) => updateGroupInTree(prev, groupId, (target) => ({
+      ...target,
+      children: [...target.children, getDefaultSimpleFilter()],
+    })))
+  }, [])
+
+  const handleAddSimpleFilterGroup = useCallback((groupId: string) => {
+    setDraftSimpleFilterTree((prev) => updateGroupInTree(prev, groupId, (target) => ({
+      ...target,
+      children: [...target.children, getDefaultSimpleFilterGroup()],
+    })))
+  }, [])
+
+  const handleRemoveSimpleFilterNode = useCallback((nodeId: string) => {
+    setDraftSimpleFilterTree((prev) => removeNodeFromTree(prev, nodeId))
+  }, [])
+
+  const handleMoveFilterNode = useCallback((groupId: string, fromIndex: number, toIndex: number) => {
+    setDraftSimpleFilterTree((prev) => moveNodeInGroup(prev, groupId, fromIndex, toIndex))
+  }, [])
 
   const openDeleteConfirm = useCallback((targetKeys: string[]) => {
     if (targetKeys.length === 0 || deleteBusy || deleteConfirmOpen) return
@@ -1166,18 +1539,16 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
   return (
     <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
-      <Space style={{ marginBottom: 8 }}>
-        <Input
-          prefix={<FilterOutlined />}
-          placeholder="WHERE 条件..."
-          value={whereInput}
-          onChange={(e) => setWhereInput(e.target.value)}
-          style={{ width: 300 }}
-        />
-        <Button size="small" onClick={applyWhereFilter}>
-          <SearchOutlined /> 查询
+      <Space style={{ marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Button size="small" style={{ height: 28, padding: '0 12px' }} onClick={openFilterModal}>
+          <FilterOutlined /> {effectiveWhere ? '编辑筛选' : '筛选'}
         </Button>
-        <Button size="small" disabled={newRows.length > 0} onClick={() => {
+        {effectiveWhere ? (
+          <Tag color="primary" title={effectiveWhere}>当前条件：{filterSummary || effectiveWhere}</Tag>
+        ) : (
+          <Tag>未筛选</Tag>
+        )}
+        <Button size="small" style={{ height: 28, padding: '0 12px' }} disabled={newRows.length > 0} onClick={() => {
           newRowCounter.current += 1
           const emptyRow: Record<string, unknown> = { _newKey: `_new_${newRowCounter.current}` }
           for (const col of (result?.columns || [])) {
@@ -1207,10 +1578,31 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
             <SaveOutlined /> {isSaving ? '保存中...' : `保存修改 (${pendingChanges.size + newRows.length + editingDirtyCells.size})`}
           </Button>
         )}
-        {newRows.length === 0 && <Button size="small" onClick={() => setExportOpen(true)}>导出</Button>}
+        {newRows.length === 0 && <Button size="small" style={{ height: 28, padding: '0 12px' }} onClick={() => setExportOpen(true)}>导出</Button>}
       </Space>
 
       {error && <div style={{ color: 'var(--color-red)', marginBottom: 8 }}>{error}</div>}
+
+      <FilterModal
+        open={isFilterModalOpen}
+        filterMode={draftFilterMode}
+        simpleFilterTree={draftSimpleFilterTree}
+        whereInput={draftWhereInput}
+        effectiveWhere={effectiveWhere}
+        columnOptions={simpleFilterColumnOptions}
+        onClose={closeFilterModal}
+        onApply={handleApplyFilterModal}
+        onFilterModeChange={handleDraftFilterModeChange}
+        onGroupJoinChange={handleGroupJoinChange}
+        onConditionColumnChange={handleFilterColumnChange}
+        onConditionChange={handleSimpleFilterChange}
+        onAddCondition={handleAddSimpleFilter}
+        onAddGroup={handleAddSimpleFilterGroup}
+        onRemoveNode={handleRemoveSimpleFilterNode}
+        onMoveNode={handleMoveFilterNode}
+        onWhereInputChange={setDraftWhereInput}
+        getOperatorOptions={getOperatorOptions}
+      />
 
       <Modal
         open={saveErrorModalOpen}
@@ -1395,7 +1787,14 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         )
       })()}
 
-      <DataExport open={exportOpen} onClose={() => setExportOpen(false)} connectionId={connectionId} database={database} table={table} />
+      <DataExport
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        connectionId={connectionId}
+        database={database}
+        table={table}
+        initialWhere={effectiveWhere}
+      />
     </div>
   )
 }

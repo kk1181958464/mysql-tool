@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Modal, Select, Switch, Input, Button, Space } from '../../components/ui'
 import { api } from '../../utils/ipc'
 
@@ -8,9 +8,10 @@ interface Props {
   connectionId: string
   database: string
   table: string
+  initialWhere?: string
 }
 
-export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, database, table }) => {
+export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, database, table, initialWhere = '' }) => {
   const [form, setForm] = useState({
     format: 'csv',
     includeHeaders: true,
@@ -23,6 +24,11 @@ export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, datab
   })
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setForm((prev) => ({ ...prev, where: initialWhere }))
+  }, [open, initialWhere])
 
   const handleExport = async () => {
     if (!connectionId || !database || !table) return
