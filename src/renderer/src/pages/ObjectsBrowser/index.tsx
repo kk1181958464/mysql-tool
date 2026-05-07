@@ -41,6 +41,8 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const [operating, setOperating] = useState(false)
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set())
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false)
+  const [batchTruncateTargets, setBatchTruncateTargets] = useState<string[]>([])
+  const [noticeModal, setNoticeModal] = useState<{ title: string; message: string } | null>(null)
   const lastClickedRef = useRef<string | null>(null)
   const latestStatusRequestKeyRef = useRef('')
   const [importing, setImporting] = useState(false)
@@ -57,6 +59,8 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const pendingImport = useRef<string | null>(null)
   const exportCancelledRef = useRef(false)
   const exportSessionActiveRef = useRef(false)
+  const showError = (message: string) => setNoticeModal({ title: '操作失败', message })
+  const showInfo = (message: string) => setNoticeModal({ title: '提示', message })
 
   const readFile = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const r = new FileReader()
@@ -80,7 +84,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     const unsub = api.onImportProgress((data) => setImportProgress(data))
     const run = async () => {
       try {
-        const result = await api.query.executeMulti(connectionId, content, database)
+        const result = await api.query.executeMulti(connectionId, content, database, { optimizeInserts: true })
         if ((result.failCount ?? 0) > 0) {
           const failedItems = result.statementResults?.filter((item) => !item.success) ?? []
           const detail = failedItems
@@ -224,8 +228,26 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       setSelectedTables(new Set())
       setExportSql(null)
       handleRefresh()
-    } catch (e: any) { alert(e.message || '批量删除失败') }
+    } catch (e: any) { showError(e.message || '批量删除失败') }
     setOperating(false)
+  }
+
+  const handleBatchTruncate = async () => {
+    if (batchTruncateTargets.length === 0) {
+      setBatchTruncateTargets([])
+      return
+    }
+    setOperating(true)
+    try {
+      for (const tableName of batchTruncateTargets) {
+        await api.query.execute(connectionId, `TRUNCATE TABLE \`${database}\`.\`${tableName}\``)
+      }
+      setBatchTruncateTargets([])
+    } catch (e: any) {
+      showError(e.message || '清空失败')
+    } finally {
+      setOperating(false)
+    }
   }
 
   const handleOpen = (tableName: string) => {
@@ -291,12 +313,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       case 'rename': setRenameModal({ tableName, newName: tableName }); break
       case 'truncate':
         if (count > 1) {
-          if (!window.confirm(`确定要清空选中的 ${count} 个表吗？此操作不可恢复！`)) return
-          setOperating(true)
-          try {
-            for (const n of selectedTables) await api.query.execute(connectionId, `TRUNCATE TABLE \`${database}\`.\`${n}\``)
-          } catch (e: any) { alert(e.message || '清空失败') }
-          setOperating(false)
+          setBatchTruncateTargets([...selectedTables])
         } else {
           setTruncateConfirm(tableName)
         }
@@ -320,7 +337,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             parts.push('-- ----------------------------')
             parts.push(`DROP TABLE IF EXISTS \`${n}\`;`)
             parts.push(ddlSql ? (ddlSql.trimEnd().endsWith(';') ? ddlSql : ddlSql + ';') : '')
-          } catch (e: any) { alert(e.message || '导出失败'); return }
+          } catch (e: any) { showError(e.message || '导出失败'); return }
         }
         setExportSql({ tableName: names.length > 1 ? database : names[0], sql: parts.join('\n') })
         break
@@ -355,7 +372,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             out.push('-- ----------------------------')
             out.push('-- INSERT statements omitted in preview. Click "Download File" to export the full structure and data.')
             out.push('')
-          } catch (e: any) { alert(e.message || '导出失败'); setPreviewLoading(false); return }
+          } catch (e: any) { showError(e.message || '导出失败'); setPreviewLoading(false); return }
         }
 
         out.push('SET FOREIGN_KEY_CHECKS = 1;')
@@ -374,7 +391,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       setExportSql(null)
       handleRefresh()
       setDeleteConfirm(null)
-    } catch (e: any) { alert(e.message || '删除失败') }
+    } catch (e: any) { showError(e.message || '删除失败') }
     setOperating(false)
   }
 
@@ -384,7 +401,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     try {
       await api.query.execute(connectionId, `TRUNCATE TABLE \`${database}\`.\`${truncateConfirm}\``)
       setTruncateConfirm(null)
-    } catch (e: any) { alert(e.message || '清空失败') }
+    } catch (e: any) { showError(e.message || '清空失败') }
     setOperating(false)
   }
 
@@ -395,7 +412,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       await api.query.execute(connectionId, `RENAME TABLE \`${database}\`.\`${renameModal.tableName}\` TO \`${database}\`.\`${renameModal.newName}\``)
       handleRefresh()
       setRenameModal(null)
-    } catch (e: any) { alert(e.message || '重命名失败') }
+    } catch (e: any) { showError(e.message || '重命名失败') }
     setOperating(false)
   }
 
@@ -412,14 +429,14 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
       }
       setExportSql({ tableName, sql, includeData, selectedNames: [tableName] })
-    } catch (e: any) { alert(e.message || '导出失败') }
+    } catch (e: any) { showError(e.message || '导出失败') }
     finally { setPreviewLoading(false) }
   }
 
   const handleDownloadSql = async () => {
     if (!exportSql) return
     if (exportSql.includeData && exportSql.selectedNames?.length && validExportTableNames.length === 0) {
-      alert('所选导出表已失效，请重新选择后再导出')
+      showInfo('所选导出表已失效，请重新选择后再导出')
       setExportSql(null)
       return
     }
@@ -461,7 +478,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       }
     } catch (e: any) {
       exportSessionActiveRef.current = false
-      alert(e.message || '导出失败')
+      showError(e.message || '导出失败')
       setExportProgress(null)
       setExporting(false)
       setExportModalOpen(false)
@@ -472,7 +489,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     if (!exportSql) return
     await navigator.clipboard.writeText(exportSql.sql)
     setExportSql(null)
-    alert('已复制到剪贴板')
+    showInfo('已复制到剪贴板')
   }
 
   // 合并表信息
@@ -808,6 +825,35 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>⚠️ 此操作不可恢复！</p>
       </Modal>
 
+      {/* 批量清空确认 */}
+      <Modal
+        open={batchTruncateTargets.length > 0}
+        title="批量清空表"
+        width={420}
+        onClose={() => {
+          if (!operating) setBatchTruncateTargets([])
+        }}
+        footer={
+          <>
+            <Button variant="default" disabled={operating} onClick={() => setBatchTruncateTargets([])}>取消</Button>
+            <Button
+              variant="primary"
+              disabled={operating || batchTruncateTargets.length === 0}
+              style={{ background: 'var(--warning)' }}
+              onClick={handleBatchTruncate}
+            >
+              {operating ? '清空中...' : `确认清空 ${batchTruncateTargets.length} 个表`}
+            </Button>
+          </>
+        }
+      >
+        <p>确定要清空以下 <strong style={{ color: 'var(--warning)' }}>{batchTruncateTargets.length}</strong> 个表吗？</p>
+        <div style={{ maxHeight: 200, overflow: 'auto', margin: '8px 0', fontSize: 13 }}>
+          {batchTruncateTargets.map((name) => <div key={name}>• {name}</div>)}
+        </div>
+        <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>⚠️ 此操作不可恢复，仅保留表结构。</p>
+      </Modal>
+
       {/* 生成预览中 */}
       <Modal open={previewLoading} title="正在生成预览..." width={420} onClose={() => {}} footer={null}>
         <div style={{ padding: '12px 0', color: 'var(--text-secondary)' }}>
@@ -948,6 +994,18 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         footer={<Button variant="primary" onClick={() => setImportMsg(null)}>确定</Button>}
       >
         <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13 }}>{importMsg}</div>
+      </Modal>
+
+      <Modal
+        open={!!noticeModal}
+        title={noticeModal?.title || '提示'}
+        width={420}
+        onClose={() => setNoticeModal(null)}
+        footer={<Button variant="primary" onClick={() => setNoticeModal(null)}>确定</Button>}
+      >
+        <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13 }}>
+          {noticeModal?.message}
+        </div>
       </Modal>
     </div>
   )

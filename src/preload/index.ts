@@ -13,7 +13,7 @@ const api: ElectronAPI = {
   },
   query: {
     execute: (connId, sql, db) => ipcRenderer.invoke(IPC.QUERY_EXECUTE, connId, sql, db),
-    executeMulti: (connId, sql, db) => ipcRenderer.invoke(IPC.QUERY_EXECUTE_MULTI, connId, sql, db),
+    executeMulti: (connId, sql, db, options) => ipcRenderer.invoke(IPC.QUERY_EXECUTE_MULTI, connId, sql, db, options),
     explain: (connId, sql, db) => ipcRenderer.invoke(IPC.QUERY_EXPLAIN, connId, sql, db),
     cancel: (connId) => ipcRenderer.invoke(IPC.QUERY_CANCEL, connId),
     format: (sql) => ipcRenderer.invoke(IPC.QUERY_FORMAT, sql),

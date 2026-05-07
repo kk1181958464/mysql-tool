@@ -27,8 +27,21 @@ type ExportSqlOptions = {
   onProgress?: (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => void
 }
 
-const IMPORT_BATCH_SIZE = 500
+type ImportFileOptions = {
+  batchSize?: number
+}
+
+const DEFAULT_IMPORT_BATCH_SIZE = 1000
+const MIN_IMPORT_BATCH_SIZE = 100
+const MAX_IMPORT_BATCH_SIZE = 10000
 const EXPORT_BATCH_SIZE = 1000
+const NAVICAT_EOL = '\r\n'
+
+function getImportBatchSize(options?: ImportFileOptions): number {
+  const raw = Number(options?.batchSize)
+  if (!Number.isFinite(raw)) return DEFAULT_IMPORT_BATCH_SIZE
+  return Math.min(MAX_IMPORT_BATCH_SIZE, Math.max(MIN_IMPORT_BATCH_SIZE, Math.floor(raw)))
+}
 
 function formatExportTime(d = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -199,10 +212,11 @@ function formatNavicatDDL(table: string, ddl: string, defaultCharset?: string, d
       }
     }
 
-    // 普通索引：Navicat dump 通常显式 USING BTREE（SHOW CREATE TABLE 可能省略）
+    // 普通索引/主键：Navicat dump 通常显式 USING BTREE（SHOW CREATE TABLE 可能省略）
+    const isPrimaryKeyLine = /^\s{2}PRIMARY KEY\b/i.test(l)
     const isNormalIndexLine = /^\s{2}(?:INDEX|UNIQUE INDEX)\b/i.test(l)
     const isFullTextIndexLine = /^\s{2}FULLTEXT INDEX\b/i.test(l)
-    if (isNormalIndexLine && !isFullTextIndexLine && !/\bUSING\s+\w+\b/i.test(l)) {
+    if ((isPrimaryKeyLine || isNormalIndexLine) && !isFullTextIndexLine && !/\bUSING\s+\w+\b/i.test(l)) {
       const trimmed = l.trimEnd()
       const hasComma = trimmed.endsWith(',')
       const base = hasComma ? trimmed.slice(0, -1) : trimmed
@@ -545,6 +559,14 @@ async function writeChunk(stream: fs.WriteStream, chunk: string): Promise<void> 
   }
 }
 
+function normalizeNavicatSqlText(sql: string): string {
+  return sql.replace(/\r?\n/g, NAVICAT_EOL)
+}
+
+async function writeNavicatChunk(stream: fs.WriteStream, chunk: string): Promise<void> {
+  await writeChunk(stream, normalizeNavicatSqlText(chunk))
+}
+
 async function closeStream(stream: fs.WriteStream): Promise<void> {
   stream.end()
   await finished(stream)
@@ -610,14 +632,14 @@ async function insertRowsBatch(conn: any, table: string, rows: RowRecord[]): Pro
   return rows.length
 }
 
-async function bulkInsert(connId: string, db: string, table: string, rows: RowRecord[]): Promise<number> {
+async function bulkInsert(connId: string, db: string, table: string, rows: RowRecord[], batchSize: number): Promise<number> {
   if (!rows.length) return 0
   const conn = await connectionManager.getConnection(connId)
   try {
     await conn.query(`USE ${quoteId(db)}`)
     let imported = 0
-    for (let i = 0; i < rows.length; i += IMPORT_BATCH_SIZE) {
-      imported += await insertRowsBatch(conn, table, rows.slice(i, i + IMPORT_BATCH_SIZE))
+    for (let i = 0; i < rows.length; i += batchSize) {
+      imported += await insertRowsBatch(conn, table, rows.slice(i, i + batchSize))
     }
     return imported
   } finally {
@@ -625,10 +647,11 @@ async function bulkInsert(connId: string, db: string, table: string, rows: RowRe
   }
 }
 
-export async function importCSV(connId: string, db: string, table: string, filePath: string, _options?: unknown): Promise<{ imported: number }> {
+export async function importCSV(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number }> {
   const conn = await connectionManager.getConnection(connId)
   const input = fs.createReadStream(filePath, { encoding: 'utf-8' })
   const parser = parseStream({ columns: true, skip_empty_lines: true, bom: true })
+  const batchSize = getImportBatchSize(options)
 
   input.pipe(parser)
 
@@ -640,7 +663,7 @@ export async function importCSV(connId: string, db: string, table: string, fileP
 
     for await (const row of parser as AsyncIterable<RowRecord>) {
       batch.push(row)
-      if (batch.length >= IMPORT_BATCH_SIZE) {
+      if (batch.length >= batchSize) {
         imported += await insertRowsBatch(conn, table, batch)
         batch = []
       }
@@ -657,11 +680,11 @@ export async function importCSV(connId: string, db: string, table: string, fileP
   }
 }
 
-export async function importExcel(connId: string, db: string, table: string, filePath: string, _options?: unknown): Promise<{ imported: number }> {
+export async function importExcel(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number }> {
   const wb = XLSX.readFile(filePath)
   const sheet = wb.Sheets[wb.SheetNames[0]]
   const rows = XLSX.utils.sheet_to_json<RowRecord>(sheet)
-  const imported = await bulkInsert(connId, db, table, rows)
+  const imported = await bulkInsert(connId, db, table, rows, getImportBatchSize(options))
   return { imported }
 }
 
@@ -779,8 +802,8 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
     )
     out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
 
-    await writeChunk(out, await buildNavicatHeader(connId, conn, db))
-    await writeChunk(out, 'SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
+    await writeNavicatChunk(out, await buildNavicatHeader(connId, conn, db))
+    await writeNavicatChunk(out, 'SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
 
     const dropTable = options?.dropTable !== false
     const createTable = options?.createTable !== false
@@ -827,14 +850,14 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
             ddlBlock += `${body};\n\n`
           }
 
-          await writeChunk(out, ddlBlock)
+          await writeNavicatChunk(out, ddlBlock)
         }
       }
 
       // Records 区块：即使 0 行也输出
       if (includeData) {
         const recordsHeader = `-- ----------------------------\n${formatRecordsTitle(table)}\n-- ----------------------------\n`
-        await writeChunk(out, recordsHeader)
+        await writeNavicatChunk(out, recordsHeader)
       }
 
       // 数据导出
@@ -845,7 +868,7 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
 
       const tableColumns = await getTableColumns(conn, table)
       if (!tableColumns.length) {
-        await writeChunk(out, '\n')
+        await writeNavicatChunk(out, '\n')
         reportProgress(0, tableIndex + 1)
         continue
       }
@@ -866,17 +889,17 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
         if (!rows.length) return
         for (const row of rows) {
           const vals = getRowNavicatSqlValues(row, tableColumns).join(', ')
-          await writeChunk(out, `${insertHead} ${quoteId(table)} VALUES (${vals});\n`)
+          await writeNavicatChunk(out, `${insertHead} ${quoteId(table)} VALUES (${vals});\n`)
         }
         exportedRows += rows.length
         reportProgress(exportedRows)
       }, selectSql)
 
-      await writeChunk(out, '\n')
+      await writeNavicatChunk(out, '\n')
       reportProgress(exportedRows, tableIndex + 1)
     }
 
-    await writeChunk(out, 'SET FOREIGN_KEY_CHECKS = 1;\n')
+    await writeNavicatChunk(out, 'SET FOREIGN_KEY_CHECKS = 1;\n')
     await closeStream(out)
 
     await fs.promises.rename(tmpPath, filePath)
@@ -941,7 +964,7 @@ export async function exportStructure(connId: string, db: string, tables: string
     }
 
     sql += 'SET FOREIGN_KEY_CHECKS = 1;\n'
-    await writeFile(filePath, sql, 'utf-8')
+    await writeFile(filePath, normalizeNavicatSqlText(sql), 'utf-8')
   } finally {
     conn.release()
   }

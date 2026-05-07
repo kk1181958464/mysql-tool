@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Table, Button, Card, Row, Col, Statistic, Switch, Input, Tabs, Space } from '../../components/ui'
+import { Table, Button, Card, Row, Col, Statistic, Switch, Input, Tabs, Space, Modal } from '../../components/ui'
 import { ReloadOutlined, StopOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
@@ -20,6 +20,8 @@ const ServerMonitor: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [varSearch, setVarSearch] = useState('')
   const [statusSearch, setStatusSearch] = useState('')
+  const [killConfirmId, setKillConfirmId] = useState<number | null>(null)
+  const [killing, setKilling] = useState(false)
   const connId = useConnectionStore((s) => s.activeConnectionId)
   const db = useAppStore((s) => s.selectedDatabase)
 
@@ -53,12 +55,7 @@ const ServerMonitor: React.FC = () => {
     return () => clearInterval(t)
   }, [autoRefresh, load])
 
-  const killProcess = async (id: number) => {
-    if (confirm(`确定要终止进程 ${id} 吗？`)) {
-      await api.query.execute(connId!, `KILL ${id}`, db ?? '')
-      load()
-    }
-  }
+  const killProcess = (id: number) => setKillConfirmId(id)
 
   const processColumns = [
     { key: 'Id', title: 'Id', dataIndex: 'Id', width: 70 },
@@ -95,6 +92,40 @@ const ServerMonitor: React.FC = () => {
         { key: 'status', label: '全局状态', children: <><Input placeholder="搜索状态..." value={statusSearch} onChange={(e) => setStatusSearch(e.target.value)} style={{ width: 300, marginBottom: 8 }} /><Table dataSource={status.filter((v) => !statusSearch || v.name.toLowerCase().includes(statusSearch.toLowerCase()))} columns={varColumns} rowKey="name" size="small" /></> },
         { key: 'innodb', label: 'InnoDB 状态', children: <pre style={{ maxHeight: 500, overflow: 'auto', background: 'var(--bg-hover)', padding: 12, borderRadius: 6, fontSize: 12 }}>{innodbStatus || '无数据'}</pre> },
       ]} />
+
+      <Modal
+        open={killConfirmId !== null}
+        title="终止进程"
+        width={400}
+        onClose={() => {
+          if (!killing) setKillConfirmId(null)
+        }}
+        footer={
+          <>
+            <Button variant="default" disabled={killing} onClick={() => setKillConfirmId(null)}>取消</Button>
+            <Button
+              variant="primary"
+              disabled={killing}
+              style={{ background: 'var(--error)' }}
+              onClick={async () => {
+                if (killConfirmId === null || !connId) return
+                setKilling(true)
+                try {
+                  await api.query.execute(connId, `KILL ${killConfirmId}`, db ?? '')
+                  setKillConfirmId(null)
+                  await load()
+                } finally {
+                  setKilling(false)
+                }
+              }}
+            >
+              {killing ? '终止中...' : '确认终止'}
+            </Button>
+          </>
+        }
+      >
+        <p>确定要终止进程 <strong style={{ color: 'var(--error)' }}>{killConfirmId ?? '-'}</strong> 吗？</p>
+      </Modal>
     </div>
   )
 }

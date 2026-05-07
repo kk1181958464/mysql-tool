@@ -339,10 +339,14 @@ const normalizeIpcErrorMessage = (raw: unknown): string => {
     .trim()
 }
 
+const toCellKey = (rowKey: string, colName: string) => `${rowKey}:${colName}`
+const toCellDomId = (rowKey: string, colName: string) => encodeURIComponent(toCellKey(rowKey, colName))
+
 // 可编辑单元格 - Navicat 风格
 const EditableCell: React.FC<{
   value: unknown
   colType?: string
+  cellDomId: string
   isSelected: boolean
   isFocused: boolean
   isRecentlyUpdated: boolean
@@ -350,7 +354,7 @@ const EditableCell: React.FC<{
   onSave: (newValue: unknown) => void
   onDirtyChange: (isDirty: boolean) => void
   onContextMenu: (e: React.MouseEvent) => void
-}> = React.memo(({ value, colType = '', isSelected, isFocused, isRecentlyUpdated, onSelect, onSave, onDirtyChange, onContextMenu }) => {
+}> = React.memo(({ value, colType = '', cellDomId, isSelected, isFocused, isRecentlyUpdated, onSelect, onSave, onDirtyChange, onContextMenu }) => {
   const [editing, setEditing] = useState(false)
   const lowerType = colType.toLowerCase()
   const mysqlTypeCode = Number(lowerType)
@@ -472,6 +476,7 @@ const EditableCell: React.FC<{
   return (
     <div
       ref={cellRef}
+      data-cell-id={cellDomId}
       onClick={(e) => { e.stopPropagation(); onSelect(e.shiftKey) }}
       onDoubleClick={() => {
         window.dispatchEvent(new Event('app:close-context-menus'))
@@ -484,7 +489,7 @@ const EditableCell: React.FC<{
       {value === null ? <span style={nullStyle}>NULL</span> : displayValue}
     </div>
   )
-}, (prev, next) => prev.value === next.value && prev.isSelected === next.isSelected && prev.isFocused === next.isFocused && prev.colType === next.colType && prev.isRecentlyUpdated === next.isRecentlyUpdated)
+}, (prev, next) => prev.value === next.value && prev.cellDomId === next.cellDomId && prev.isSelected === next.isSelected && prev.isFocused === next.isFocused && prev.colType === next.colType && prev.isRecentlyUpdated === next.isRecentlyUpdated)
 
 export const TableData: React.FC<Props> = ({ tabId, connectionId, database, table }) => {
   const [result, setResult] = useState<QueryResult | null>(null)
@@ -1070,7 +1075,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
   // 单元格选中：支持 Shift 矩形范围多选
   const handleCellSelect = useCallback((rowKey: string, colName: string, shiftKey: boolean) => {
-    const key = `${rowKey}:${colName}`
+    const key = toCellKey(rowKey, colName)
     if (shiftKey && anchorCellRef.current && result?.columns) {
       const anchor = anchorCellRef.current
       const colNames = result.columns.map(c => c.name)
@@ -1082,7 +1087,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         const next = new Set<string>()
         for (let r = rowStart; r <= rowEnd; r++) {
           for (let c = colStart; c <= colEnd; c++) {
-            next.add(`${allRowKeys[r]}:${colNames[c]}`)
+            next.add(toCellKey(allRowKeys[r], colNames[c]))
           }
         }
         setSelectedCells(next)
@@ -1092,6 +1097,70 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     anchorCellRef.current = { rowKey, colName }
     setSelectedCells(new Set([key]))
   }, [result?.columns, allRowKeys])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (!result?.columns?.length || allRowKeys.length === 0 || selectedCells.size === 0) return
+
+      const active = document.activeElement as HTMLElement | null
+      if (active) {
+        const tag = active.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || active.isContentEditable) return
+      }
+
+      const colNames = result.columns.map((c) => c.name)
+      const pickCell = (): { rowKey: string; colName: string } | null => {
+        const anchor = anchorCellRef.current
+        if (anchor && allRowKeys.includes(anchor.rowKey) && colNames.includes(anchor.colName)) {
+          return anchor
+        }
+        const first = selectedCells.values().next().value as string | undefined
+        if (!first) return null
+        const splitAt = first.indexOf(':')
+        if (splitAt <= 0) return null
+        const rowKey = first.slice(0, splitAt)
+        const colName = first.slice(splitAt + 1)
+        if (!rowKey || !colName) return null
+        if (!allRowKeys.includes(rowKey) || !colNames.includes(colName)) return null
+        return { rowKey, colName }
+      }
+
+      const current = pickCell()
+      if (!current) return
+
+      const rowIndex = allRowKeys.indexOf(current.rowKey)
+      const colIndex = colNames.indexOf(current.colName)
+      if (rowIndex < 0 || colIndex < 0) return
+
+      let nextRowIndex = rowIndex
+      let nextColIndex = colIndex
+      if (e.key === 'ArrowUp') nextRowIndex = Math.max(0, rowIndex - 1)
+      if (e.key === 'ArrowDown') nextRowIndex = Math.min(allRowKeys.length - 1, rowIndex + 1)
+      if (e.key === 'ArrowLeft') nextColIndex = Math.max(0, colIndex - 1)
+      if (e.key === 'ArrowRight') nextColIndex = Math.min(colNames.length - 1, colIndex + 1)
+
+      if (nextRowIndex === rowIndex && nextColIndex === colIndex) return
+      e.preventDefault()
+
+      const nextRowKey = allRowKeys[nextRowIndex]
+      const nextColName = colNames[nextColIndex]
+      const nextCellKey = toCellKey(nextRowKey, nextColName)
+      const nextCellDomId = toCellDomId(nextRowKey, nextColName)
+
+      anchorCellRef.current = { rowKey: nextRowKey, colName: nextColName }
+      setSelectedCells(new Set([nextCellKey]))
+
+      window.requestAnimationFrame(() => {
+        const target = rootRef.current?.querySelector(`[data-cell-id="${nextCellDomId}"]`) as HTMLElement | null
+        target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      })
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [result?.columns, allRowKeys, selectedCells])
 
   const applyPendingChangesToResult = useCallback((changes: Map<string, Record<string, unknown>>) => {
     if (!pk || changes.size === 0) return
@@ -1511,7 +1580,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         const rk = getRowKey(record)
         const pending = pendingChanges.get(rk)
         const cellValue = pending && col.name in pending ? pending[col.name] : v
-        const cellKey = `${rk}:${col.name}`
+        const cellKey = toCellKey(rk, col.name)
         const isSel = selectedCells.has(cellKey)
         const isFoc = selectedCells.size === 1 && isSel
         const isRecentlyUpdated = recentlyUpdatedCells.has(cellKey)
@@ -1519,6 +1588,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           <EditableCell
             value={cellValue}
             colType={col.type}
+            cellDomId={toCellDomId(rk, col.name)}
             isSelected={isSel}
             isFocused={isFoc}
             isRecentlyUpdated={isRecentlyUpdated}

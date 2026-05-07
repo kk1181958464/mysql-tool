@@ -65,6 +65,9 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const [dbRemarks, setDbRemarks] = useState<Record<string, string>>({})
   const [remarkEdit, setRemarkEdit] = useState<{ dbName: string; value: string } | null>(null)
   const [closeDbConfirm, setCloseDbConfirm] = useState<{ dbName: string; tabIdsToClose: string[]; dirtyCount: number } | null>(null)
+  const [noticeModal, setNoticeModal] = useState<{ title: string; message: string } | null>(null)
+  const showError = (message: string) => setNoticeModal({ title: '操作失败', message })
+  const showInfo = (message: string) => setNoticeModal({ title: '提示', message })
 
   useEffect(() => {
     const off = api.onExportProgress((data) => {
@@ -569,7 +572,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       await loadDatabases(activeConnectionId, true)
       setDeleteConfirm(null)
     } catch (e: any) {
-      alert(e.message || '删除失败')
+      showError(e.message || '删除失败')
     } finally {
       setDeleting(false)
     }
@@ -583,7 +586,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       await loadTables(activeConnectionId, deleteTableConfirm.dbName)
       setDeleteTableConfirm(null)
     } catch (e: any) {
-      alert(e.message || '删除失败')
+      showError(e.message || '删除失败')
     } finally {
       setDeleting(false)
     }
@@ -596,7 +599,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       await api.query.execute(activeConnectionId, `TRUNCATE TABLE \`${truncateConfirm.dbName}\`.\`${truncateConfirm.tableName}\``)
       setTruncateConfirm(null)
     } catch (e: any) {
-      alert(e.message || '清空失败')
+      showError(e.message || '清空失败')
     } finally {
       setDeleting(false)
     }
@@ -612,7 +615,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       renameTableInTabs(activeConnectionId, renameTable.dbName, renameTable.tableName, renameTable.newName)
       setRenameTable(null)
     } catch (e: any) {
-      alert(e.message || '重命名失败')
+      showError(e.message || '重命名失败')
     } finally {
       setSaving(false)
     }
@@ -633,7 +636,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       }
       setExportSql({ dbName, tableName, includeData, sql })
     } catch (e: any) {
-      alert(e.message || '导出失败')
+      showError(e.message || '导出失败')
     } finally {
       setPreviewLoading(false)
     }
@@ -677,7 +680,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       const sql = parts.join('\n')
       setExportSql({ dbName, tableName: dbName, includeData, sql, isDb: true })
     } catch (e: any) {
-      alert(e.message || '导出失败')
+      showError(e.message || '导出失败')
     } finally {
       setPreviewLoading(false)
     }
@@ -758,7 +761,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
       }
     } catch (e: any) {
-      alert(e.message || '导出失败')
+      showError(e.message || '导出失败')
       setExportProgress(null)
       setExporting(false)
     }
@@ -768,7 +771,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (!exportSql) return
     await navigator.clipboard.writeText(exportSql.sql)
     setExportSql(null)
-    alert('已复制到剪贴板')
+    showInfo('已复制到剪贴板')
   }
 
   const CHARSETS = ['utf8mb4', 'utf8mb3', 'utf8', 'latin1', 'gbk', 'gb2312', 'gb18030', 'big5', 'ascii', 'binary']
@@ -805,7 +808,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       )
       setEditDb(null)
     } catch (e: any) {
-      alert(e.message || '修改失败')
+      showError(e.message || '修改失败')
     } finally {
       setSaving(false)
     }
@@ -1269,6 +1272,18 @@ export default function ConnectionTree({ filterText = '' }: Props) {
             )}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={!!noticeModal}
+        title={noticeModal?.title || '提示'}
+        width={420}
+        onClose={() => setNoticeModal(null)}
+        footer={<Button variant="primary" onClick={() => setNoticeModal(null)}>确定</Button>}
+      >
+        <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13 }}>
+          {noticeModal?.message}
+        </div>
       </Modal>
     </>
   )

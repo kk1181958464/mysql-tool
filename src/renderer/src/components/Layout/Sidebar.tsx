@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react'
-import { Input, Tooltip } from '../ui'
+import { Input, Tooltip, Modal, Button } from '../ui'
 import {
   MenuFoldOutlined,
   PlusOutlined,
@@ -36,6 +36,8 @@ export default function Sidebar() {
   const [connectingIds, setConnectingIds] = useState<Set<string>>(new Set())
   const [showCreateDb, setShowCreateDb] = useState(false)
   const [createDbConnId, setCreateDbConnId] = useState<string | null>(null)
+  const [deleteConnConfirm, setDeleteConnConfirm] = useState<ConnectionConfig | null>(null)
+  const [deletingConn, setDeletingConn] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   // 点击外部或滚动时关闭下拉框和右键菜单
@@ -142,9 +144,7 @@ export default function Sidebar() {
         setShowConnManager(true)
         break
       case 'delete':
-        if (confirm(`确定删除连接 "${conn.name}"？`)) {
-          await deleteConnection(conn.id)
-        }
+        setDeleteConnConfirm(conn)
         break
       case 'refresh':
         await loadConnections()
@@ -331,6 +331,40 @@ export default function Sidebar() {
         connectionId={createDbConnId}
         onClose={() => { setShowCreateDb(false); setCreateDbConnId(null) }}
       />
+
+      <Modal
+        open={!!deleteConnConfirm}
+        title="删除连接"
+        width={400}
+        onClose={() => {
+          if (!deletingConn) setDeleteConnConfirm(null)
+        }}
+        footer={
+          <>
+            <Button variant="default" disabled={deletingConn} onClick={() => setDeleteConnConfirm(null)}>取消</Button>
+            <Button
+              variant="primary"
+              disabled={deletingConn}
+              style={{ background: 'var(--error)' }}
+              onClick={async () => {
+                if (!deleteConnConfirm) return
+                setDeletingConn(true)
+                try {
+                  await deleteConnection(deleteConnConfirm.id)
+                  setDeleteConnConfirm(null)
+                } finally {
+                  setDeletingConn(false)
+                }
+              }}
+            >
+              {deletingConn ? '删除中...' : '确认删除'}
+            </Button>
+          </>
+        }
+      >
+        <p>确定删除连接 <strong style={{ color: 'var(--error)' }}>{deleteConnConfirm?.name}</strong> 吗？</p>
+        <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>删除后该连接配置会从本地移除。</p>
+      </Modal>
     </div>
   )
 }

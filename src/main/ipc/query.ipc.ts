@@ -10,10 +10,33 @@ import type { ResultSetHeader } from 'mysql2/promise'
 
 const STMT_KEYWORDS = /^(?:CREATE|INSERT|DROP|ALTER|LOCK|UNLOCK|SET|DELETE|UPDATE|REPLACE|SELECT|WITH|CALL|TRUNCATE|USE|GRANT|REVOKE|COMMIT|ROLLBACK|START\s+TRANSACTION|BEGIN|SHOW|DESCRIBE|DESC|EXPLAIN|ANALYZE|OPTIMIZE|RENAME)\s/i
 const PARSE_YIELD_EVERY = 5000
+const IMPORT_INSERT_BATCH_MAX_STATEMENTS = 500
+const IMPORT_INSERT_BATCH_MAX_SQL_LENGTH = 4 * 1024 * 1024
 const COMPOUND_CREATE_START = /^CREATE\s+(?:DEFINER\s*=\s*(?:`[^`]+`|[^`\s]+)@(?:`[^`]+`|[^`\s]+)\s+)?(?:OR\s+REPLACE\s+)?(?:TRIGGER|PROCEDURE|FUNCTION|EVENT)\b/i
 const BLOCK_START_KEYWORDS = new Set(['BEGIN', 'CASE', 'IF', 'LOOP', 'REPEAT', 'WHILE'])
 
 const yieldToEventLoop = async () => new Promise<void>((resolve) => setImmediate(resolve))
+
+type ExecutionStatement = {
+  index: number
+  sql: string
+}
+
+type ExecutionUnit = {
+  sql: string
+  statements: ExecutionStatement[]
+  batchedInsert: boolean
+}
+
+type BatchableInsertStatement = {
+  head: string
+  headKey: string
+  valuesSql: string
+}
+
+type ExecuteMultiOptions = {
+  optimizeInserts?: boolean
+}
 
 /**
  * 移除语句开头的空白与注释（-- / # / /* *\/），用于关键词识别与简单解析。
@@ -63,6 +86,220 @@ function matchKeywordAt(sql: string, index: number): string | null {
     }
   }
   return null
+}
+
+function findTopLevelKeyword(sql: string, keyword: string, startIndex = 0): number {
+  const upperKeyword = keyword.toUpperCase()
+  let inSQ = false, inDQ = false, inBT = false, inLC = false, inBC = false
+  let parenDepth = 0
+
+  for (let i = startIndex; i < sql.length; i += 1) {
+    const ch = sql[i]
+    const next = sql[i + 1]
+
+    if (inLC) {
+      if (ch === '\n') inLC = false
+      continue
+    }
+    if (inBC) {
+      if (ch === '*' && next === '/') {
+        inBC = false
+        i += 1
+      }
+      continue
+    }
+    if (inSQ) {
+      if (ch === "'" && next === "'") {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === "'") inSQ = false
+      continue
+    }
+    if (inDQ) {
+      if (ch === '"' && next === '"') {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === '"') inDQ = false
+      continue
+    }
+    if (inBT) {
+      if (ch === '`') inBT = false
+      continue
+    }
+
+    if (ch === '-' && next === '-') {
+      inLC = true
+      i += 1
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      inBC = true
+      i += 1
+      continue
+    }
+    if (ch === "'") {
+      inSQ = true
+      continue
+    }
+    if (ch === '"') {
+      inDQ = true
+      continue
+    }
+    if (ch === '`') {
+      inBT = true
+      continue
+    }
+    if (ch === '(') {
+      parenDepth += 1
+      continue
+    }
+    if (ch === ')' && parenDepth > 0) {
+      parenDepth -= 1
+      continue
+    }
+
+    if (
+      parenDepth === 0
+      && sql.slice(i, i + keyword.length).toUpperCase() === upperKeyword
+      && isWordBoundaryChar(sql[i - 1])
+      && isWordBoundaryChar(sql[i + keyword.length])
+    ) {
+      return i
+    }
+  }
+
+  return -1
+}
+
+function parseBatchableInsert(stmt: string): BatchableInsertStatement | null {
+  const core = stripLeadingTrivia(stmt).trim().replace(/;+\s*$/, '').trim()
+  if (!/^(?:INSERT|REPLACE)\s/i.test(core)) return null
+
+  const valuesIndex = findTopLevelKeyword(core, 'VALUES')
+  if (valuesIndex < 0) return null
+
+  const trailingClauseIndex = findTopLevelKeyword(core, 'ON', valuesIndex + 'VALUES'.length)
+  if (trailingClauseIndex >= 0) return null
+
+  const head = core.slice(0, valuesIndex).trimEnd()
+  const valuesSql = core.slice(valuesIndex + 'VALUES'.length).trim()
+  if (!valuesSql.startsWith('(') || !valuesSql.endsWith(')')) return null
+  if (/^(?:INSERT|REPLACE)\s+.*\bSET\s/i.test(head)) return null
+
+  return {
+    head,
+    headKey: head.replace(/\s+/g, ' ').toLowerCase(),
+    valuesSql,
+  }
+}
+
+function buildInsertBatchUnit(pending: ExecutionStatement[], parsed: BatchableInsertStatement): ExecutionUnit {
+  const values = pending
+    .map((item) => {
+      const itemParsed = parseBatchableInsert(item.sql)
+      return itemParsed?.valuesSql
+    })
+    .filter((value): value is string => Boolean(value))
+
+  return {
+    sql: `${parsed.head} VALUES ${values.join(', ')}`,
+    statements: pending,
+    batchedInsert: pending.length > 1,
+  }
+}
+
+function buildExecutionUnits(statements: string[]): ExecutionUnit[] {
+  const units: ExecutionUnit[] = []
+  let pendingInsert: ExecutionStatement[] = []
+  let pendingParsed: BatchableInsertStatement | null = null
+  let pendingSqlLength = 0
+
+  const flushPendingInsert = () => {
+    if (!pendingParsed || !pendingInsert.length) return
+    units.push(buildInsertBatchUnit(pendingInsert, pendingParsed))
+    pendingInsert = []
+    pendingParsed = null
+    pendingSqlLength = 0
+  }
+
+  statements.forEach((sql, index) => {
+    const statement: ExecutionStatement = { index: index + 1, sql }
+    const parsed = parseBatchableInsert(sql)
+
+    if (!parsed) {
+      flushPendingInsert()
+      units.push({ sql, statements: [statement], batchedInsert: false })
+      return
+    }
+
+    const projectedLength = pendingSqlLength + parsed.valuesSql.length + 2
+    const canJoinPending = pendingParsed
+      && pendingParsed.headKey === parsed.headKey
+      && pendingInsert.length < IMPORT_INSERT_BATCH_MAX_STATEMENTS
+      && projectedLength <= IMPORT_INSERT_BATCH_MAX_SQL_LENGTH
+
+    if (!canJoinPending) {
+      flushPendingInsert()
+      pendingParsed = parsed
+      pendingSqlLength = parsed.head.length + ' VALUES '.length
+    }
+
+    pendingInsert.push(statement)
+    pendingSqlLength += parsed.valuesSql.length + 2
+  })
+
+  flushPendingInsert()
+  return units
+}
+
+function splitBatchResult(result: QueryStatementResult, unit: ExecutionUnit): QueryStatementResult[] {
+  if (unit.statements.length === 1) {
+    return [{ ...result, index: unit.statements[0].index, sql: unit.statements[0].sql }]
+  }
+
+  const affectedRows = Math.max(0, Number(result.affectedRows || 0))
+  const perStatementAffectedRows = Math.floor(affectedRows / unit.statements.length)
+  const remainder = affectedRows % unit.statements.length
+  const perStatementExecutionTime = Math.max(0, result.executionTime / unit.statements.length)
+
+  return unit.statements.map((statement, offset) => ({
+    ...result,
+    index: statement.index,
+    sql: statement.sql,
+    affectedRows: perStatementAffectedRows + (offset < remainder ? 1 : 0),
+    insertId: offset === 0 ? result.insertId : 0,
+    executionTime: perStatementExecutionTime,
+    rowCount: 0,
+    columns: [],
+    rows: [],
+  }))
+}
+
+async function executeUnit(conn: mysql.Connection, unit: ExecutionUnit): Promise<QueryStatementResult[]> {
+  const result = await executeStatement(conn, unit.sql, unit.statements[0].index)
+  if (result.success) {
+    return splitBatchResult(result, unit)
+  }
+
+  if (!unit.batchedInsert) {
+    return [{ ...result, index: unit.statements[0].index, sql: unit.statements[0].sql }]
+  }
+
+  const results: QueryStatementResult[] = []
+  for (const statement of unit.statements) {
+    results.push(await executeStatement(conn, statement.sql, statement.index))
+  }
+  return results
 }
 
 function mapFields(fields: Array<{ name: string; type?: number; flags?: number }> = []): QueryResult['columns'] {
@@ -295,6 +532,7 @@ function ensureSemicolons(sql: string): string {
   let statementBuffer = ''
   let inCompoundStatement = false
   let compoundDepth = 0
+  let parenDepth = 0
   // 记录最后一个非空白字符（字符串外部）
   let lastNonWS = ''
 
@@ -373,7 +611,17 @@ function ensureSemicolons(sql: string): string {
     }
 
     // --- 换行处：检查是否需要补分号 ---
-    if (ch === '\n' && !inCompoundStatement && lastNonWS && lastNonWS !== ';' && lastNonWS !== '{' && lastNonWS !== '}') {
+    // 仅在“顶层语句”尝试补分号，避免截断 SET @x := ( ... ) / 函数调用 / 子查询等多行表达式。
+    if (
+      ch === '\n'
+      && !inCompoundStatement
+      && parenDepth === 0
+      && lastNonWS
+      && lastNonWS !== ';'
+      && lastNonWS !== '{'
+      && lastNonWS !== '}'
+      && !'([,=:+-*/%<>'.includes(lastNonWS)
+    ) {
       // 向前看：跳过空白 + 行注释(-- ...)，找到下一个实际语句
       let j = i + 1
       while (j < sql.length) {
@@ -391,12 +639,15 @@ function ensureSemicolons(sql: string): string {
     }
 
     if (ch !== ' ' && ch !== '\t' && ch !== '\r' && ch !== '\n') lastNonWS = ch
+    if (ch === '(') parenDepth += 1
+    if (ch === ')' && parenDepth > 0) parenDepth -= 1
     out.push(ch)
     statementBuffer += ch
     if (ch === ';') {
       statementBuffer = ''
       inCompoundStatement = false
       compoundDepth = 0
+      parenDepth = 0
     }
     i++
   }
@@ -409,7 +660,7 @@ export function registerQueryIPC() {
     return queryExecutor.execute(connectionId, sql, database)
   })
 
-  ipcMain.handle(IPC.QUERY_EXECUTE_MULTI, async (_e, connectionId: string, sql: string, database?: string) => {
+  ipcMain.handle(IPC.QUERY_EXECUTE_MULTI, async (_e, connectionId: string, sql: string, database?: string, options?: ExecuteMultiOptions) => {
     const pool = connectionManager.getPool(connectionId) as { pool?: { config?: { connectionConfig?: Record<string, unknown> } }; config?: { connectionConfig?: Record<string, unknown> } }
     const poolConfig = pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {} as Record<string, unknown>
     const conn = await mysql.createConnection({
@@ -504,13 +755,22 @@ export function registerQueryIPC() {
         withDrop.push(trimmed)
       }
 
+      const optimizeInserts = options?.optimizeInserts === true
       const originalStatementTotal = stmts.length
       const executableStmts = withDrop
         .map((stmt) => stmt.trim())
         .filter((stmt) => !!stmt)
+      const executionUnits = optimizeInserts
+        ? buildExecutionUnits(executableStmts)
+        : executableStmts.map((stmt, index) => ({
+            sql: stmt,
+            statements: [{ index: index + 1, sql: stmt }],
+            batchedInsert: false,
+          } satisfies ExecutionUnit))
       let ok = 0, fail = 0
       const errors: string[] = []
       const total = executableStmts.length
+      const executionTotal = executionUnits.length
       const statementResults: QueryStatementResult[] = []
       sendProgress({
         current: 0,
@@ -520,6 +780,7 @@ export function registerQueryIPC() {
         originalStatementTotal,
         executableStatementTotal: total,
       })
+      let executedUnits = 0
       const emitProgress = () => {
         sendProgress({
           current: ok + fail,
@@ -530,21 +791,28 @@ export function registerQueryIPC() {
           executableStatementTotal: total,
         })
       }
-      for (let i = 0; i < executableStmts.length; i++) {
-        const stmt = executableStmts[i]
-        const result = await executeStatement(conn, stmt, i + 1)
-        statementResults.push(result)
-        if (result.success) {
-          ok++
-        } else {
-          fail++
-          if (errors.length < 10) {
-            const preview = stmt.length > 120 ? stmt.slice(0, 120) + '...' : stmt
-            errors.push(`[${result.index}] ${result.error}\n  SQL: ${preview}`)
+      for (const unit of executionUnits) {
+        const unitResults = await executeUnit(conn, unit)
+        executedUnits += 1
+        for (const result of unitResults) {
+          statementResults.push(result)
+          if (result.success) {
+            ok++
+          } else {
+            fail++
+            if (errors.length < 10) {
+              const preview = result.sql.length > 120 ? result.sql.slice(0, 120) + '...' : result.sql
+              errors.push(`[${result.index}] ${result.error}\n  SQL: ${preview}`)
+            }
           }
         }
         emitProgress()
+        if (executionTotal > 0 && executedUnits % 20 === 0) {
+          await yieldToEventLoop()
+        }
       }
+
+      statementResults.sort((a, b) => a.index - b.index)
 
       const lastSelect = [...statementResults].reverse().find((item) => item.success && item.isSelect)
       const lastMutation = [...statementResults].reverse().find((item) => item.success && !item.isSelect)
