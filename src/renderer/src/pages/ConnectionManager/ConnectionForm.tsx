@@ -48,6 +48,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [activeTab, setActiveTab] = useState('general')
   const { saveConnection, testConnection, connect } = useConnectionStore()
 
   useEffect(() => {
@@ -180,11 +181,13 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
         </div>
       </div>
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
-          { key: 'general', label: '常规', children: GeneralTab },
-          { key: 'ssl', label: 'SSL', children: <SSLConfig form={form} updateField={updateField} /> },
-          { key: 'ssh', label: 'SSH', children: <SSHConfig form={form} updateField={updateField} /> },
-          { key: 'advanced', label: '高级', children: <PoolConfig form={form} updateField={updateField} /> },
+          { key: 'general', label: '常规', children: activeTab === 'general' ? GeneralTab : null },
+          { key: 'ssl', label: 'SSL', children: activeTab === 'ssl' ? <SSLConfig form={form} updateField={updateField} /> : null },
+          { key: 'ssh', label: 'SSH', children: activeTab === 'ssh' ? <SSHConfig form={form} updateField={updateField} /> : null },
+          { key: 'advanced', label: '高级', children: activeTab === 'advanced' ? <PoolConfig form={form} updateField={updateField} /> : null },
         ]}
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
       />

@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
 import AppLayout from './components/Layout/AppLayout'
 import { useAppStore } from './stores/app.store'
-import { api } from './utils/ipc'
+import { reportPerfMetric } from './utils/perf'
 
 const FIRST_INTERACTION_METRIC = 'app.first_interaction_latency'
 const LONG_TASK_METRIC = 'app.longtask.duration'
 const LONG_GAP_METRIC = 'app.longtask.fallback_gap'
+const PERF_METRICS_ENABLED = import.meta.env.DEV
 
 export default function App() {
   const resolvedTheme = useAppStore((s) => s.resolvedTheme)
@@ -34,6 +35,7 @@ export default function App() {
   }, [accentColor, resolvedTheme])
 
   useEffect(() => {
+    if (!PERF_METRICS_ENABLED) return
     if (firstInteractionReportedRef.current) return
 
     const reportFirstInteraction = (event: PointerEvent) => {
@@ -43,7 +45,7 @@ export default function App() {
       requestAnimationFrame(() => {
         queueMicrotask(() => {
           const latency = performance.now() - start
-          void api.perf.reportMetric({
+          reportPerfMetric({
             name: FIRST_INTERACTION_METRIC,
             value: Number(latency.toFixed(2)),
             tags: {
@@ -62,12 +64,13 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!PERF_METRICS_ENABLED) return
     if (typeof PerformanceObserver !== 'undefined') {
       try {
         const observer = new PerformanceObserver((list) => {
           const entries = list.getEntries()
           entries.forEach((entry) => {
-            void api.perf.reportMetric({
+            reportPerfMetric({
               name: LONG_TASK_METRIC,
               value: Number(entry.duration.toFixed(2)),
               tags: {
@@ -89,7 +92,7 @@ export default function App() {
       const now = performance.now()
       const drift = now - last - 1000
       if (drift > 50) {
-        void api.perf.reportMetric({
+        reportPerfMetric({
           name: LONG_GAP_METRIC,
           value: Number(drift.toFixed(2)),
           tags: {

@@ -22,6 +22,7 @@ const ProcedureManager: React.FC = () => {
   const [form, setForm] = useState({ name: '', type: 'PROCEDURE' as 'PROCEDURE' | 'FUNCTION', params: [] as ParamDef[], returns: '', body: '' })
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [activeKey, setActiveKey] = useState('proc')
   const connId = useConnectionStore((s) => s.activeConnectionId)
   const db = useAppStore((s) => s.selectedDatabase)
 
@@ -93,10 +94,26 @@ const ProcedureManager: React.FC = () => {
       {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
       {success && <Alert type="success" message={success} style={{ marginBottom: 12 }} />}
       <div style={{ marginBottom: 12 }}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建</Button></div>
-      <Tabs items={[
-        { key: 'proc', label: '存储过程', children: <Table dataSource={procedures} columns={makeColumns('PROCEDURE')} rowKey="name" loading={loading} size="small" /> },
-        { key: 'func', label: '函数', children: <Table dataSource={functions} columns={makeColumns('FUNCTION')} rowKey="name" loading={loading} size="small" /> },
-      ]} />
+      <Tabs
+        activeKey={activeKey}
+        onChange={setActiveKey}
+        items={[
+          {
+            key: 'proc',
+            label: '存储过程',
+            children: activeKey === 'proc'
+              ? <Table dataSource={procedures} columns={makeColumns('PROCEDURE')} rowKey="name" loading={loading} size="small" />
+              : null,
+          },
+          {
+            key: 'func',
+            label: '函数',
+            children: activeKey === 'func'
+              ? <Table dataSource={functions} columns={makeColumns('FUNCTION')} rowKey="name" loading={loading} size="small" />
+              : null,
+          },
+        ]}
+      />
 
       <Modal title="新建存储过程/函数" open={modalOpen} onClose={() => setModalOpen(false)} onOk={save} width={700}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

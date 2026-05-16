@@ -5,6 +5,7 @@ import { IPC } from '../shared/types/ipc-channels'
 import { registerAllIPC } from './ipc/index'
 import * as connectionManager from './services/connection-manager'
 import * as localStore from './services/local-store'
+import * as backupService from './services/backup'
 import * as logger from './utils/logger'
 
 let mainWindow: BrowserWindow | null = null
@@ -152,6 +153,7 @@ app.whenReady().then(() => {
   logger.info('App starting...')
   localStore.init()
   connectionManager.initializeHeartbeatInterval()
+  backupService.startScheduleRunner()
   registerAllIPC()
 
   // Window control IPC
@@ -193,6 +195,7 @@ app.on('before-quit', async () => {
   logger.info('App quitting, cleaning up...')
   tray?.destroy()
   tray = null
+  backupService.stopScheduleRunner()
   localStore.flushLocalStoreQueues()
   await connectionManager.disconnectAll()
 })

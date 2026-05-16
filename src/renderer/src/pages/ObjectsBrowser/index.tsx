@@ -84,7 +84,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     const unsub = api.onImportProgress((data) => setImportProgress(data))
     const run = async () => {
       try {
-        const result = await api.query.executeMulti(connectionId, content, database, { optimizeInserts: true })
+        const result = await api.query.executeMulti(connectionId, content, database, { optimizeInserts: true, scriptMode: 'import' })
         if ((result.failCount ?? 0) > 0) {
           const failedItems = result.statementResults?.filter((item) => !item.success) ?? []
           const detail = failedItems
@@ -663,7 +663,15 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       </div>
 
       {/* 内容区 */}
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto', userSelect: 'none' }} onContextMenu={e => e.preventDefault()}>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: viewMode === 'table' ? 'hidden' : 'auto',
+          userSelect: 'none',
+        }}
+        onContextMenu={e => e.preventDefault()}
+      >
         {showEmptyState ? (
           <div style={{
             height: '100%',
@@ -699,6 +707,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             dataSource={mergedTables}
             rowKey="name"
             resizable
+            scroll={{ x: 'max-content', y: '100%' }}
             onRow={(record) => ({
               onClick: (e) => handleRowClick(record.name, e),
               onDoubleClick: () => { window.getSelection()?.removeAllRanges(); handleOpen(record.name) },

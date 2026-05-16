@@ -61,9 +61,9 @@ const api: ElectronAPI = {
   },
   backup: {
     create: (config) => ipcRenderer.invoke(IPC.BACKUP_CREATE, config),
-    restore: (connId, filePath) => ipcRenderer.invoke(IPC.BACKUP_RESTORE, connId, filePath),
+    restore: (connId, filePath, options) => ipcRenderer.invoke(IPC.BACKUP_RESTORE, connId, filePath, options),
     list: (connId) => ipcRenderer.invoke(IPC.BACKUP_LIST, connId),
-    schedule: (schedule) => ipcRenderer.invoke(IPC.BACKUP_SCHEDULE, schedule),
+    schedule: (request) => ipcRenderer.invoke(IPC.BACKUP_SCHEDULE, request),
   },
   object: {
     search: (connId, db, keyword) => ipcRenderer.invoke(IPC.OBJECT_SEARCH, connId, db, keyword),

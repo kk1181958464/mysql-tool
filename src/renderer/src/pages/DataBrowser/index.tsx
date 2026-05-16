@@ -12,6 +12,7 @@ interface Props {
 const DataBrowser: React.FC<Props> = ({ tabId }) => {
   const { tabs } = useTabStore()
   const [refreshKey, setRefreshKey] = React.useState(0)
+  const [activeKey, setActiveKey] = React.useState('data')
 
   const tab = tabs.find((t) => t.id === tabId) as DataTab | undefined
 
@@ -41,10 +42,23 @@ const DataBrowser: React.FC<Props> = ({ tabId }) => {
       </Space>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Tabs
-          defaultActiveKey="data"
+          activeKey={activeKey}
+          onChange={setActiveKey}
           items={[
-            { key: 'data', label: '数据', children: <TableData key={refreshKey} tabId={tab.id} connectionId={tab.connectionId} database={tab.database} table={tab.table} /> },
-            { key: 'structure', label: '结构', children: <TableStructure key={refreshKey} connectionId={tab.connectionId} database={tab.database} table={tab.table} /> },
+            {
+              key: 'data',
+              label: '数据',
+              children: activeKey === 'data'
+                ? <TableData key={`data-${refreshKey}`} tabId={tab.id} connectionId={tab.connectionId} database={tab.database} table={tab.table} />
+                : null,
+            },
+            {
+              key: 'structure',
+              label: '结构',
+              children: activeKey === 'structure'
+                ? <TableStructure key={`structure-${refreshKey}`} connectionId={tab.connectionId} database={tab.database} table={tab.table} />
+                : null,
+            },
           ]}
           style={{ height: '100%' }}
         />

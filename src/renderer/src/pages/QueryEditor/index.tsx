@@ -5,6 +5,8 @@ import {
   FileSearchOutlined,
   FormatPainterOutlined,
   SnippetsOutlined,
+  PlayCircleOutlined,
+  StopOutlined,
 } from '@ant-design/icons'
 import Editor, { loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
@@ -264,6 +266,118 @@ const shouldUseBatchExecution = (sql: string): boolean => {
   return (createTableMatches?.length ?? 0) > 1
 }
 
+const findCurrentStatement = (sql: string, offset: number): string => {
+  let start = 0
+  let end = sql.length
+  let inSingle = false
+  let inDouble = false
+  let inBacktick = false
+  let inLineComment = false
+  let inBlockComment = false
+
+  for (let i = 0; i < sql.length; i += 1) {
+    const ch = sql[i]
+    const next = sql[i + 1]
+
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false
+      continue
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false
+        i += 1
+      }
+      continue
+    }
+    if (inSingle) {
+      if (ch === "'" && next === "'") {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === "'") inSingle = false
+      continue
+    }
+    if (inDouble) {
+      if (ch === '"' && next === '"') {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === '"') inDouble = false
+      continue
+    }
+    if (inBacktick) {
+      if (ch === '`') inBacktick = false
+      continue
+    }
+
+    if (ch === '-' && next === '-') {
+      inLineComment = true
+      i += 1
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true
+      i += 1
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      continue
+    }
+    if (ch === '"') {
+      inDouble = true
+      continue
+    }
+    if (ch === '`') {
+      inBacktick = true
+      continue
+    }
+    if (ch !== ';') continue
+
+    if (i < offset) {
+      start = i + 1
+      continue
+    }
+
+    end = i
+    break
+  }
+
+  return sql.slice(start, end).trim()
+}
+
+const getExecutableSql = (editor: any, fallbackSql: string, mode: 'current' | 'all'): string => {
+  if (mode === 'all' || !editor) return fallbackSql.trim()
+
+  const selection = editor.getSelection?.()
+  const model = editor.getModel?.()
+  if (!model) return fallbackSql.trim()
+
+  if (selection && !selection.isEmpty?.()) {
+    const selected = model.getValueInRange(selection).trim()
+    if (selected) return selected
+  }
+
+  const position = editor.getPosition?.()
+  if (!position) return fallbackSql.trim()
+  const offset = model.getOffsetAt(position)
+  return findCurrentStatement(fallbackSql, offset) || fallbackSql.trim()
+}
+
+const normalizeExplainSql = (sql: string): string => {
+  const trimmed = sql.trim().replace(/;+\s*$/, '').trim()
+  return trimmed.replace(/^EXPLAIN(?:\s+(?:ANALYZE|FORMAT\s*=\s*(?:TREE|JSON|TRADITIONAL)))?\s+/i, '').trim()
+}
+
 interface Props {
   tabId: string
 }
@@ -352,22 +466,36 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
 
   const handleEditorMount = (editor: any) => {
     editorRef.current = editor
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => handleExecute('current'))
+    editor.addCommand(monaco.KeyCode.F5, () => handleExecute('all'))
   }
 
-  const handleExecute = useCallback(async () => {
+  const handleExecute = useCallback(async (mode: 'current' | 'all' = 'current') => {
     if (!tab || !activeConnectionId || !hasSql) return
     if (!hasValidDatabase) {
       setQueryError(tab.id, executeBlockedReason || '请先选择有效数据库后再执行')
+      return
+    }
+    const executableSql = getExecutableSql(editorRef.current, tab.content, mode)
+    if (!executableSql.trim()) {
+      setQueryError(tab.id, '没有可执行的 SQL 语句')
       return
     }
     setQueryExecuting(tab.id, true)
     try {
       let result: QueryResult
 
-      if (shouldUseBatchExecution(tab.content)) {
-        result = await api.query.executeMulti(activeConnectionId, tab.content, activeDatabase || '')
+      const executeOptions = {
+        stopOnError: mode !== 'all',
+        limitResultRows: true,
+        saveHistory: true,
+        scriptMode: 'query' as const,
+      }
+
+      if (mode === 'all' || shouldUseBatchExecution(executableSql)) {
+        result = await api.query.executeMulti(activeConnectionId, executableSql, activeDatabase || '', executeOptions)
       } else {
-        result = await api.query.execute(activeConnectionId, tab.content, activeDatabase || '')
+        result = await api.query.execute(activeConnectionId, executableSql, activeDatabase || '')
       }
 
       setQueryResult(tab.id, result)
@@ -385,15 +513,30 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
     }
   }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
 
+  const handleCancel = useCallback(async () => {
+    if (!tab || !activeConnectionId || !tab.isExecuting) return
+    try {
+      await api.query.cancel(activeConnectionId)
+      setQueryError(tab.id, '查询已取消')
+    } catch (e: any) {
+      setQueryError(tab.id, e.message || '取消失败')
+    }
+  }, [tab, activeConnectionId, setQueryError])
+
   const handleExplain = useCallback(async () => {
     if (!tab || !activeConnectionId || !hasSql) return
     if (!hasValidDatabase) {
       setQueryError(tab.id, executeBlockedReason || '请先选择有效数据库后再执行')
       return
     }
+    const executableSql = normalizeExplainSql(getExecutableSql(editorRef.current, tab.content, 'current'))
+    if (!executableSql) {
+      setQueryError(tab.id, '没有可 Explain 的 SQL 语句')
+      return
+    }
     setQueryExecuting(tab.id, true)
     try {
-      const explainRows = await api.query.explain(activeConnectionId, tab.content, activeDatabase || '')
+      const explainRows = await api.query.explain(activeConnectionId, executableSql, activeDatabase || '')
       // 转换为 QueryResult 格式
       const result = {
         columns: [
@@ -422,7 +565,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
         insertId: 0,
         executionTime: 0,
         rowCount: explainRows.length,
-        sql: `EXPLAIN ${tab.content}`,
+        sql: `EXPLAIN ${executableSql}`,
         isSelect: true,
       }
       setQueryResult(tab.id, result)
@@ -452,18 +595,34 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
           </span>
         )}
         <Space>
-          <Tooltip title={executeBlockedReason || '执行 (F5)'}>
+          <Tooltip title={executeBlockedReason || '执行当前语句或选区 (Ctrl+Enter)'}>
             <Button
               type="primary"
               size="small"
-              onClick={handleExecute}
+              onClick={() => handleExecute('current')}
               disabled={tab.isExecuting || !hasSql || !hasValidDatabase}
               loading={tab.isExecuting}
             >
-              <CaretRightOutlined /> 执行
+              <CaretRightOutlined /> 执行当前
             </Button>
           </Tooltip>
-          <Tooltip title={executeBlockedReason || 'Explain'}>
+          <Tooltip title={executeBlockedReason || '执行全部脚本 (F5)'}>
+            <Button
+              size="small"
+              onClick={() => handleExecute('all')}
+              disabled={tab.isExecuting || !hasSql || !hasValidDatabase}
+            >
+              <PlayCircleOutlined /> 全部
+            </Button>
+          </Tooltip>
+          {tab.isExecuting && (
+            <Tooltip title="取消当前执行">
+              <Button size="small" variant="danger" onClick={handleCancel}>
+                <StopOutlined /> 取消
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip title={executeBlockedReason || 'Explain 当前语句或选区'}>
             <Button size="small" onClick={handleExplain} disabled={tab.isExecuting || !hasSql || !hasValidDatabase}>
               <FileSearchOutlined /> Explain
             </Button>

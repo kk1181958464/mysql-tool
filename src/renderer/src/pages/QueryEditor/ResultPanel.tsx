@@ -4,6 +4,7 @@ import { DownloadOutlined, CheckCircleOutlined, WarningOutlined, CloseCircleOutl
 import { useTabStore, QueryTab } from '../../stores/tab.store'
 import { useConnectionStore } from '../../stores/connection.store'
 import { api } from '../../utils/ipc'
+import { reportPerfMetric } from '../../utils/perf'
 import type { QueryHistoryItem, QueryStatementResult } from '../../../../shared/types/query'
 import tableTransformWorker from '../../workers/table-transform.worker?worker'
 
@@ -44,7 +45,9 @@ const getStatementCount = (statement: QueryStatementResult) => {
 
 const getStatementMetricLabel = (statement: QueryStatementResult) => {
   const kind = getStatementKind(statement.sql, statement.isSelect)
-  if (kind === 'select' || kind === 'show' || kind === 'describe' || kind === 'explain') return `返回 ${statement.rowCount} 行`
+  if (kind === 'select' || kind === 'show' || kind === 'describe' || kind === 'explain') {
+    return `返回 ${statement.rowCount} 行${statement.limited && statement.limitApplied ? `，仅显示前 ${statement.limitApplied} 行` : ''}`
+  }
   if (kind === 'ddl') return '结构变更'
   if (kind === 'session') return statement.sql.trim().toUpperCase().startsWith('USE') ? '数据库已切换' : '会话变量已设置'
   if (kind === 'mutation') return `影响 ${statement.affectedRows} 行`
@@ -178,11 +181,13 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   }, 0)
   const aggregateDdlCount = statementResults.filter((item) => getStatementKind(item.sql, item.isSelect) === 'ddl').length
   const aggregateSessionCount = statementResults.filter((item) => getStatementKind(item.sql, item.isSelect) === 'session').length
+  const limitedStatementCount = statementResults.filter((item) => item.limited).length
   const selectedStatementKind = selectedStatement ? getStatementKind(selectedStatement.sql, selectedStatement.isSelect) : 'other'
   const selectedStatementStatus = selectedStatement ? getStatementStatusTag(selectedStatement) : null
 
   useEffect(() => {
     setActiveStatementIndex(0)
+    setActiveKey((result?.failCount ?? 0) > 0 ? 'messages' : 'results')
   }, [result?.sql, result?.executionTime, result?.statementResults?.length])
 
   useEffect(() => {
@@ -201,7 +206,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
         const data = Array.isArray(rows) ? rows : []
         setHistoryRows(data)
         setHistoryHasMore(data.length >= historyPageSize)
-        void api.perf.reportMetric({
+        reportPerfMetric({
           name: 'result_panel.history_fetch_ms',
           value: Number((performance.now() - start).toFixed(2)),
           tags: {
@@ -254,7 +259,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     worker.onmessage = (event: MessageEvent<{ id: string; rows: Array<Record<string, unknown>> }>) => {
       if (event.data.id !== jobId) return
       setTransformedRows(event.data.rows)
-      void api.perf.reportMetric({
+      reportPerfMetric({
         name: 'result_panel.worker_transform_ms',
         value: Number((performance.now() - workerStart).toFixed(2)),
         tags: {
@@ -283,7 +288,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     if (activeKey !== 'results' || !selectedStatement) return
     const start = performance.now()
     requestAnimationFrame(() => {
-      void api.perf.reportMetric({
+      reportPerfMetric({
         name: 'result_panel.render_cost_ms',
         value: Number((performance.now() - start).toFixed(2)),
         tags: {
@@ -332,6 +337,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       <span>总影响行数 {aggregateMutationAffectedRows}</span>
       {aggregateDdlCount > 0 && <span>结构变更 {aggregateDdlCount} 条</span>}
       {aggregateSessionCount > 0 && <span>会话操作 {aggregateSessionCount} 条</span>}
+      {limitedStatementCount > 0 && <span>已限流 {limitedStatementCount} 条</span>}
       <span>总返回行数 {aggregateRowResults}</span>
       <span>总耗时 {aggregateExecutionTime}ms</span>
     </div>
@@ -345,7 +351,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
         <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="执行中..." /></div>
       ) : selectedStatement ? (
         isExplain ? (
-          <div style={{ height: '100%', overflow: 'auto' }}>
+          <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {multiStatementSummary}
             {statementResults.length > 1 && (
               <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -368,7 +374,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
             <ExplainView rows={selectedStatement.rows} />
           </div>
         ) : selectedStatement.isSelect ? (
-          <div style={{ height: '100%', overflow: 'auto' }}>
+          <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {multiStatementSummary}
             {statementResults.length > 1 && (
               <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -388,22 +394,41 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                 {selectedStatementStatus && <Tag type={selectedStatementStatus.type}>{selectedStatementStatus.label}</Tag>}
               </div>
             )}
-            <Table
-              columns={resultColumns}
-              dataSource={normalizedRows}
-              rowKey="_key"
-              size="small"
-              scroll={{ x: 'max-content' }}
-              virtual={{
-                enabled: normalizedRows.length >= RESULT_VIRTUAL_THRESHOLD,
-                rowHeight: 34,
-                overscan: 8,
-                threshold: RESULT_VIRTUAL_THRESHOLD,
-              }}
-            />
+            {selectedStatement.limited && (
+              <div style={{
+                margin: '8px 12px 0',
+                padding: '8px 10px',
+                border: '1px solid var(--warning)',
+                borderRadius: 6,
+                background: 'rgba(245, 158, 11, 0.08)',
+                color: 'var(--text-secondary)',
+                fontSize: 12,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}>
+                <WarningOutlined style={{ color: 'var(--warning)' }} />
+                <span>未写 LIMIT，已自动限制为前 {selectedStatement.limitApplied || selectedStatement.rowCount} 行。需要全量结果时请在 SQL 中显式指定 LIMIT。</span>
+              </div>
+            )}
+            <div style={{ flex: 1, minHeight: 0, padding: selectedStatement.limited ? '8px 12px 0' : '0 12px' }}>
+              <Table
+                columns={resultColumns}
+                dataSource={normalizedRows}
+                rowKey="_key"
+                size="small"
+                scroll={{ x: 'max-content', y: '100%' }}
+                virtual={{
+                  enabled: normalizedRows.length >= RESULT_VIRTUAL_THRESHOLD,
+                  rowHeight: 34,
+                  overscan: 8,
+                  threshold: RESULT_VIRTUAL_THRESHOLD,
+                }}
+              />
+            </div>
             <Space style={{ padding: '4px 8px' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                {selectedStatement.rowCount} 行 | {selectedStatement.executionTime}ms
+                {getStatementMetricLabel(selectedStatement)} | {selectedStatement.executionTime}ms
               </span>
               <Dropdown
                 items={[
@@ -516,7 +541,11 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
               ))}
             </div>
           ) : (
-            !error && !result && <span style={{ color: 'var(--text-muted)' }}>暂无消息</span>
+            !error && !result
+              ? <span style={{ color: 'var(--text-muted)' }}>暂无消息</span>
+              : !error && result
+                ? <span style={{ color: 'var(--text-muted)' }}>执行完成，但没有返回可显示的语句结果。</span>
+                : null
           )}
         </div>
       ),
@@ -555,7 +584,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   ]
 
   return (
-    <div style={{ height: '100%', overflow: 'auto' }}>
+    <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <Tabs items={tabItems} activeKey={activeKey} onChange={setActiveKey} style={{ height: '100%' }} />
     </div>
   )

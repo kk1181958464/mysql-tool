@@ -18,7 +18,18 @@ export default defineConfig({
     root: resolve('src/renderer'),
     build: {
       rollupOptions: {
-        input: resolve('src/renderer/index.html')
+        input: resolve('src/renderer/index.html'),
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined
+            if (id.includes('monaco-editor') || id.includes('@monaco-editor')) return 'vendor-monaco'
+            if (id.includes('@ant-design/icons')) return 'vendor-icons'
+            if (id.includes('react') || id.includes('scheduler')) return 'vendor-react'
+            if (id.includes('zustand')) return 'vendor-state'
+            if (id.includes('lodash') || id.includes('dayjs') || id.includes('xlsx')) return 'vendor-utils'
+            return 'vendor'
+          },
+        },
       }
     },
     plugins: [react()],

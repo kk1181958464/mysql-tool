@@ -16,7 +16,7 @@ type ExportDataOptions = {
   insertStyle?: 'single' | 'multi' | 'ignore' | 'replace'
 }
 
-const IMPORT_EXTS = new Set(['.csv', '.tsv', '.xlsx', '.xls'])
+const IMPORT_EXTS = new Set(['.csv', '.tsv', '.xlsx', '.xls', '.sql', '.gz'])
 const EXPORT_EXTS = new Set(['.csv', '.json', '.sql', '.xlsx', '.xls'])
 
 function validateFilePath(filePath: string, allowedExts: Set<string>): void {
@@ -36,6 +36,9 @@ export function registerImportExportIPC() {
   ipcMain.handle(IPC.IMPORT_FILE, async (_e, connId: string, db: string, table: string, filePath: string, options?: ImportOptions) => {
     validateFilePath(filePath, IMPORT_EXTS)
     const ext = path.extname(filePath).toLowerCase()
+    if (ext === '.sql' || filePath.toLowerCase().endsWith('.sql.gz')) {
+      return importExport.importSQL(connId, db, filePath, options)
+    }
     if (ext === '.csv' || ext === '.tsv') {
       return importExport.importCSV(connId, db, table, filePath, options)
     }
@@ -44,6 +47,10 @@ export function registerImportExportIPC() {
 
   ipcMain.handle(IPC.IMPORT_PREVIEW, async (_e, filePath: string) => {
     validateFilePath(filePath, IMPORT_EXTS)
+    const lower = filePath.toLowerCase()
+    if (lower.endsWith('.sql') || lower.endsWith('.sql.gz')) {
+      return { columns: [], rows: [], totalRows: 0 }
+    }
     return importExport.previewImport(filePath)
   })
 

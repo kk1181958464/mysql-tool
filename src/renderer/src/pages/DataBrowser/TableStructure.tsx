@@ -18,6 +18,7 @@ export const TableStructure: React.FC<Props> = ({ connectionId, database, table 
   const [indexes, setIndexes] = useState<IndexInfo[]>([])
   const [foreignKeys, setForeignKeys] = useState<ForeignKeyInfo[]>([])
   const [ddl, setDdl] = useState('')
+  const [activeKey, setActiveKey] = useState('columns')
 
   const cacheKey = `${connectionId}:${database}:${table}`
   const cols: ColumnDetail[] = columnCache[cacheKey] || []
@@ -68,19 +69,33 @@ export const TableStructure: React.FC<Props> = ({ connectionId, database, table 
         </Button>
       </div>
       <Tabs
+        activeKey={activeKey}
+        onChange={setActiveKey}
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
         items={[
-          { key: 'columns', label: `列 (${cols.length})`, children: <Table size="small" dataSource={cols} columns={columnsCols} rowKey="name" /> },
-          { key: 'indexes', label: `索引 (${indexes.length})`, children: <Table size="small" dataSource={indexes} columns={indexCols} rowKey="name" /> },
-          { key: 'fk', label: `外键 (${foreignKeys.length})`, children: <Table size="small" dataSource={foreignKeys} columns={fkCols} rowKey="name" /> },
+          {
+            key: 'columns',
+            label: `列 (${cols.length})`,
+            children: activeKey === 'columns' ? <Table size="small" dataSource={cols} columns={columnsCols} rowKey="name" /> : null,
+          },
+          {
+            key: 'indexes',
+            label: `索引 (${indexes.length})`,
+            children: activeKey === 'indexes' ? <Table size="small" dataSource={indexes} columns={indexCols} rowKey="name" /> : null,
+          },
+          {
+            key: 'fk',
+            label: `外键 (${foreignKeys.length})`,
+            children: activeKey === 'fk' ? <Table size="small" dataSource={foreignKeys} columns={fkCols} rowKey="name" /> : null,
+          },
           {
             key: 'ddl',
             label: 'DDL',
-            children: (
+            children: activeKey === 'ddl' ? (
               <pre style={{ background: 'var(--bg-overlay)', padding: 12, borderRadius: 4, overflow: 'auto', fontSize: 12, fontFamily: 'monospace', flex: 1, margin: 0 }}>
                 {ddl || '加载中...'}
               </pre>
-            ),
+            ) : null,
           },
         ]}
       />

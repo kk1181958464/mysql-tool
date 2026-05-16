@@ -3,14 +3,28 @@ import { CloseOutlined, CodeOutlined, TableOutlined, LayoutOutlined, DatabaseOut
 import { useTabStore, Tab } from '../../stores/tab.store'
 import { isTabDirty, registerTabCloseGuard } from '../../stores/tab-close-guard'
 import { Modal, Button } from '../../components/ui'
-import DataBrowser from '../../pages/DataBrowser'
-import TableDesigner from '../../pages/TableDesigner'
-import { ObjectsBrowser } from '../../pages/ObjectsBrowser'
-import Performance from '../../pages/Performance'
-import ImportExport from '../../pages/ImportExport'
-import Backup from '../../pages/Backup'
 
 const QueryEditor = lazy(() => import('../../pages/QueryEditor'))
+const DataBrowser = lazy(() => import('../../pages/DataBrowser'))
+const TableDesigner = lazy(() => import('../../pages/TableDesigner'))
+const ObjectsBrowser = lazy(() => import('../../pages/ObjectsBrowser').then((module) => ({ default: module.ObjectsBrowser })))
+const Performance = lazy(() => import('../../pages/Performance'))
+const ImportExport = lazy(() => import('../../pages/ImportExport'))
+const Backup = lazy(() => import('../../pages/Backup'))
+const MAX_KEEP_ALIVE_BACKGROUND_TABS = 8
+
+const PageLoading = ({ label }: { label: string }) => (
+  <div style={{ padding: 20, color: 'var(--text-muted)' }}>{label}加载中...</div>
+)
+
+const isAlwaysKeptAlive = (tab: Tab) => {
+  if (tab.type === 'query') return true
+  if (tab.type === 'design') return true
+  if (tab.type === 'data') return tab.isDirty
+  return false
+}
+
+const isCacheManagedTab = (tab: Tab) => !isAlwaysKeptAlive(tab)
 
 const TAB_ICONS: Record<string, React.ReactNode> = {
   query: <CodeOutlined />,
@@ -25,9 +39,11 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 export default function MainTabBar() {
   const { tabs, activeTabId, setActiveTab, removeTabsByIds } = useTabStore()
   const [confirmCloseIds, setConfirmCloseIds] = useState<string[] | null>(null)
+  const [mountedTabIds, setMountedTabIds] = useState<Set<string>>(() => new Set())
 
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null)
   const tabContextMenuRef = useRef<HTMLDivElement | null>(null)
+  const lastUsedAtRef = useRef<Record<string, number>>({})
 
   const pendingResolveRef = useRef<((ok: boolean) => void) | null>(null)
 
@@ -115,6 +131,58 @@ export default function MainTabBar() {
     return inputTabs.filter((t) => t.closable !== false && t.type !== 'objects')
   }, [])
 
+  useEffect(() => {
+    const tabIds = new Set(tabs.map((tab) => tab.id))
+    const activeTab = tabs.find((tab) => tab.id === activeTabId)
+    const now = Date.now()
+
+    for (const id of Object.keys(lastUsedAtRef.current)) {
+      if (!tabIds.has(id)) {
+        delete lastUsedAtRef.current[id]
+      }
+    }
+
+    if (activeTabId) {
+      lastUsedAtRef.current[activeTabId] = now
+    }
+
+    setMountedTabIds((prev) => {
+      const next = new Set<string>()
+
+      for (const tab of tabs) {
+        if (tab.id === activeTabId || isAlwaysKeptAlive(tab)) {
+          next.add(tab.id)
+        }
+      }
+
+      for (const id of prev) {
+        const tab = tabs.find((item) => item.id === id)
+        if (!tab) continue
+        if (tab.id === activeTabId || isAlwaysKeptAlive(tab) || isCacheManagedTab(tab)) {
+          next.add(id)
+        }
+      }
+
+      if (activeTab && isCacheManagedTab(activeTab)) {
+        next.add(activeTab.id)
+      }
+
+      const managedBackgroundIds = Array.from(next)
+        .filter((id) => id !== activeTabId)
+        .filter((id) => {
+          const tab = tabs.find((item) => item.id === id)
+          return tab ? isCacheManagedTab(tab) : false
+        })
+        .sort((a, b) => (lastUsedAtRef.current[b] || 0) - (lastUsedAtRef.current[a] || 0))
+
+      for (const id of managedBackgroundIds.slice(MAX_KEEP_ALIVE_BACKGROUND_TABS)) {
+        next.delete(id)
+      }
+
+      return next
+    })
+  }, [tabs, activeTabId])
+
   const handleTabContextMenu = (e: React.MouseEvent, tab: Tab) => {
     e.preventDefault()
     e.stopPropagation()
@@ -173,27 +241,51 @@ export default function MainTabBar() {
     pendingResolveRef.current = null
   }
 
-  const renderTabContent = (tab: Tab) => {
+  const renderTabContent = (tab: Tab, isActive: boolean) => {
     switch (tab.type) {
       case 'query':
         return (
-          <Suspense fallback={<div style={{ padding: 20, color: 'var(--text-muted)' }}>查询编辑器加载中...</div>}>
+          <Suspense fallback={<PageLoading label="查询编辑器" />}>
             <QueryEditor tabId={tab.id} />
           </Suspense>
         )
       case 'data':
-        return <DataBrowser tabId={tab.id} />
+        return (
+          <Suspense fallback={<PageLoading label="数据浏览" />}>
+            <DataBrowser tabId={tab.id} />
+          </Suspense>
+        )
       case 'design':
-        return <TableDesigner tabId={tab.id} />
+        return (
+          <Suspense fallback={<PageLoading label="表设计" />}>
+            <TableDesigner tabId={tab.id} />
+          </Suspense>
+        )
       case 'objects':
         if (!tab.connectionId || !tab.database) return <div style={{ padding: 20, color: 'var(--text-muted)' }}>无效的数据库连接</div>
-        return <ObjectsBrowser connectionId={tab.connectionId} database={tab.database} />
+        return (
+          <Suspense fallback={<PageLoading label="对象浏览" />}>
+            <ObjectsBrowser connectionId={tab.connectionId} database={tab.database} />
+          </Suspense>
+        )
       case 'performance':
-        return <Performance />
+        return (
+          <Suspense fallback={<PageLoading label="性能工具" />}>
+            <Performance active={isActive} />
+          </Suspense>
+        )
       case 'import-export':
-        return <ImportExport />
+        return (
+          <Suspense fallback={<PageLoading label="导入导出" />}>
+            <ImportExport />
+          </Suspense>
+        )
       case 'backup':
-        return <Backup />
+        return (
+          <Suspense fallback={<PageLoading label="备份" />}>
+            <Backup />
+          </Suspense>
+        )
       default:
         return null
     }
@@ -242,12 +334,12 @@ export default function MainTabBar() {
       </div>
       {/* 标签内容 — 缓存所有 tab，非活跃 display:none */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-        {tabs.map((tab) => (
+        {tabs.filter((tab) => tab.id === activeTabId || mountedTabIds.has(tab.id)).map((tab) => (
           <div key={tab.id} style={{
             display: tab.id === activeTabId ? 'flex' : 'none',
             flexDirection: 'column', height: '100%',
           }} className="tab-content-pane">
-            {renderTabContent(tab)}
+            {renderTabContent(tab, tab.id === activeTabId)}
           </div>
         ))}
       </div>

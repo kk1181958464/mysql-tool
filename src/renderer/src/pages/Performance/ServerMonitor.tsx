@@ -10,7 +10,11 @@ interface ProcessItem {
   Command: string; Time: number; State: string; Info: string | null
 }
 
-const ServerMonitor: React.FC = () => {
+interface Props {
+  active?: boolean
+}
+
+const ServerMonitor: React.FC<Props> = ({ active = true }) => {
   const [processes, setProcesses] = useState<ProcessItem[]>([])
   const [variables, setVariables] = useState<{ name: string; value: string }[]>([])
   const [status, setStatus] = useState<{ name: string; value: string }[]>([])
@@ -22,11 +26,12 @@ const ServerMonitor: React.FC = () => {
   const [statusSearch, setStatusSearch] = useState('')
   const [killConfirmId, setKillConfirmId] = useState<number | null>(null)
   const [killing, setKilling] = useState(false)
+  const [activeKey, setActiveKey] = useState('process')
   const connId = useConnectionStore((s) => s.activeConnectionId)
   const db = useAppStore((s) => s.selectedDatabase)
 
   const load = useCallback(async () => {
-    if (!connId) return
+    if (!active || !connId) return
     setLoading(true)
     try {
       const [procRes, varRes, statRes, innoRes] = await Promise.all([
@@ -46,14 +51,17 @@ const ServerMonitor: React.FC = () => {
         bufferPool: `${(parseInt(findStat('Innodb_buffer_pool_pages_data')) / Math.max(1, parseInt(findStat('Innodb_buffer_pool_pages_total'))) * 100).toFixed(1)}%`,
       })
     } catch (e) { console.warn('[ServerMonitor] 加载失败:', e) } finally { setLoading(false) }
-  }, [connId])
+  }, [active, connId])
 
-  useEffect(() => { load() }, [load])
   useEffect(() => {
-    if (!autoRefresh) return
+    if (!active) return
+    load()
+  }, [active, load])
+  useEffect(() => {
+    if (!active || !autoRefresh) return
     const t = setInterval(load, 5000)
     return () => clearInterval(t)
-  }, [autoRefresh, load])
+  }, [active, autoRefresh, load])
 
   const killProcess = (id: number) => setKillConfirmId(id)
 
@@ -84,14 +92,52 @@ const ServerMonitor: React.FC = () => {
       </Row>
       <Space>
         <Switch checked={autoRefresh} onChange={setAutoRefresh} /> <span>自动刷新</span>
-        <Button onClick={load} disabled={loading}><ReloadOutlined /> {loading ? '加载中...' : '刷新'}</Button>
+        <Button onClick={load} disabled={loading || !active}><ReloadOutlined /> {loading ? '加载中...' : '刷新'}</Button>
       </Space>
-      <Tabs items={[
-        { key: 'process', label: '进程列表', children: <Table dataSource={processes} columns={processColumns} rowKey="Id" size="small" scroll={{ y: 400, x: 'max-content' }} /> },
-        { key: 'variables', label: '服务器变量', children: <><Input placeholder="搜索变量..." value={varSearch} onChange={(e) => setVarSearch(e.target.value)} style={{ width: 300, marginBottom: 8 }} /><Table dataSource={variables.filter((v) => !varSearch || v.name.toLowerCase().includes(varSearch.toLowerCase()))} columns={varColumns} rowKey="name" size="small" /></> },
-        { key: 'status', label: '全局状态', children: <><Input placeholder="搜索状态..." value={statusSearch} onChange={(e) => setStatusSearch(e.target.value)} style={{ width: 300, marginBottom: 8 }} /><Table dataSource={status.filter((v) => !statusSearch || v.name.toLowerCase().includes(statusSearch.toLowerCase()))} columns={varColumns} rowKey="name" size="small" /></> },
-        { key: 'innodb', label: 'InnoDB 状态', children: <pre style={{ maxHeight: 500, overflow: 'auto', background: 'var(--bg-hover)', padding: 12, borderRadius: 6, fontSize: 12 }}>{innodbStatus || '无数据'}</pre> },
-      ]} />
+      <Tabs
+        activeKey={activeKey}
+        onChange={setActiveKey}
+        items={[
+          {
+            key: 'process',
+            label: '进程列表',
+            children: activeKey === 'process'
+              ? <Table dataSource={processes} columns={processColumns} rowKey="Id" size="small" scroll={{ y: 400, x: 'max-content' }} />
+              : null,
+          },
+          {
+            key: 'variables',
+            label: '服务器变量',
+            children: activeKey === 'variables'
+              ? (
+                <>
+                  <Input placeholder="搜索变量..." value={varSearch} onChange={(e) => setVarSearch(e.target.value)} style={{ width: 300, marginBottom: 8 }} />
+                  <Table dataSource={variables.filter((v) => !varSearch || v.name.toLowerCase().includes(varSearch.toLowerCase()))} columns={varColumns} rowKey="name" size="small" />
+                </>
+              )
+              : null,
+          },
+          {
+            key: 'status',
+            label: '全局状态',
+            children: activeKey === 'status'
+              ? (
+                <>
+                  <Input placeholder="搜索状态..." value={statusSearch} onChange={(e) => setStatusSearch(e.target.value)} style={{ width: 300, marginBottom: 8 }} />
+                  <Table dataSource={status.filter((v) => !statusSearch || v.name.toLowerCase().includes(statusSearch.toLowerCase()))} columns={varColumns} rowKey="name" size="small" />
+                </>
+              )
+              : null,
+          },
+          {
+            key: 'innodb',
+            label: 'InnoDB 状态',
+            children: activeKey === 'innodb'
+              ? <pre style={{ maxHeight: 500, overflow: 'auto', background: 'var(--bg-hover)', padding: 12, borderRadius: 6, fontSize: 12 }}>{innodbStatus || '无数据'}</pre>
+              : null,
+          },
+        ]}
+      />
 
       <Modal
         open={killConfirmId !== null}

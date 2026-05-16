@@ -66,7 +66,19 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
   const toggle = async (id: string, active: boolean) => {
     if (!connId) return
     try {
-      await api.backup.schedule({ connectionId: connId, action: 'update', id, isActive: active })
+      const existing = schedules.find((item) => item.id === id)
+      if (!existing) throw new Error('定时备份不存在')
+      await api.backup.schedule({
+        connectionId: connId,
+        action: 'update',
+        id,
+        databaseName: existing.databaseName,
+        cronExpression: existing.cronExpression,
+        backupType: existing.backupType as 'full' | 'structure' | 'data',
+        compress: existing.compress,
+        retentionDays: existing.retentionDays,
+        isActive: active,
+      })
       load()
     } catch (e: any) { setError(e.message || '操作失败') }
   }

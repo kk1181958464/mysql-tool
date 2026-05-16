@@ -45,6 +45,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const [activePanel, setActivePanel] = useState('columns')
 
   useEffect(() => {
     if (isEdit && connectionId && database && tableName) {
@@ -235,13 +236,47 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
-        <Tabs items={[
-          { key: 'columns', label: '列', children: <ColumnEditor columns={design.columns} onChange={(columns) => handleDesignChange({ ...design, columns })} /> },
-          { key: 'indexes', label: '索引', children: <IndexEditor indexes={design.indexes} columns={design.columns} onChange={(indexes) => handleDesignChange({ ...design, indexes })} /> },
-          { key: 'fk', label: '外键', children: <ForeignKeyEditor foreignKeys={design.foreignKeys} columns={design.columns} onChange={(foreignKeys) => handleDesignChange({ ...design, foreignKeys })} /> },
-          { key: 'options', label: '选项', children: <TableOptions design={design} onChange={handleDesignChange} /> },
-          { key: 'preview', label: 'DDL 预览', children: <pre style={{ background: 'var(--bg-hover)', padding: 12, borderRadius: 4, overflow: 'auto', fontSize: 12, fontFamily: 'monospace', maxHeight: 500 }}>{ddlPreview}</pre> },
-        ]} />
+        <Tabs
+          activeKey={activePanel}
+          onChange={setActivePanel}
+          items={[
+            {
+              key: 'columns',
+              label: '列',
+              children: activePanel === 'columns'
+                ? <ColumnEditor columns={design.columns} onChange={(columns) => handleDesignChange({ ...design, columns })} />
+                : null,
+            },
+            {
+              key: 'indexes',
+              label: '索引',
+              children: activePanel === 'indexes'
+                ? <IndexEditor indexes={design.indexes} columns={design.columns} onChange={(indexes) => handleDesignChange({ ...design, indexes })} />
+                : null,
+            },
+            {
+              key: 'fk',
+              label: '外键',
+              children: activePanel === 'fk'
+                ? <ForeignKeyEditor foreignKeys={design.foreignKeys} columns={design.columns} onChange={(foreignKeys) => handleDesignChange({ ...design, foreignKeys })} />
+                : null,
+            },
+            {
+              key: 'options',
+              label: '选项',
+              children: activePanel === 'options'
+                ? <TableOptions design={design} onChange={handleDesignChange} />
+                : null,
+            },
+            {
+              key: 'preview',
+              label: 'DDL 预览',
+              children: activePanel === 'preview'
+                ? <pre style={{ background: 'var(--bg-hover)', padding: 12, borderRadius: 4, overflow: 'auto', fontSize: 12, fontFamily: 'monospace', maxHeight: 500 }}>{ddlPreview}</pre>
+                : null,
+            },
+          ]}
+        />
       </div>
 
       {original && <StructureDiff open={diffOpen} onClose={() => setDiffOpen(false)} original={original} current={design} />}

@@ -12,6 +12,9 @@ let db: Database.Database
 const pendingHistoryQueue: Array<Omit<QueryHistoryItem, 'id'>> = []
 let historyFlushTimer: NodeJS.Timeout | null = null
 const HISTORY_FLUSH_DELAY_MS = 200
+const QUERY_HISTORY_MAX_PER_CONNECTION = 5000
+const QUERY_HISTORY_SQL_TEXT_MAX_LENGTH = 20000
+const QUERY_HISTORY_ERROR_MAX_LENGTH = 2000
 
 export function init() {
   const dbPath = path.join(app.getPath('userData'), 'mysql-tool.db')
@@ -103,6 +106,7 @@ function createTables() {
       lastRun TEXT,
       createdAt TEXT DEFAULT (datetime('now'))
     );
+    CREATE INDEX IF NOT EXISTS idx_query_history_connection_id_id ON query_history(connectionId, id);
   `)
 }
 
@@ -115,19 +119,29 @@ function flushPendingHistory(): void {
   const batch = pendingHistoryQueue.splice(0, pendingHistoryQueue.length)
   try {
     const stmt = db.prepare(`INSERT INTO query_history (connectionId,databaseName,sqlText,executionTimeMs,rowCount,isSuccess,errorMessage,isSlow,createdAt) VALUES (?,?,?,?,?,?,?,?,?)`)
+    const pruneThresholdStmt = db.prepare('SELECT id FROM query_history WHERE connectionId = ? ORDER BY id DESC LIMIT 1 OFFSET ?')
+    const pruneStmt = db.prepare('DELETE FROM query_history WHERE connectionId = ? AND id < ?')
     const tx = db.transaction((items: Array<Omit<QueryHistoryItem, 'id'>>) => {
+      const touchedConnectionIds = new Set<string>()
       for (const item of items) {
+        touchedConnectionIds.add(item.connectionId)
         stmt.run(
           item.connectionId,
           item.databaseName,
-          item.sqlText,
+          item.sqlText.slice(0, QUERY_HISTORY_SQL_TEXT_MAX_LENGTH),
           item.executionTimeMs,
           item.rowCount,
           boolToInt(item.isSuccess),
-          item.errorMessage,
+          item.errorMessage.slice(0, QUERY_HISTORY_ERROR_MAX_LENGTH),
           boolToInt(item.isSlow),
           item.createdAt || new Date().toISOString()
         )
+      }
+      for (const connectionId of touchedConnectionIds) {
+        const threshold = pruneThresholdStmt.get(connectionId, QUERY_HISTORY_MAX_PER_CONNECTION - 1) as { id: number } | undefined
+        if (threshold?.id) {
+          pruneStmt.run(connectionId, threshold.id)
+        }
       }
     })
     tx(batch)

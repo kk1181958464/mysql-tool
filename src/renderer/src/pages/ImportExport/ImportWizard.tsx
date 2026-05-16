@@ -30,12 +30,13 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
     const file = e.target.files?.[0]
     if (!file) return
     const ext = file.name.split('.').pop()?.toLowerCase()
+    const fullName = file.name.toLowerCase()
     if (ext === 'csv') setFileType('csv')
     else if (ext === 'xlsx' || ext === 'xls') setFileType('excel')
-    else if (ext === 'sql') setFileType('sql')
-    setFilePath(file.name)
+    else if (ext === 'sql' || fullName.endsWith('.sql.gz')) setFileType('sql')
+    setFilePath((file as any).path || file.name)
 
-    if (connId) {
+    if (connId && ext !== 'sql' && !fullName.endsWith('.sql.gz')) {
       try {
         const preview = await api.importExport.preview((file as any).path || file.name)
         if (preview) {
@@ -57,13 +58,14 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
 
   const execute = async () => {
     if (!connId || !targetDb) return
+    if (fileType !== 'sql' && !targetTable) return
     setLoading(true)
     setProgress(0)
     try {
       const res = await api.importExport.importFile(connId, targetDb, targetTable, filePath, {
         fileType, columnMapping, truncate: options.truncate, ignoreErrors: options.ignoreErrors, batchSize: options.batchSize,
       })
-      setResult({ success: true, imported: res?.imported ?? 0, errors: res?.errors ?? 0 })
+      setResult({ success: true, imported: res?.imported ?? res?.executed ?? 0, errors: res?.errors ?? 0 })
       setProgress(100)
     } catch (e: any) {
       setResult({ success: false, imported: 0, errors: 1, message: e.message || String(e) })
@@ -79,13 +81,15 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
       case 0:
         return (
           <div style={{ padding: 24, textAlign: 'center' }}>
-            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.sql" onChange={handleFileSelect} style={{ display: 'none' }} />
+            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.sql,.sql.gz" onChange={handleFileSelect} style={{ display: 'none' }} />
             <Button icon={<UploadOutlined />} size="large" onClick={() => fileInputRef.current?.click()}>选择文件</Button>
             {filePath && <p style={{ marginTop: 12 }}>已选择: {filePath} ({fileType.toUpperCase()})</p>}
           </div>
         )
       case 1:
-        return previewData.columns.length > 0 ? (
+        return fileType === 'sql' ? (
+          <Alert message="SQL 文件不做表格预览，导入时会按脚本语句执行。" type="info" />
+        ) : previewData.columns.length > 0 ? (
           <Table dataSource={previewData.rows.map((r, i) => ({ ...r, _key: i }))}
             columns={previewData.columns.map((c) => ({ title: c, dataIndex: c, key: c, ellipsis: true }))}
             rowKey="_key" size="small" scroll={{ x: 'max-content' }} />
@@ -97,14 +101,18 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
               <Select style={{ width: 300 }} value={targetDb || undefined} onChange={loadTables} placeholder="选择数据库"
                 options={databases.map((d) => ({ label: d.name, value: d.name }))} />
             </div>
-            <div><Switch checked={isNewTable} onChange={setIsNewTable} /> <span style={{ marginLeft: 8 }}>{isNewTable ? '新建表' : '已有表'}</span></div>
-            {isNewTable ? (
-              <Input placeholder="新表名" value={targetTable} onChange={(e) => setTargetTable(e.target.value)} style={{ width: 300 }} />
-            ) : (
-              <Select style={{ width: 300 }} value={targetTable || undefined} onChange={setTargetTable} placeholder="选择表"
-                options={tables.map((t) => ({ label: t.name, value: t.name }))} />
+            {fileType !== 'sql' && (
+              <>
+                <div><Switch checked={isNewTable} onChange={setIsNewTable} /> <span style={{ marginLeft: 8 }}>{isNewTable ? '新建表' : '已有表'}</span></div>
+                {isNewTable ? (
+                  <Input placeholder="新表名" value={targetTable} onChange={(e) => setTargetTable(e.target.value)} style={{ width: 300 }} />
+                ) : (
+                  <Select style={{ width: 300 }} value={targetTable || undefined} onChange={setTargetTable} placeholder="选择表"
+                    options={tables.map((t) => ({ label: t.name, value: t.name }))} />
+                )}
+              </>
             )}
-            {previewData.columns.length > 0 && (
+            {fileType !== 'sql' && previewData.columns.length > 0 && (
               <Card title="列映射" size="small" style={{ width: '100%' }}>
                 {previewData.columns.map((c) => (
                   <div key={c} style={{ display: 'flex', gap: 8, marginBottom: 4, alignItems: 'center' }}>
@@ -136,7 +144,7 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
               </>
             ) : (
               <Alert type={result.success ? 'success' : 'error'} message={result.success ? '导入完成' : '导入失败'}
-                description={result.success ? `成功导入 ${result.imported} 行，${result.errors} 个错误` : result.message} />
+                description={result.success ? (fileType === 'sql' ? `执行 ${result.imported} 条/行，${result.errors} 个错误` : `成功导入 ${result.imported} 行，${result.errors} 个错误`) : result.message} />
             )}
           </div>
         )

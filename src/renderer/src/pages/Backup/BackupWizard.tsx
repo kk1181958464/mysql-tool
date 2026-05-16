@@ -1,9 +1,10 @@
 import React, { useState } from 'react'
 import { Button, Card, Select, Switch, Alert, Space, Checkbox } from '../../components/ui'
-import { ArrowLeftOutlined, CheckCircleOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import type { BackupRecord } from '../../../../shared/types/table-design'
 
 interface Props { onBack: () => void }
 
@@ -26,8 +27,16 @@ const BackupWizard: React.FC<Props> = ({ onBack }) => {
     try {
       const startTime = Date.now()
       const res = await api.backup.create({ connectionId: connId, databases: selectedDbs, backupType, compress, filePath: filePath || undefined })
+      const records = Array.isArray(res) ? res : [res]
+      const primary = records[0] as BackupRecord | undefined
+      const totalSize = records.reduce((sum, item) => sum + (item?.fileSize || 0), 0)
       setProgress(100)
-      setResult({ success: true, filePath: res?.filePath ?? filePath, size: res?.fileSize ?? 0, duration: Date.now() - startTime })
+      setResult({
+        success: true,
+        filePath: records.length > 1 ? `${records.length} 个备份文件` : (primary?.filePath ?? filePath),
+        size: totalSize,
+        duration: Date.now() - startTime,
+      })
     } catch (e: any) {
       setResult({ success: false, message: e.message || String(e) })
     } finally { setLoading(false) }

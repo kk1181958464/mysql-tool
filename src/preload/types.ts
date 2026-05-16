@@ -1,7 +1,16 @@
 import type { ConnectionConfig, ConnectionStatus, ConnectionSavePayload } from '../shared/types/connection'
 import type { QueryResult, ExplainResult, QueryHistoryItem, Snippet } from '../shared/types/query'
 import type { DatabaseInfo, TableInfo, ColumnDetail, IndexInfo, ForeignKeyInfo, ViewInfo, ProcedureInfo, TriggerInfo, EventInfo, ObjectSearchResult } from '../shared/types/metadata'
-import type { TableDesign, TableDiff, BackupConfig, BackupRecord, BackupSchedule } from '../shared/types/table-design'
+import type {
+  TableDesign,
+  TableDiff,
+  BackupConfig,
+  BackupCreateRequest,
+  BackupRecord,
+  BackupRestoreOptions,
+  BackupSchedule,
+  BackupScheduleRequest,
+} from '../shared/types/table-design'
 
 export interface ImportProgressPayload {
   current: number
@@ -19,6 +28,15 @@ export interface PerfMetricPayload {
   ts?: number
 }
 
+export interface QueryExecuteMultiOptions {
+  optimizeInserts?: boolean
+  stopOnError?: boolean
+  limitResultRows?: boolean
+  maxResultRows?: number
+  saveHistory?: boolean
+  scriptMode?: 'query' | 'import'
+}
+
 export interface ElectronAPI {
   connection: {
     test(config: ConnectionConfig): Promise<ConnectionStatus>
@@ -30,7 +48,7 @@ export interface ElectronAPI {
   }
   query: {
     execute(connectionId: string, sql: string, database?: string): Promise<QueryResult>
-    executeMulti(connectionId: string, sql: string, database?: string, options?: { optimizeInserts?: boolean }): Promise<QueryResult>
+    executeMulti(connectionId: string, sql: string, database?: string, options?: QueryExecuteMultiOptions): Promise<QueryResult>
     explain(connectionId: string, sql: string, database?: string): Promise<ExplainResult[]>
     cancel(connectionId: string): Promise<void>
     format(sql: string): Promise<string>
@@ -64,7 +82,7 @@ export interface ElectronAPI {
     batchDelete(connId: string, db: string, table: string, wheres: Record<string, unknown>[]): Promise<any>
   }
   importExport: {
-    importFile(connId: string, db: string, table: string, filePath: string, options?: any): Promise<{ imported: number }>
+    importFile(connId: string, db: string, table: string, filePath: string, options?: any): Promise<{ imported: number; errors?: number; executed?: number }>
     preview(filePath: string): Promise<{ columns: string[]; rows: any[]; totalRows: number }>
     exportData(connId: string, db: string, sql: string, filePath: string, format: string, options?: any): Promise<void>
     exportStructure(connId: string, db: string, tables: string[], filePath: string): Promise<void>
@@ -77,10 +95,10 @@ export interface ElectronAPI {
     reportMetric(metric: PerfMetricPayload): Promise<void>
   }
   backup: {
-    create(config: BackupConfig): Promise<BackupRecord>
-    restore(connId: string, filePath: string): Promise<void>
+    create(config: BackupConfig | BackupCreateRequest): Promise<BackupRecord | BackupRecord[]>
+    restore(connId: string, filePath: string, options?: BackupRestoreOptions): Promise<void>
     list(connId: string): Promise<BackupRecord[]>
-    schedule(schedule: BackupSchedule): Promise<void>
+    schedule(request: BackupScheduleRequest): Promise<void | BackupSchedule[]>
   }
   object: {
     search(connId: string, db: string, keyword: string): Promise<ObjectSearchResult[]>

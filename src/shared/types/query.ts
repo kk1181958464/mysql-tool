@@ -10,6 +10,8 @@ export interface QueryStatementResult {
   executionTime: number
   rowCount: number
   error: string | null
+  limited?: boolean
+  limitApplied?: number
 }
 
 export interface QueryResult {
@@ -24,6 +26,8 @@ export interface QueryResult {
   statementResults?: QueryStatementResult[]
   successCount?: number
   failCount?: number
+  limited?: boolean
+  limitApplied?: number
 }
 
 export interface ColumnInfo {

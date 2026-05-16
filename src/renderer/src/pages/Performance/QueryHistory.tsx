@@ -5,13 +5,18 @@ import type { QueryHistoryItem } from '../../../../shared/types/query'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useEditorStore } from '../../stores/editor.store'
 import { api } from '../../utils/ipc'
+import { reportPerfMetric } from '../../utils/perf'
 import tableTransformWorker from '../../workers/table-transform.worker?worker'
 
 const PAGE_SIZE = 20
 const WORKER_THRESHOLD = 2000
 const VIRTUAL_THRESHOLD = 12
 
-const QueryHistory: React.FC = () => {
+interface Props {
+  active?: boolean
+}
+
+const QueryHistory: React.FC<Props> = ({ active = true }) => {
   const [history, setHistory] = useState<QueryHistoryItem[]>([])
   const [transformedHistory, setTransformedHistory] = useState<QueryHistoryItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -25,7 +30,7 @@ const QueryHistory: React.FC = () => {
   const transformJobIdRef = useRef(0)
 
   const loadHistory = useCallback(async (targetPage: number, trigger: 'manual' | 'auto' | 'page' = 'manual') => {
-    if (!activeConnectionId) return
+    if (!active || !activeConnectionId) return
     const start = performance.now()
     setLoading(true)
     try {
@@ -34,7 +39,7 @@ const QueryHistory: React.FC = () => {
       const pageData = Array.isArray(data) ? data : []
       setHistory(pageData)
       setPaginationTotal(pageData.length < PAGE_SIZE ? offset + pageData.length : offset + PAGE_SIZE + 1)
-      void api.perf.reportMetric({
+      reportPerfMetric({
         name: 'query_history.refresh_ms',
         value: Number((performance.now() - start).toFixed(2)),
         tags: {
@@ -50,21 +55,22 @@ const QueryHistory: React.FC = () => {
     } finally {
       setLoading(false)
     }
-  }, [activeConnectionId])
+  }, [active, activeConnectionId])
 
   useEffect(() => {
     setPage(1)
   }, [activeConnectionId])
 
   useEffect(() => {
+    if (!active) return
     loadHistory(page, 'page')
-  }, [loadHistory, page])
+  }, [active, loadHistory, page])
 
   useEffect(() => {
-    if (!autoRefresh) return
+    if (!active || !autoRefresh) return
     const timer = setInterval(() => loadHistory(page, 'auto'), 5000)
     return () => clearInterval(timer)
-  }, [autoRefresh, loadHistory, page])
+  }, [active, autoRefresh, loadHistory, page])
 
   useEffect(() => {
     if (!history.length) {
@@ -86,7 +92,7 @@ const QueryHistory: React.FC = () => {
     worker.onmessage = (event: MessageEvent<{ id: string; rows: QueryHistoryItem[] }>) => {
       if (event.data.id !== jobId) return
       setTransformedHistory(event.data.rows)
-      void api.perf.reportMetric({
+      reportPerfMetric({
         name: 'query_history.worker_transform_ms',
         value: Number((performance.now() - workerStart).toFixed(2)),
         tags: {
@@ -118,7 +124,7 @@ const QueryHistory: React.FC = () => {
   useEffect(() => {
     const start = performance.now()
     requestAnimationFrame(() => {
-      void api.perf.reportMetric({
+      reportPerfMetric({
         name: 'query_history.render_cost_ms',
         value: Number((performance.now() - start).toFixed(2)),
         tags: {
@@ -155,7 +161,7 @@ const QueryHistory: React.FC = () => {
         <Switch checked={filters.slowOnly} onChange={(v) => setFilters((f) => ({ ...f, slowOnly: v }))} /> <span>慢查询</span>
         <Switch checked={filters.failedOnly} onChange={(v) => setFilters((f) => ({ ...f, failedOnly: v }))} /> <span>仅失败</span>
         <Switch checked={autoRefresh} onChange={setAutoRefresh} /> <span>自动刷新</span>
-        <Button onClick={() => loadHistory(page, 'manual')}><ReloadOutlined /> 刷新</Button>
+        <Button onClick={() => loadHistory(page, 'manual')} disabled={!active}><ReloadOutlined /> 刷新</Button>
       </Space>
 
       <Table

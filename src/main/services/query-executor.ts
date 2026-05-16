@@ -2,9 +2,10 @@ import mysql from 'mysql2/promise'
 import type { ResultSetHeader } from 'mysql2/promise'
 import * as connectionManager from './connection-manager'
 import * as localStore from './local-store'
-import type { QueryResult, ExplainResult } from '../../shared/types/query'
+import type { QueryResult, QueryStatementResult, ExplainResult } from '../../shared/types/query'
 import * as logger from '../utils/logger'
 import { quoteId } from '../utils/sql'
+import { applyResultRowLimit } from '../utils/sql-result-limit'
 
 /** mysql2 FieldPacket 的运行时字段（类型定义不完整，此处补齐） */
 type MysqlField = { name: string; type?: number; flags?: number }
@@ -25,63 +26,104 @@ function mapFields(fields: MysqlField[]): QueryResult['columns'] {
 }
 
 export async function execute(connectionId: string, sql: string, database?: string): Promise<QueryResult> {
+  if (!sql.trim()) {
+    throw new Error('没有可执行的 SQL 语句')
+  }
+
   const conn = await connectionManager.getConnection(connectionId)
   const start = Date.now()
   let isSuccess = true
   let errorMessage = ''
-  let result: QueryResult
+  let result: QueryResult | null = null
 
   try {
     if (database) await conn.query(`USE ${quoteId(database)}`)
 
     runningQueries.set(connectionId, conn)
-    const [rows, fields] = await conn.query(sql)
+    const limitedSql = applyResultRowLimit(sql, { enabled: true })
+    const [rows, fields] = await conn.query(limitedSql.sql)
     const elapsed = Date.now() - start
-    const isSelect = /^\s*(SELECT|SHOW|DESCRIBE|DESC|EXPLAIN)/i.test(sql)
 
     // 检查是否是多语句执行的结果（数组中包含数组）
     const isMultipleStatements = Array.isArray(rows) && rows.length > 0 && Array.isArray((rows as unknown[])[0])
 
     if (isMultipleStatements) {
-      // 多语句执行：汇总所有语句的结果
+      // 多结果集执行：保留每个结果集/执行头，前端按独立结果展示。
       let totalAffectedRows = 0
       let lastInsertId = 0
-      const allRows: DbRow[] = []
-      let allColumns: QueryResult['columns'] = []
-      let hasSelectResult = false
+      let firstRows: DbRow[] = []
+      let firstColumns: QueryResult['columns'] = []
+      const statementResults: QueryStatementResult[] = []
       const multiRows = rows as unknown[]
       const multiFields = fields as unknown[]
 
       for (let i = 0; i < multiRows.length; i++) {
         const statementResult = multiRows[i]
         const statementFields = multiFields?.[i] as MysqlField[] | undefined
+        const index = i + 1
 
         if (Array.isArray(statementResult)) {
-          hasSelectResult = true
-          allRows.push(...statementResult)
-          if (allColumns.length === 0 && statementFields) {
-            allColumns = mapFields(statementFields)
+          const resultRows = statementResult as DbRow[]
+          const resultColumns = mapFields(statementFields || [])
+          if (firstColumns.length === 0) {
+            firstRows = resultRows
+            firstColumns = resultColumns
           }
+          statementResults.push({
+            index,
+            sql,
+            isSelect: true,
+            success: true,
+            columns: resultColumns,
+            rows: resultRows,
+            affectedRows: 0,
+            insertId: 0,
+            executionTime: elapsed,
+            rowCount: resultRows.length,
+            error: null,
+            limited: limitedSql.limited,
+            limitApplied: limitedSql.limited ? limitedSql.limit : undefined,
+          })
         } else if (statementResult && typeof statementResult === 'object') {
           const header = statementResult as ResultSetHeader
-          totalAffectedRows += header.affectedRows || 0
+          const affectedRows = header.affectedRows || 0
+          const insertId = header.insertId || 0
+          totalAffectedRows += affectedRows
           if (header.insertId && header.insertId > lastInsertId) {
             lastInsertId = header.insertId
           }
+          statementResults.push({
+            index,
+            sql,
+            isSelect: false,
+            success: true,
+            columns: [],
+            rows: [],
+            affectedRows,
+            insertId,
+            executionTime: elapsed,
+            rowCount: 0,
+            error: null,
+          })
         }
       }
 
       result = {
-        columns: allColumns,
-        rows: allRows,
+        columns: firstColumns,
+        rows: firstRows,
         affectedRows: totalAffectedRows,
         insertId: lastInsertId,
         executionTime: elapsed,
-        rowCount: allRows.length,
+        rowCount: firstRows.length,
         sql,
-        isSelect: hasSelectResult,
+        isSelect: firstColumns.length > 0,
+        statementResults,
+        successCount: statementResults.length,
+        failCount: 0,
+        limited: statementResults.some((item) => item.limited),
+        limitApplied: statementResults.find((item) => item.limited)?.limitApplied,
       }
-    } else if (isSelect && Array.isArray(rows)) {
+    } else if (Array.isArray(rows)) {
       result = {
         columns: mapFields(fields as MysqlField[]),
         rows: rows as DbRow[],
@@ -91,6 +133,8 @@ export async function execute(connectionId: string, sql: string, database?: stri
         rowCount: rows.length,
         sql,
         isSelect: true,
+        limited: limitedSql.limited,
+        limitApplied: limitedSql.limited ? limitedSql.limit : undefined,
       }
     } else {
       const info = rows as ResultSetHeader
@@ -119,7 +163,7 @@ export async function execute(connectionId: string, sql: string, database?: stri
         databaseName: database || '',
         sqlText: sql,
         executionTimeMs: elapsed,
-        rowCount: isSuccess ? (result!.rowCount || result!.affectedRows) : 0,
+        rowCount: isSuccess && result ? (result.rowCount || result.affectedRows) : 0,
         isSuccess,
         errorMessage,
         isSlow: elapsed > 1000,
@@ -129,13 +173,17 @@ export async function execute(connectionId: string, sql: string, database?: stri
       logger.warn('Failed to save query history', e)
     }
   }
-  return result!
+  if (!result) {
+    throw new Error('查询执行完成但没有返回结果对象')
+  }
+  return result
 }
 
 export async function explain(connectionId: string, sql: string, database?: string): Promise<ExplainResult[]> {
   const conn = await connectionManager.getConnection(connectionId)
   try {
     if (database) await conn.query(`USE ${quoteId(database)}`)
+    runningQueries.set(connectionId, conn)
     const [rows] = await conn.query(`EXPLAIN ${sql}`)
     return (rows as DbRow[]).map(r => ({
       id: r.id,
@@ -152,6 +200,7 @@ export async function explain(connectionId: string, sql: string, database?: stri
       extra: r.Extra,
     }))
   } finally {
+    runningQueries.delete(connectionId)
     conn.release()
   }
 }

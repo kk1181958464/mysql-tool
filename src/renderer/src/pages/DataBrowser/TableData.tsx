@@ -936,6 +936,10 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       { value: 'startsWith', label: '开头是' },
       { value: 'endsWith', label: '结尾是' },
       ...equalityOptions,
+      { value: '>', label: '>' },
+      { value: '>=', label: '>=' },
+      { value: '<', label: '<' },
+      { value: '<=', label: '<=' },
       { value: 'like', label: '匹配(LIKE)' },
       { value: 'IN', label: '在列表中' },
       // 不常用
@@ -979,6 +983,21 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     applyWhereFilter(draftFilterMode, draftSimpleFilterTree, draftWhereInput)
     setIsFilterModalOpen(false)
   }, [applyWhereFilter, draftFilterMode, draftSimpleFilterTree, draftWhereInput])
+
+  const handleClearFilter = useCallback(() => {
+    const emptyGroup = getDefaultSimpleFilterGroup()
+    setPage(1)
+    setJumpPage('1')
+    setCursor(null)
+    setFilterMode('simple')
+    setSimpleFilterTree(emptyGroup)
+    setAppliedSimpleFilterTree(emptyGroup)
+    setDraftFilterMode('simple')
+    setDraftSimpleFilterTree(cloneSimpleFilterGroup(emptyGroup))
+    setWhereInput('')
+    setWhere('')
+    setDraftWhereInput('')
+  }, [])
 
   const handleAddSimpleFilter = useCallback((groupId: string) => {
     setDraftSimpleFilterTree((prev) => updateGroupInTree(prev, groupId, (target) => ({
@@ -1614,7 +1633,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           <FilterOutlined /> {effectiveWhere ? '编辑筛选' : '筛选'}
         </Button>
         {effectiveWhere ? (
-          <Tag color="primary" title={effectiveWhere}>当前条件：{filterSummary || effectiveWhere}</Tag>
+          <>
+            <Tag color="primary" title={effectiveWhere}>当前条件：{filterSummary || effectiveWhere}</Tag>
+            <Button size="small" style={{ height: 28, padding: '0 12px' }} onClick={handleClearFilter}>
+              删除
+            </Button>
+          </>
         ) : (
           <Tag>未筛选</Tag>
         )}

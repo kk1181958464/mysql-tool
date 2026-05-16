@@ -63,11 +63,29 @@ export interface BackupConfig {
   encrypt: boolean
 }
 
+export interface BackupCreateRequest {
+  id?: string
+  connectionId: string
+  databaseName?: string
+  databases?: string[]
+  backupType: 'full' | 'structure' | 'data'
+  filePath?: string
+  compress: boolean
+  encrypt?: boolean
+}
+
+export interface BackupRestoreOptions {
+  targetDb?: string
+  createNew?: boolean
+  newDbName?: string
+  dropExisting?: boolean
+}
+
 export interface BackupRecord {
   id: string
   connectionId: string
   databaseName: string
-  backupType: string
+  backupType: 'full' | 'structure' | 'data'
   filePath: string
   fileSize: number
   isCompressed: boolean
@@ -81,10 +99,24 @@ export interface BackupSchedule {
   connectionId: string
   databaseName: string
   cronExpression: string
-  backupType: string
+  backupType: 'full' | 'structure' | 'data'
   compress: boolean
   retentionDays: number
   isActive: boolean
   lastRun: string | null
   createdAt: string
+}
+
+export type BackupScheduleAction = 'list' | 'create' | 'update' | 'delete'
+
+export interface BackupScheduleRequest {
+  action: BackupScheduleAction
+  connectionId: string
+  id?: string
+  databaseName?: string
+  cronExpression?: string
+  backupType?: 'full' | 'structure' | 'data'
+  compress?: boolean
+  retentionDays?: number
+  isActive?: boolean
 }

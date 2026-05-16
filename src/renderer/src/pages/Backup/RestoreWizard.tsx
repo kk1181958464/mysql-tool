@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { Button, Card, Select, Switch, Alert, Space, Table, Input } from '../../components/ui'
-import { ArrowLeftOutlined, WarningOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined } from '@ant-design/icons'
 import type { BackupRecord } from '../../../../shared/types/table-design'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
@@ -30,8 +30,16 @@ const RestoreWizard: React.FC<Props> = ({ onBack, records }) => {
     setLoading(true); setProgress(0); setLogs([])
     try {
       const source = sourceType === 'history' ? records.find((r) => r.id === selectedRecord)?.filePath ?? '' : filePath
+      const resolvedTargetDb = createNew ? newDbName.trim() : targetDb.trim()
+      if (!source) throw new Error('请选择备份来源')
+      if (!resolvedTargetDb) throw new Error('请选择目标数据库')
       setLogs((l) => [...l, `开始恢复: ${source}`])
-      await api.backup.restore(connId, source)
+      await api.backup.restore(connId, source, {
+        targetDb: resolvedTargetDb,
+        createNew,
+        newDbName: createNew ? resolvedTargetDb : '',
+        dropExisting,
+      })
       setProgress(100)
       setLogs((l) => [...l, '恢复完成'])
       setResult({ success: true })

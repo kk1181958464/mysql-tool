@@ -226,10 +226,43 @@ export function Table<T extends Record<string, any>>({
     ? dataSource.slice(virtualWindow.start, virtualWindow.end)
     : dataSource
 
+  const scrollStyle: React.CSSProperties = {
+    overflowX: scroll?.x ? 'auto' : undefined,
+    overflowY: scroll?.y ? 'auto' : undefined,
+    maxHeight: scroll?.y,
+  }
+
+  const tableStyle: React.CSSProperties | undefined = scroll?.x
+    ? { minWidth: scroll.x === 'max-content' ? 'max-content' : scroll.x }
+    : undefined
+
+  useEffect(() => {
+    if (!virtualEnabled || !scrollRef.current) return
+
+    const refreshViewport = () => {
+      const el = scrollRef.current
+      if (!el) return
+      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      const nextScrollTop = Math.max(0, Math.min(maxScrollTop, Math.round(el.scrollTop)))
+      const nextViewportHeight = el.clientHeight
+      latestScrollTopRef.current = nextScrollTop
+      latestViewportHeightRef.current = nextViewportHeight
+      setScrollTop((prev) => (prev === nextScrollTop ? prev : nextScrollTop))
+      setViewportHeight((prev) => (prev === nextViewportHeight ? prev : nextViewportHeight))
+    }
+
+    window.addEventListener('focus', refreshViewport)
+    document.addEventListener('visibilitychange', refreshViewport)
+    return () => {
+      window.removeEventListener('focus', refreshViewport)
+      document.removeEventListener('visibilitychange', refreshViewport)
+    }
+  }, [virtualEnabled])
+
   return (
     <div className={`ui-table-wrapper ui-table-${size} ${className}`} style={style}>
-      <div className={`ui-table-scroll ${virtualEnabled ? 'ui-table-scroll-virtual' : ''}`} ref={scrollRef}>
-        <table className={`ui-table ${virtualEnabled ? 'ui-table-virtual-enabled' : ''}`}>
+      <div className={`ui-table-scroll ${virtualEnabled ? 'ui-table-scroll-virtual' : ''}`} ref={scrollRef} style={scrollStyle}>
+        <table className={`ui-table ${virtualEnabled ? 'ui-table-virtual-enabled' : ''}`} style={tableStyle}>
           <colgroup>
             {columns.map((col) => (
               <col key={col.key} style={{ width: getColWidth(col), minWidth: getColWidth(col) }} />

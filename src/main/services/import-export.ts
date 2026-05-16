@@ -1,7 +1,9 @@
 import * as fs from 'fs'
+import * as zlib from 'zlib'
 import { once } from 'events'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import * as path from 'path'
+import type { Writable } from 'stream'
 import { parse as parseStream } from 'csv-parse'
 import { parse as parseSync } from 'csv-parse/sync'
 import { stringify as stringifyStream } from 'csv-stringify'
@@ -9,6 +11,7 @@ import { stringify as stringifySync } from 'csv-stringify/sync'
 import { finished } from 'stream/promises'
 import * as XLSX from 'xlsx'
 import * as connectionManager from './connection-manager'
+import { executeSqlFile } from './sql-script-executor'
 import { quoteId } from '../utils/sql'
 
 type Primitive = string | number | boolean | bigint | null | undefined
@@ -27,8 +30,13 @@ type ExportSqlOptions = {
   onProgress?: (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => void
 }
 
+type SqlExportStreamOptions = ExportSqlOptions & {
+  emitFinished?: boolean
+}
+
 type ImportFileOptions = {
   batchSize?: number
+  ignoreErrors?: boolean
 }
 
 const DEFAULT_IMPORT_BATCH_SIZE = 1000
@@ -84,6 +92,10 @@ function formatTableStructureTitle(name: string): string {
 function formatRecordsTitle(name: string): string {
   // Navicat dump: 不带反引号
   return `-- Records of ${name}`
+}
+
+function formatObjectTitle(type: string, name: string): string {
+  return `-- ${type} structure for ${name}`
 }
 
 function formatNavicatDDL(table: string, ddl: string, defaultCharset?: string, defaultCollate?: string, autoIncrement?: number | null): string {
@@ -358,6 +370,13 @@ async function getTableColumnNames(conn: any, table: string): Promise<string[]> 
   return columns.map((column) => column.name)
 }
 
+async function getSingleColumnPrimaryKey(conn: any, table: string): Promise<string | null> {
+  const [rows] = await conn.query(`SHOW KEYS FROM ${quoteId(table)} WHERE Key_name = 'PRIMARY'`)
+  const keys = rows as Array<{ Column_name: string; Seq_in_index: number }>
+  const ordered = keys.sort((a, b) => Number(a.Seq_in_index) - Number(b.Seq_in_index))
+  return ordered.length === 1 ? ordered[0].Column_name : null
+}
+
 async function getExistingTableNames(conn: any): Promise<Set<string>> {
   const [tableRows] = await conn.query('SHOW FULL TABLES WHERE Table_type IN (\'BASE TABLE\', \'VIEW\')')
   return new Set(
@@ -553,23 +572,230 @@ function getRowColumns(rows: RowRecord[]): string[] {
   return rows.length ? Object.keys(rows[0]) : []
 }
 
-async function writeChunk(stream: fs.WriteStream, chunk: string): Promise<void> {
+async function writeChunk(stream: Writable, chunk: string): Promise<void> {
   if (!stream.write(chunk, 'utf-8')) {
     await once(stream, 'drain')
   }
+}
+
+async function getObjectNames(conn: any, sql: string, db: string): Promise<string[]> {
+  const [rows] = await conn.query(sql, [db])
+  return (rows as Array<Record<string, unknown>>)
+    .map((row) => String(row.name ?? Object.values(row)[0] ?? ''))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+}
+
+async function getTriggerNames(conn: any, db: string): Promise<string[]> {
+  return getObjectNames(
+    conn,
+    'SELECT TRIGGER_NAME AS name FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?',
+    db,
+  )
+}
+
+async function getRoutineNames(conn: any, db: string, type: 'PROCEDURE' | 'FUNCTION'): Promise<string[]> {
+  const [rows] = await conn.query(
+    'SELECT ROUTINE_NAME AS name FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = ?',
+    [db, type],
+  )
+  return (rows as Array<Record<string, unknown>>)
+    .map((row) => String(row.name ?? ''))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+}
+
+async function getEventNames(conn: any, db: string): Promise<string[]> {
+  return getObjectNames(
+    conn,
+    'SELECT EVENT_NAME AS name FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ?',
+    db,
+  )
 }
 
 function normalizeNavicatSqlText(sql: string): string {
   return sql.replace(/\r?\n/g, NAVICAT_EOL)
 }
 
-async function writeNavicatChunk(stream: fs.WriteStream, chunk: string): Promise<void> {
+async function writeNavicatChunk(stream: Writable, chunk: string): Promise<void> {
   await writeChunk(stream, normalizeNavicatSqlText(chunk))
 }
 
-async function closeStream(stream: fs.WriteStream): Promise<void> {
+async function closeStream(stream: Writable): Promise<void> {
   stream.end()
   await finished(stream)
+}
+
+async function exportToSqlStream(
+  connId: string,
+  db: string,
+  tables: string[],
+  out: Writable,
+  options?: SqlExportStreamOptions,
+): Promise<void> {
+  const conn = await connectionManager.getConnection(connId)
+  try {
+    await conn.query(`USE ${quoteId(db)}`)
+
+    const requestedTables = tables.length
+      ? [...tables]
+      : Array.from(await getExistingTableNames(conn)).sort((a, b) => a.localeCompare(b))
+
+    const existingTables = await getExistingTableNames(conn)
+    assertTablesExist(existingTables, requestedTables)
+
+    await writeNavicatChunk(out, await buildNavicatHeader(connId, conn, db))
+    await writeNavicatChunk(out, 'SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
+
+    const dropTable = options?.dropTable !== false
+    const createTable = options?.createTable !== false
+    const includeData = options?.includeData !== false
+    const insertHead = 'INSERT INTO'
+
+    for (let tableIndex = 0; tableIndex < requestedTables.length; tableIndex += 1) {
+      const table = requestedTables[tableIndex]
+      const reportProgress = (rows: number, doneOverride?: number) => {
+        options?.onProgress?.({
+          current: table,
+          done: doneOverride ?? tableIndex,
+          total: requestedTables.length,
+          rows,
+        })
+      }
+
+      reportProgress(0)
+
+      if (createTable) {
+        const [ddlRows] = await conn.query(`SHOW CREATE TABLE ${quoteId(table)}`)
+        const row0 = (ddlRows as Record<string, string>[])[0] || {}
+        const ddlRaw = row0['Create Table'] || row0['Create View']
+
+        if (ddlRaw) {
+          let ddlBlock = `-- ----------------------------\n${formatTableStructureTitle(table)}\n-- ----------------------------\n`
+
+          if (dropTable) {
+            const isView = Boolean(row0['Create View']) && !row0['Create Table']
+            ddlBlock += isView
+              ? `DROP VIEW IF EXISTS ${quoteId(table)};\n`
+              : `DROP TABLE IF EXISTS ${quoteId(table)};\n`
+          }
+
+          if (row0['Create Table']) {
+            const autoInc = await getTableAutoIncrement(conn, db, table)
+            ddlBlock += `${formatNavicatDDL(table, ddlRaw, undefined, undefined, autoInc)}\n\n`
+          } else {
+            const body = ddlRaw.trimEnd().endsWith(';') ? ddlRaw.trimEnd().slice(0, -1) : ddlRaw.trimEnd()
+            ddlBlock += `${body};\n\n`
+          }
+
+          await writeNavicatChunk(out, ddlBlock)
+        }
+      }
+
+      if (includeData) {
+        const recordsHeader = `-- ----------------------------\n${formatRecordsTitle(table)}\n-- ----------------------------\n`
+        await writeNavicatChunk(out, recordsHeader)
+      }
+
+      if (!includeData) {
+        reportProgress(0, tableIndex + 1)
+        continue
+      }
+
+      const tableColumns = await getTableColumns(conn, table)
+      if (!tableColumns.length) {
+        await writeNavicatChunk(out, '\n')
+        reportProgress(0, tableIndex + 1)
+        continue
+      }
+
+      const selectSql = tableColumns.some((c) => isJsonColumnType(c.type))
+        ? `SELECT ${tableColumns
+            .map((c) => (isJsonColumnType(c.type)
+              ? `CAST(${quoteId(c.name)} AS CHAR) AS ${quoteId(c.name)}`
+              : `${quoteId(c.name)}`))
+            .join(', ')} FROM ${quoteId(table)}`
+        : undefined
+
+      let exportedRows = 0
+      await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
+        if (!rows.length) return
+        for (const row of rows) {
+          const vals = getRowNavicatSqlValues(row, tableColumns).join(', ')
+          await writeNavicatChunk(out, `${insertHead} ${quoteId(table)} VALUES (${vals});\n`)
+        }
+        exportedRows += rows.length
+        reportProgress(exportedRows)
+      }, selectSql)
+
+      await writeNavicatChunk(out, '\n')
+      reportProgress(exportedRows, tableIndex + 1)
+    }
+
+    await exportTriggers(conn, db, out)
+    await exportRoutines(conn, db, out, 'PROCEDURE')
+    await exportRoutines(conn, db, out, 'FUNCTION')
+    await exportEvents(conn, db, out)
+    await writeNavicatChunk(out, 'SET FOREIGN_KEY_CHECKS = 1;\n')
+
+    if (options?.emitFinished !== false) {
+      options?.onProgress?.({
+        current: requestedTables[requestedTables.length - 1] || '',
+        done: requestedTables.length,
+        total: requestedTables.length,
+        rows: 0,
+        finished: true,
+      })
+    }
+  } finally {
+    conn.release()
+  }
+}
+
+async function writeDelimitedCreate(out: Writable, sql: string): Promise<void> {
+  const body = sql.trim().replace(/;\s*$/, '')
+  await writeNavicatChunk(out, 'DELIMITER ;;\n')
+  await writeNavicatChunk(out, `${body};;\n`)
+  await writeNavicatChunk(out, 'DELIMITER ;\n\n')
+}
+
+async function exportTriggers(conn: any, db: string, out: Writable): Promise<void> {
+  const names = await getTriggerNames(conn, db)
+  for (const name of names) {
+    const [rows] = await conn.query(`SHOW CREATE TRIGGER ${quoteId(name)}`)
+    const createSql = (rows as Array<Record<string, string>>)[0]?.['SQL Original Statement']
+      || (rows as Array<Record<string, string>>)[0]?.['Create Trigger']
+    if (!createSql) continue
+    await writeNavicatChunk(out, `-- ----------------------------\n${formatObjectTitle('Trigger', name)}\n-- ----------------------------\n`)
+    await writeNavicatChunk(out, `DROP TRIGGER IF EXISTS ${quoteId(name)};\n`)
+    await writeDelimitedCreate(out, createSql)
+  }
+}
+
+async function exportRoutines(conn: any, db: string, out: Writable, type: 'PROCEDURE' | 'FUNCTION'): Promise<void> {
+  const names = await getRoutineNames(conn, db, type)
+  const titleType = type === 'PROCEDURE' ? 'Procedure' : 'Function'
+  const createKey = type === 'PROCEDURE' ? 'Create Procedure' : 'Create Function'
+  for (const name of names) {
+    const [rows] = await conn.query(`SHOW CREATE ${type} ${quoteId(name)}`)
+    const createSql = (rows as Array<Record<string, string>>)[0]?.[createKey]
+    if (!createSql) continue
+    await writeNavicatChunk(out, `-- ----------------------------\n${formatObjectTitle(titleType, name)}\n-- ----------------------------\n`)
+    await writeNavicatChunk(out, `DROP ${type} IF EXISTS ${quoteId(name)};\n`)
+    await writeDelimitedCreate(out, createSql)
+  }
+}
+
+async function exportEvents(conn: any, db: string, out: Writable): Promise<void> {
+  const names = await getEventNames(conn, db)
+  for (const name of names) {
+    const [rows] = await conn.query(`SHOW CREATE EVENT ${quoteId(name)}`)
+    const createSql = (rows as Array<Record<string, string>>)[0]?.['Create Event']
+    if (!createSql) continue
+    await writeNavicatChunk(out, `-- ----------------------------\n${formatObjectTitle('Event', name)}\n-- ----------------------------\n`)
+    await writeNavicatChunk(out, `DROP EVENT IF EXISTS ${quoteId(name)};\n`)
+    await writeDelimitedCreate(out, createSql)
+  }
 }
 
 async function queryInBatches(
@@ -588,11 +814,23 @@ async function queryInBatches(
       await conn.query(`USE ${quoteId(db)}`)
       let offset = 0
       const baseSelect = selectSql || `SELECT * FROM ${quoteId(table)}`
+      const cursorColumn = selectSql ? null : await getSingleColumnPrimaryKey(conn, table)
+      let lastCursorValue: unknown = null
       while (true) {
-        const [rows] = await conn.query(`${baseSelect} LIMIT ${batchSize} OFFSET ${offset}`)
+        const [rows] = cursorColumn
+          ? lastCursorValue === null
+            ? await conn.query(`${baseSelect} ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`)
+            : await conn.query(
+                `${baseSelect} WHERE ${quoteId(cursorColumn)} > ? ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`,
+                [lastCursorValue]
+              )
+          : await conn.query(`${baseSelect} LIMIT ${batchSize} OFFSET ${offset}`)
         const batch = rows as RowRecord[]
         if (!batch.length) break
         await onBatch(batch, offset)
+        if (cursorColumn) {
+          lastCursorValue = batch[batch.length - 1]?.[cursorColumn]
+        }
         offset += batch.length
         if (batch.length < batchSize) break
       }
@@ -688,6 +926,30 @@ export async function importExcel(connId: string, db: string, table: string, fil
   return { imported }
 }
 
+export async function importSQL(connId: string, db: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number; errors: number; executed: number }> {
+  const input = filePath.toLowerCase().endsWith('.gz')
+    ? fs.createReadStream(filePath).pipe(zlib.createGunzip())
+    : filePath
+  const result = await executeSqlFile(
+    connId,
+    input,
+    db || undefined,
+    {
+      optimizeInserts: true,
+      stopOnError: options?.ignoreErrors !== true,
+    },
+  )
+  if (result.errors > 0 && options?.ignoreErrors !== true) {
+    throw new Error(result.firstError || 'SQL 导入失败')
+  }
+
+  return {
+    imported: result.imported,
+    errors: result.errors,
+    executed: result.executed,
+  }
+}
+
 export async function exportToCSV(connId: string, db: string, sql: string, filePath: string): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
   const table = extractTableFromSelectSql(sql)
@@ -777,156 +1039,44 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
 }
 
 export async function exportToSQL(connId: string, db: string, tables: string[], filePath: string, options?: ExportSqlOptions): Promise<void> {
-  const conn = await connectionManager.getConnection(connId)
-
   let tmpPath: string | null = null
   let out: fs.WriteStream | null = null
 
   try {
-    await conn.query(`USE ${quoteId(db)}`)
-
-    // tables 为空时：主进程兜底拉全库对象（BASE TABLE + VIEW）
-    const requestedTables = tables.length
-      ? [...tables]
-      : Array.from(await getExistingTableNames(conn)).sort((a, b) => a.localeCompare(b))
-
-    const existingTables = await getExistingTableNames(conn)
-    assertTablesExist(existingTables, requestedTables)
-
     await mkdir(path.dirname(filePath), { recursive: true })
 
-    // 临时文件 + 成功后原子替换，杜绝半截 SQL 落盘
     tmpPath = path.join(
       path.dirname(filePath),
       `${path.basename(filePath)}.tmp.${process.pid}.${Date.now()}`
     )
     out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
-
-    await writeNavicatChunk(out, await buildNavicatHeader(connId, conn, db))
-    await writeNavicatChunk(out, 'SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
-
-    const dropTable = options?.dropTable !== false
-    const createTable = options?.createTable !== false
-    const includeData = options?.includeData !== false
-
-    // NavicatCompat：强制逐行、无列名列表
-    const insertHead = 'INSERT INTO'
-
-    for (let tableIndex = 0; tableIndex < requestedTables.length; tableIndex += 1) {
-      const table = requestedTables[tableIndex]
-      const reportProgress = (rows: number, doneOverride?: number) => {
-        options?.onProgress?.({
-          current: table,
-          done: doneOverride ?? tableIndex,
-          total: requestedTables.length,
-          rows,
-        })
-      }
-
-      reportProgress(0)
-
-      // DDL
-      if (createTable) {
-        const [ddlRows] = await conn.query(`SHOW CREATE TABLE ${quoteId(table)}`)
-        const row0 = (ddlRows as Record<string, string>[])[0] || {}
-        const ddlRaw = row0['Create Table'] || row0['Create View']
-
-        if (ddlRaw) {
-          let ddlBlock = `-- ----------------------------\n${formatTableStructureTitle(table)}\n-- ----------------------------\n`
-
-          if (dropTable) {
-            const isView = Boolean(row0['Create View']) && !row0['Create Table']
-            ddlBlock += isView
-              ? `DROP VIEW IF EXISTS ${quoteId(table)};\n`
-              : `DROP TABLE IF EXISTS ${quoteId(table)};\n`
-          }
-
-          if (row0['Create Table']) {
-            const autoInc = await getTableAutoIncrement(conn, db, table)
-            ddlBlock += `${formatNavicatDDL(table, ddlRaw, undefined, undefined, autoInc)}\n\n`
-          } else {
-            // VIEW：不强行重排（样例库未出现 VIEW），保留原始输出并确保分号
-            const body = ddlRaw.trimEnd().endsWith(';') ? ddlRaw.trimEnd().slice(0, -1) : ddlRaw.trimEnd()
-            ddlBlock += `${body};\n\n`
-          }
-
-          await writeNavicatChunk(out, ddlBlock)
-        }
-      }
-
-      // Records 区块：即使 0 行也输出
-      if (includeData) {
-        const recordsHeader = `-- ----------------------------\n${formatRecordsTitle(table)}\n-- ----------------------------\n`
-        await writeNavicatChunk(out, recordsHeader)
-      }
-
-      // 数据导出
-      if (!includeData) {
-        reportProgress(0, tableIndex + 1)
-        continue
-      }
-
-      const tableColumns = await getTableColumns(conn, table)
-      if (!tableColumns.length) {
-        await writeNavicatChunk(out, '\n')
-        reportProgress(0, tableIndex + 1)
-        continue
-      }
-
-      // 为逐字符对齐 Navicat：JSON 列需要保留 JSON literal null 的“文本形态”。
-      // MySQL JSON literal null 在 Navicat dump 中表现为字符串 'null'，但 mysql2 可能直接返回 JS null。
-      // 通过 CAST(jsonCol AS CHAR) 可让 JSON literal null 读取为 "null"，从而导出为 'null'。
-      const selectSql = tableColumns.some((c) => isJsonColumnType(c.type))
-        ? `SELECT ${tableColumns
-            .map((c) => (isJsonColumnType(c.type)
-              ? `CAST(${quoteId(c.name)} AS CHAR) AS ${quoteId(c.name)}`
-              : `${quoteId(c.name)}`))
-            .join(', ')} FROM ${quoteId(table)}`
-        : undefined
-
-      let exportedRows = 0
-      await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
-        if (!rows.length) return
-        for (const row of rows) {
-          const vals = getRowNavicatSqlValues(row, tableColumns).join(', ')
-          await writeNavicatChunk(out, `${insertHead} ${quoteId(table)} VALUES (${vals});\n`)
-        }
-        exportedRows += rows.length
-        reportProgress(exportedRows)
-      }, selectSql)
-
-      await writeNavicatChunk(out, '\n')
-      reportProgress(exportedRows, tableIndex + 1)
-    }
-
-    await writeNavicatChunk(out, 'SET FOREIGN_KEY_CHECKS = 1;\n')
+    await exportToSqlStream(connId, db, tables, out, options)
     await closeStream(out)
 
     await fs.promises.rename(tmpPath, filePath)
-
-    // 注意：finished 仅代表“全局完成（已 rename 成最终文件名）”，避免 UI 过早显示完成。
-    options?.onProgress?.({
-      current: requestedTables[requestedTables.length - 1] || '',
-      done: requestedTables.length,
-      total: requestedTables.length,
-      rows: 0,
-      finished: true,
-    })
-
     tmpPath = null
   } finally {
     try {
       if (out && !out.writableFinished) {
         out.destroy()
       }
-    } finally {
-      conn.release()
-
       if (tmpPath) {
         try { await fs.promises.unlink(tmpPath) } catch { /* ignore */ }
       }
+    } finally {
+      // no-op
     }
   }
+}
+
+export async function exportToSqlWritable(
+  connId: string,
+  db: string,
+  tables: string[],
+  writable: Writable,
+  options?: ExportSqlOptions,
+): Promise<void> {
+  await exportToSqlStream(connId, db, tables, writable, { ...options, emitFinished: false })
 }
 
 export async function exportStructure(connId: string, db: string, tables: string[], filePath: string): Promise<void> {
