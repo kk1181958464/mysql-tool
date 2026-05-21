@@ -49,7 +49,7 @@ const DataBrowser: React.FC<Props> = ({ tabId }) => {
               key: 'data',
               label: '数据',
               children: activeKey === 'data'
-                ? <TableData key={`data-${refreshKey}`} tabId={tab.id} connectionId={tab.connectionId} database={tab.database} table={tab.table} />
+                ? <TableData tabId={tab.id} connectionId={tab.connectionId} database={tab.database} table={tab.table} refreshVersion={refreshKey} />
                 : null,
             },
             {

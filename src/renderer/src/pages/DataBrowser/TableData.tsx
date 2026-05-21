@@ -17,6 +17,7 @@ interface Props {
   connectionId: string
   database: string
   table: string
+  refreshVersion?: number
 }
 
 interface KeysetCursor {
@@ -339,8 +340,67 @@ const normalizeIpcErrorMessage = (raw: unknown): string => {
     .trim()
 }
 
-const toCellKey = (rowKey: string, colName: string) => `${rowKey}:${colName}`
+const toCellKey = (rowKey: string, colName: string) => JSON.stringify([rowKey, colName])
 const toCellDomId = (rowKey: string, colName: string) => encodeURIComponent(toCellKey(rowKey, colName))
+
+const parseCellKey = (cellKey: string): { rowKey: string; colName: string } | null => {
+  try {
+    const parsed = JSON.parse(cellKey)
+    if (Array.isArray(parsed) && parsed.length === 2) {
+      const [rowKey, colName] = parsed.map(String)
+      if (rowKey && colName) return { rowKey, colName }
+    }
+  } catch {
+    // Keep compatibility with selections created by the old row:column key format.
+  }
+  const splitAt = cellKey.indexOf(':')
+  if (splitAt <= 0) return null
+  const rowKey = cellKey.slice(0, splitAt)
+  const colName = cellKey.slice(splitAt + 1)
+  if (!rowKey || !colName) return null
+  return { rowKey, colName }
+}
+
+const parseClipboardGrid = (text: string): string[][] => {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  const input = normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized
+  const rows: string[][] = []
+  let row: string[] = []
+  let cell = ''
+  let inQuotes = false
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i]
+    if (ch === '"') {
+      if (inQuotes && input[i + 1] === '"') {
+        cell += '"'
+        i += 1
+        continue
+      }
+      if (inQuotes || cell.length === 0) {
+        inQuotes = !inQuotes
+        continue
+      }
+    }
+    if (ch === '\t' && !inQuotes) {
+      row.push(cell)
+      cell = ''
+      continue
+    }
+    if (ch === '\n' && !inQuotes) {
+      row.push(cell)
+      rows.push(row)
+      row = []
+      cell = ''
+      continue
+    }
+    cell += ch
+  }
+
+  row.push(cell)
+  rows.push(row)
+  return rows
+}
 
 // 可编辑单元格 - Navicat 风格
 const EditableCell: React.FC<{
@@ -491,7 +551,7 @@ const EditableCell: React.FC<{
   )
 }, (prev, next) => prev.value === next.value && prev.cellDomId === next.cellDomId && prev.isSelected === next.isSelected && prev.isFocused === next.isFocused && prev.colType === next.colType && prev.isRecentlyUpdated === next.isRecentlyUpdated)
 
-export const TableData: React.FC<Props> = ({ tabId, connectionId, database, table }) => {
+export const TableData: React.FC<Props> = ({ tabId, connectionId, database, table, refreshVersion = 0 }) => {
   const [result, setResult] = useState<QueryResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
@@ -572,6 +632,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     () => filterMode === 'simple' ? describeSimpleFilterNode(appliedSimpleFilterTree) : (where.trim() ? `高级 WHERE: ${where.trim()}` : ''),
     [filterMode, appliedSimpleFilterTree, where]
   )
+
+  const sortSummary = useMemo(() => {
+    const match = orderBy.match(/^`?([^`]+)`?\s+(ASC|DESC)$/i)
+    if (!match) return ''
+    return `${match[1]} ${match[2].toUpperCase() === 'DESC' ? '降序' : '升序'}`
+  }, [orderBy])
 
   const countCacheKey = useMemo(
     () => `${connectionId}|${database}|${table}|${effectiveWhere.trim()}`,
@@ -731,6 +797,15 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     loadColumns(connectionId, database, table).catch(() => {})
   }, [connectionId, database, table, loadColumns])
 
+  const lastRefreshVersionRef = useRef(refreshVersion)
+
+  useEffect(() => {
+    if (refreshVersion === lastRefreshVersionRef.current) return
+    lastRefreshVersionRef.current = refreshVersion
+    countCacheRef.current.delete(countCacheKey)
+    fetchData('reset', true, page)
+  }, [refreshVersion, countCacheKey, fetchData, page])
+
   useEffect(() => {
     if (paginationMode === 'auto' && !result) {
       setPage(1)
@@ -857,7 +932,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     const colExists = result.columns.some((c) => c.name === colName)
     if (!colExists) return
     const next = new Set<string>()
-    allRowKeys.forEach((rowKey) => next.add(`${rowKey}:${colName}`))
+    allRowKeys.forEach((rowKey) => next.add(toCellKey(rowKey, colName)))
     setSelectedCells(next)
     anchorCellRef.current = { rowKey: allRowKeys[0], colName }
   }, [result?.columns, allRowKeys])
@@ -1118,6 +1193,76 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }, [result?.columns, allRowKeys])
 
   useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (!result?.columns?.length || allRowKeys.length === 0 || selectedCells.size === 0) return
+      const active = document.activeElement as HTMLElement | null
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
+      const root = rootRef.current
+      if (!root) return
+      const target = e.target instanceof HTMLElement ? e.target : null
+      if (target?.closest('.ui-modal, .context-menu')) return
+      const activeIsPage = active === document.body || active === document.documentElement
+      const targetIsPage = target === document.body || target === document.documentElement
+      if (active && !activeIsPage && !root.contains(active)) return
+      if (target && !targetIsPage && !root.contains(target)) return
+
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      if (text.length === 0) return
+
+      const colNames = result.columns.map((c) => c.name)
+      const selected = Array.from(selectedCells)
+        .map(parseCellKey)
+        .filter((cell): cell is { rowKey: string; colName: string } => !!cell)
+        .map((cell) => ({
+          ...cell,
+          rowIndex: allRowKeys.indexOf(cell.rowKey),
+          colIndex: colNames.indexOf(cell.colName),
+        }))
+        .filter((cell) => cell.rowIndex >= 0 && cell.colIndex >= 0)
+
+      if (selected.length === 0) return
+
+      const clipboardRows = parseClipboardGrid(text)
+      if (clipboardRows.length === 0) return
+
+      e.preventDefault()
+
+      const updatedCells = new Set<string>()
+      const applyCell = (rowKey: string, colName: string, value: string) => {
+        handleCellChange(rowKey, colName, value === '' ? null : value)
+        updatedCells.add(toCellKey(rowKey, colName))
+      }
+
+      if (clipboardRows.length === 1 && clipboardRows[0].length === 1 && selected.length > 1) {
+        const value = clipboardRows[0][0]
+        selected.forEach((cell) => applyCell(cell.rowKey, cell.colName, value))
+      } else {
+        const startRow = Math.min(...selected.map((cell) => cell.rowIndex))
+        const startCol = Math.min(...selected.map((cell) => cell.colIndex))
+        clipboardRows.forEach((clipboardRow, rowOffset) => {
+          const rowKey = allRowKeys[startRow + rowOffset]
+          if (!rowKey) return
+          clipboardRow.forEach((value, colOffset) => {
+            const colName = colNames[startCol + colOffset]
+            if (!colName) return
+            applyCell(rowKey, colName, value)
+          })
+        })
+      }
+
+      if (updatedCells.size === 0) return
+      setSelectedCells(updatedCells)
+      const firstCellKey = updatedCells.values().next().value as string | undefined
+      const first = firstCellKey ? parseCellKey(firstCellKey) : null
+      if (first) anchorCellRef.current = first
+      markCellsRecentlyUpdated(updatedCells)
+    }
+
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [result?.columns, allRowKeys, selectedCells, handleCellChange, markCellsRecentlyUpdated])
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
       if (e.ctrlKey || e.metaKey || e.altKey) return
@@ -1137,11 +1282,9 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         }
         const first = selectedCells.values().next().value as string | undefined
         if (!first) return null
-        const splitAt = first.indexOf(':')
-        if (splitAt <= 0) return null
-        const rowKey = first.slice(0, splitAt)
-        const colName = first.slice(splitAt + 1)
-        if (!rowKey || !colName) return null
+        const parsed = parseCellKey(first)
+        if (!parsed) return null
+        const { rowKey, colName } = parsed
         if (!allRowKeys.includes(rowKey) || !colNames.includes(colName)) return null
         return { rowKey, colName }
       }
@@ -1337,11 +1480,9 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       e.preventDefault()
       const nextValue = e.key
       selectedCells.forEach((cellKey) => {
-        const splitAt = cellKey.indexOf(':')
-        if (splitAt <= 0) return
-        const rowKey = cellKey.slice(0, splitAt)
-        const colName = cellKey.slice(splitAt + 1)
-        if (!colName) return
+        const cell = parseCellKey(cellKey)
+        if (!cell) return
+        const { rowKey, colName } = cell
         handleCellChange(rowKey, colName, nextValue)
       })
       markCellsRecentlyUpdated(selectedCells)
@@ -1546,6 +1687,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
   const dataCols = useMemo(() => result?.columns.map((col) => {
     const columnComment = columnDetailsByName.get(col.name)?.comment?.trim() || ''
+    const isSorted = orderBy.startsWith(`\`${col.name}\``)
+    const sortDirection = isSorted && /\bDESC$/i.test(orderBy) ? 'DESC' : isSorted ? 'ASC' : ''
     return {
       key: col.name,
       title: (
@@ -1559,6 +1702,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{ fontWeight: 600 }}>{col.name}</div>
+            {sortDirection && (
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 700 }}>
+                {sortDirection === 'DESC' ? '↓' : '↑'}
+              </span>
+            )}
             <button
               type="button"
               className="header-menu-btn"
@@ -1619,7 +1767,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         )
       },
     }
-  }) || [], [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange])
+  }) || [], [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, orderBy, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange])
 
   const columns = useMemo(() => [checkboxCol, ...dataCols], [checkboxCol, dataCols])
   const isKeysetMode = lastQueryMode === 'keyset'
@@ -1641,6 +1789,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           </>
         ) : (
           <Tag>未筛选</Tag>
+        )}
+        {sortSummary ? (
+          <Tag color="primary" title={orderBy}>当前排序：{sortSummary}</Tag>
+        ) : (
+          <Tag>未排序</Tag>
         )}
         <Button size="small" style={{ height: 28, padding: '0 12px' }} disabled={newRows.length > 0} onClick={() => {
           newRowCounter.current += 1
