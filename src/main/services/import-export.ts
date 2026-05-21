@@ -39,6 +39,10 @@ type ImportFileOptions = {
   ignoreErrors?: boolean
 }
 
+type ExportExcelOptions = {
+  sheetName?: string
+}
+
 const DEFAULT_IMPORT_BATCH_SIZE = 1000
 const MIN_IMPORT_BATCH_SIZE = 100
 const MAX_IMPORT_BATCH_SIZE = 10000
@@ -1036,6 +1040,32 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
   } finally {
     conn.release()
   }
+}
+
+export async function exportToExcel(connId: string, db: string, sql: string, filePath: string, options?: ExportExcelOptions): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const table = extractTableFromSelectSql(sql)
+  const rows: RowRecord[] = []
+
+  if (table) {
+    await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (batchRows) => {
+      rows.push(...batchRows)
+    })
+  } else {
+    const conn = await connectionManager.getConnection(connId)
+    try {
+      if (db) await conn.query(`USE ${quoteId(db)}`)
+      const [queryRows] = await conn.query(sql)
+      rows.push(...(queryRows as RowRecord[]))
+    } finally {
+      conn.release()
+    }
+  }
+
+  const wb = XLSX.utils.book_new()
+  const sheet = XLSX.utils.json_to_sheet(rows.map((row) => normalizeRowForJson(row, Object.keys(row))))
+  XLSX.utils.book_append_sheet(wb, sheet, (options?.sheetName || 'Sheet1').slice(0, 31))
+  XLSX.writeFile(wb, filePath)
 }
 
 export async function exportToSQL(connId: string, db: string, tables: string[], filePath: string, options?: ExportSqlOptions): Promise<void> {
