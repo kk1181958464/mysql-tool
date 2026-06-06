@@ -1,5 +1,5 @@
 import { api } from './ipc'
-import type { PerfMetricPayload } from '../../../../preload/types'
+import type { PerfMetricPayload } from '../../../preload/types'
 
 const PERF_METRICS_ENABLED = import.meta.env.DEV
 

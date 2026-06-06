@@ -112,7 +112,7 @@ export function registerAllIPC() {
     }
 
     if (key === HEARTBEAT_AUTOTUNE_SETTING_KEY) {
-      const effective = connectionManager.updateHeartbeatAutoTuneEnabled(value)
+      const effective = connectionManager.updateHeartbeatAutoTuneEnabled(String(value).toLowerCase() === 'true')
       if (String(effective) !== value) {
         localStore.settings.set(key, String(effective))
       }

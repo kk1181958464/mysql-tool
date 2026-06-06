@@ -10,7 +10,7 @@ import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
 import { api } from '../../utils/ipc'
 import type { TableInfo } from '../../../../shared/types/metadata'
-import type { ImportProgressPayload } from '../../../../../preload/types'
+import type { ImportProgressPayload } from '../../../../preload/types'
 
 interface Props {
   connectionId: string

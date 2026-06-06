@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise'
-import type { ResultSetHeader } from 'mysql2/promise'
+import type { ConnectionOptions, ResultSetHeader } from 'mysql2/promise'
 import * as fs from 'fs'
 import * as readline from 'readline'
 import type { Readable } from 'stream'
@@ -18,6 +18,20 @@ const COMPOUND_CREATE_START = /^CREATE\s+(?:DEFINER\s*=\s*(?:`[^`]+`|[^`\s]+)@(?
 const BLOCK_START_KEYWORDS = new Set(['BEGIN', 'CASE', 'IF', 'LOOP', 'REPEAT', 'WHILE'])
 
 const yieldToEventLoop = async () => new Promise<void>((resolve) => setImmediate(resolve))
+
+const getScriptConnectionOptions = (connectionId: string, database?: string): ConnectionOptions => {
+  const pool = connectionManager.getPool(connectionId) as { pool?: { config?: { connectionConfig?: Record<string, unknown> } }; config?: { connectionConfig?: Record<string, unknown> } }
+  const poolConfig = (pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {}) as Record<string, unknown>
+  return {
+    host: String(poolConfig.host || '127.0.0.1'),
+    port: Number(poolConfig.port || 3306),
+    user: String(poolConfig.user || ''),
+    password: poolConfig.password === undefined ? undefined : String(poolConfig.password),
+    database: String(database || poolConfig.database || ''),
+    charset: poolConfig.charset === undefined ? undefined : String(poolConfig.charset),
+    multipleStatements: true,
+  }
+}
 
 type ExecutionStatement = {
   index: number
@@ -43,6 +57,7 @@ export type ExecuteMultiOptions = {
   maxResultRows?: number
   saveHistory?: boolean
   scriptMode?: 'query' | 'import'
+  executionId?: string
 }
 
 export type ExecuteMultiProgressPayload = {
@@ -62,6 +77,27 @@ export type ExecuteSqlFileResult = {
 }
 
 const runningScriptConnections = new Map<string, Set<mysql.Connection>>()
+
+function getRunningScriptKey(connectionId: string, executionId?: string): string {
+  return executionId ? `${connectionId}:${executionId}` : connectionId
+}
+
+function addRunningScriptConnection(key: string, conn: mysql.Connection): void {
+  let runningSet = runningScriptConnections.get(key)
+  if (!runningSet) {
+    runningSet = new Set()
+    runningScriptConnections.set(key, runningSet)
+  }
+  runningSet.add(conn)
+}
+
+function removeRunningScriptConnection(key: string, conn: mysql.Connection): void {
+  const runningSet = runningScriptConnections.get(key)
+  runningSet?.delete(conn)
+  if (runningSet && runningSet.size === 0) {
+    runningScriptConnections.delete(key)
+  }
+}
 
 function stripLeadingTrivia(stmt: string): string {
   let s = stmt
@@ -767,25 +803,12 @@ export async function executeMultiStatementSql(
   let result: QueryResult | null = null
   let isSuccess = true
   let historyErrorMessage = ''
-  const pool = connectionManager.getPool(connectionId) as { pool?: { config?: { connectionConfig?: Record<string, unknown> } }; config?: { connectionConfig?: Record<string, unknown> } }
-  const poolConfig = pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {} as Record<string, unknown>
-  const conn = await mysql.createConnection({
-    host: poolConfig.host,
-    port: poolConfig.port,
-    user: poolConfig.user,
-    password: poolConfig.password,
-    database: database || poolConfig.database,
-    charset: poolConfig.charset,
-    multipleStatements: true,
-  })
+  const connectionOptions = getScriptConnectionOptions(connectionId, database)
+  const conn = await mysql.createConnection(connectionOptions)
+  const runningKey = getRunningScriptKey(connectionId, options?.executionId)
 
   try {
-    let runningSet = runningScriptConnections.get(connectionId)
-    if (!runningSet) {
-      runningSet = new Set()
-      runningScriptConnections.set(connectionId, runningSet)
-    }
-    runningSet.add(conn)
+    addRunningScriptConnection(runningKey, conn)
 
     let cleaned = sql.replace(/^\uFEFF/, '')
     if (database) await conn.query(`USE ${quoteId(database)}`)
@@ -806,7 +829,7 @@ export async function executeMultiStatementSql(
 
     const optimizeInserts = options?.optimizeInserts === true
     const originalStatementTotal = parsedStatements.length
-    const executableStatements = (importMode ? injectDropBeforeCreateTables(parsedStatements, String(database || poolConfig.database || '') || undefined) : parsedStatements)
+    const executableStatements = (importMode ? injectDropBeforeCreateTables(parsedStatements, String(database || connectionOptions.database || '') || undefined) : parsedStatements)
       .map((stmt) => stmt.trim())
       .filter(Boolean)
     if (executableStatements.length === 0) {
@@ -913,12 +936,12 @@ export async function executeMultiStatementSql(
     historyErrorMessage = error?.message || '执行失败'
     throw new Error(error.message)
   } finally {
-    const runningSet = runningScriptConnections.get(connectionId)
-    runningSet?.delete(conn)
-    if (runningSet && runningSet.size === 0) {
-      runningScriptConnections.delete(connectionId)
+    removeRunningScriptConnection(runningKey, conn)
+    try {
+      await conn.end()
+    } catch {
+      // Connection may already be destroyed by cancellation.
     }
-    await conn.end()
     if (options?.saveHistory) {
       const elapsed = Date.now() - startedAt
       try {
@@ -940,17 +963,34 @@ export async function executeMultiStatementSql(
   }
 }
 
-export function cancelMultiStatementSql(connectionId: string): void {
-  const runningSet = runningScriptConnections.get(connectionId)
-  if (!runningSet) return
-  for (const conn of runningSet) {
-    try {
-      conn.destroy()
-    } catch {
-      // ignore destroy errors
+export function cancelMultiStatementSql(connectionId: string, executionId?: string): void {
+  const runningKey = getRunningScriptKey(connectionId, executionId)
+  const runningSet = runningScriptConnections.get(runningKey)
+  if (runningSet) {
+    for (const conn of runningSet) {
+      try {
+        conn.destroy()
+      } catch {
+        // ignore destroy errors
+      }
     }
+    runningScriptConnections.delete(runningKey)
+    if (executionId) return
   }
-  runningScriptConnections.delete(connectionId)
+
+  if (executionId) return
+
+  for (const [key, connections] of runningScriptConnections.entries()) {
+    if (key !== connectionId && !key.startsWith(`${connectionId}:`)) continue
+    for (const conn of connections) {
+      try {
+        conn.destroy()
+      } catch {
+        // ignore destroy errors
+      }
+    }
+    runningScriptConnections.delete(key)
+  }
 }
 
 export async function executeSqlFile(
@@ -959,17 +999,7 @@ export async function executeSqlFile(
   database?: string,
   options?: ExecuteMultiOptions,
 ): Promise<ExecuteSqlFileResult> {
-  const pool = connectionManager.getPool(connectionId) as { pool?: { config?: { connectionConfig?: Record<string, unknown> } }; config?: { connectionConfig?: Record<string, unknown> } }
-  const poolConfig = pool?.pool?.config?.connectionConfig || pool?.config?.connectionConfig || {} as Record<string, unknown>
-  const conn = await mysql.createConnection({
-    host: poolConfig.host,
-    port: poolConfig.port,
-    user: poolConfig.user,
-    password: poolConfig.password,
-    database: database || poolConfig.database,
-    charset: poolConfig.charset,
-    multipleStatements: true,
-  })
+  const conn = await mysql.createConnection(getScriptConnectionOptions(connectionId, database))
 
   let runningSet = runningScriptConnections.get(connectionId)
   if (!runningSet) {
@@ -1065,31 +1095,177 @@ export async function executeSqlFile(
     })
 
     let delimiter = ';'
-    let buffer = ''
+    let currentStatement = ''
     let stopped = false
-    for await (const line of rl) {
-      const delimiterMatch = line.match(/^\s*DELIMITER\s+(.+?)\s*$/i)
-      if (delimiterMatch && !buffer.trim()) {
+
+    let inSQ = false
+    let inDQ = false
+    let inBT = false
+    let inLC = false
+    let inBC = false
+    let inCompoundStatement = false
+    let compoundDepth = 0
+
+    const finalizeCurrentStatement = async () => {
+      const trimmed = currentStatement.trim()
+      currentStatement = ''
+      inCompoundStatement = false
+      compoundDepth = 0
+      if (!trimmed) return true
+      const ok = await enqueueStatement(trimmed)
+      if (!ok) {
+        stopped = true
+        rl.close()
+      }
+      return ok
+    }
+
+    for await (const rawLine of rl) {
+      const line = String(rawLine)
+      const delimiterMatch = !inSQ && !inDQ && !inBT && !inLC && !inBC && !currentStatement.trim()
+        ? line.match(/^\s*DELIMITER\s+(.+?)\s*$/i)
+        : null
+      if (delimiterMatch) {
         delimiter = delimiterMatch[1] || ';'
         continue
       }
 
-      buffer += `${line}\n`
-      const trimmedEnd = buffer.trimEnd()
-      if (!trimmedEnd.endsWith(delimiter)) continue
+      const sql = `${line}\n`
+      for (let i = 0; i < sql.length; i += 1) {
+        const ch = sql[i]
+        const next = sql[i + 1]
 
-      const stmt = trimmedEnd.slice(0, -delimiter.length)
-      buffer = ''
-      const ok = await enqueueStatement(stmt)
-      if (!ok) {
-        stopped = true
-        rl.close()
+        if (inLC) {
+          currentStatement += ch
+          if (ch === '\n') inLC = false
+          continue
+        }
+        if (inBC) {
+          if (ch === '*' && next === '/') {
+            currentStatement += '*/'
+            i += 1
+            inBC = false
+            continue
+          }
+          currentStatement += ch
+          continue
+        }
+        if (inSQ) {
+          if (ch === "'" && next === "'") {
+            currentStatement += "''"
+            i += 1
+            continue
+          }
+          if (ch === '\\') {
+            currentStatement += ch + (next || '')
+            i += 1
+            continue
+          }
+          if (ch === "'") inSQ = false
+          currentStatement += ch
+          continue
+        }
+        if (inDQ) {
+          if (ch === '"' && next === '"') {
+            currentStatement += '""'
+            i += 1
+            continue
+          }
+          if (ch === '\\') {
+            currentStatement += ch + (next || '')
+            i += 1
+            continue
+          }
+          if (ch === '"') inDQ = false
+          currentStatement += ch
+          continue
+        }
+        if (inBT) {
+          if (ch === '`') inBT = false
+          currentStatement += ch
+          continue
+        }
+
+        if (ch === '-' && next === '-') {
+          inLC = true
+          currentStatement += ch
+          continue
+        }
+        if (ch === '#') {
+          inLC = true
+          currentStatement += ch
+          continue
+        }
+        if (ch === '/' && next === '*') {
+          inBC = true
+          currentStatement += '/*'
+          i += 1
+          continue
+        }
+        if (ch === "'") {
+          inSQ = true
+          currentStatement += ch
+          continue
+        }
+        if (ch === '"') {
+          inDQ = true
+          currentStatement += ch
+          continue
+        }
+        if (ch === '`') {
+          inBT = true
+          currentStatement += ch
+          continue
+        }
+
+        if (!inCompoundStatement && !currentStatement.trim()) {
+          const upcoming = `${currentStatement}${sql.slice(i)}`
+          if (COMPOUND_CREATE_START.test(stripLeadingTrivia(upcoming))) {
+            inCompoundStatement = true
+            compoundDepth = 0
+          }
+        }
+
+        if (inCompoundStatement) {
+          const keyword = matchKeywordAt(sql, i)
+          if (keyword) {
+            if (keyword === 'BEGIN') {
+              compoundDepth += 1
+            } else if (compoundDepth > 0) {
+              compoundDepth += 1
+            }
+            currentStatement += sql.slice(i, i + keyword.length)
+            i += keyword.length - 1
+            continue
+          }
+
+          if (sql.slice(i, i + 3).toUpperCase() === 'END' && isWordBoundaryChar(sql[i - 1]) && isWordBoundaryChar(sql[i + 3])) {
+            if (compoundDepth > 0) compoundDepth -= 1
+            currentStatement += 'END'
+            i += 2
+            continue
+          }
+        }
+
+        if (delimiter && sql.slice(i, i + delimiter.length) === delimiter) {
+          if (!inCompoundStatement || compoundDepth === 0) {
+            const ok = await finalizeCurrentStatement()
+            i += delimiter.length - 1
+            if (!ok) break
+            continue
+          }
+        }
+
+        currentStatement += ch
+      }
+
+      if (stopped) {
         break
       }
     }
 
-    if (!stopped && buffer.trim()) {
-      await enqueueStatement(buffer)
+    if (!stopped && currentStatement.trim()) {
+      await enqueueStatement(currentStatement)
     }
     if (!stopped) {
       await flushPendingInserts()
@@ -1107,6 +1283,10 @@ export async function executeSqlFile(
     if (runningSet && runningSet.size === 0) {
       runningScriptConnections.delete(connectionId)
     }
-    await conn.end()
+    try {
+      await conn.end()
+    } catch {
+      // Connection may already be destroyed by cancellation.
+    }
   }
 }

@@ -24,6 +24,7 @@ export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, datab
   })
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -34,14 +35,17 @@ export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, datab
     if (!connectionId || !database || !table) return
     setExporting(true)
     setError('')
+    setSuccess('')
     try {
       const sql = `SELECT * FROM \`${table}\`${form.where ? ` WHERE ${form.where}` : ''}${form.rowRange === 'custom' ? ` LIMIT ${form.limit} OFFSET ${form.offset}` : ''}`
-      await api.importExport.exportData(connectionId, database, sql, '', form.format, {
+      const filePath = await api.importExport.exportData(connectionId, database, sql, '', form.format, {
         includeHeaders: form.includeHeaders,
         delimiter: form.delimiter,
         prettyPrint: form.prettyPrint,
       })
-      onClose()
+      if (filePath) {
+        setSuccess(`导出完成: ${filePath}`)
+      }
     } catch (e: any) {
       setError(e.message || '导出失败')
     } finally {
@@ -53,6 +57,7 @@ export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, datab
     <Modal title="导出数据" open={open} onClose={onClose} footer={null} width={480}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {error && <div style={{ color: 'var(--color-red)' }}>{error}</div>}
+        {success && <div style={{ color: 'var(--success)', wordBreak: 'break-all' }}>{success}</div>}
         <div>
           <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>格式</label>
           <Select

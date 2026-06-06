@@ -9,6 +9,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "typecheck": "tsc --noEmit --project tsconfig.node.json --pretty false --tsBuildInfoFile node_modules/.cache/tsconfig.node.tsbuildinfo && tsc --noEmit --project tsconfig.web.json --pretty false --tsBuildInfoFile node_modules/.cache/tsconfig.web.tsbuildinfo",
     "build": "electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "pack": "electron-builder --dir",

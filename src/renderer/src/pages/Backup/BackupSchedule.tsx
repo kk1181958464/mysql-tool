@@ -52,7 +52,7 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
   const save = async () => {
     if (!connId || !form.databaseName) return
     try {
-      await api.backup.schedule({ connectionId: connId, action: editMode ? 'update' : 'create', ...form })
+      await api.backup.schedule({ connectionId: connId, action: editMode ? 'update' : 'create', ...form, backupType: form.backupType as 'full' | 'structure' | 'data' })
       setSuccess(editMode ? '更新成功' : '创建成功'); setTimeout(() => setSuccess(null), 2000)
       setModalOpen(false); load()
     } catch (e: any) { setError(e.message || '操作失败') }

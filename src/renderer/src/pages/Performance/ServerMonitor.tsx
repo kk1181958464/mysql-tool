@@ -42,7 +42,7 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
       setVariables(vars)
       const stats = Array.isArray(statRes) ? statRes.map((r: any) => ({ name: r.Variable_name, value: r.Value })) : []
       setStatus(stats)
-      setInnodbStatus(typeof innoRes === 'string' ? innoRes : innoRes?.Status ?? '')
+      setInnodbStatus(typeof innoRes === 'string' ? innoRes : String((innoRes as any)?.Status ?? ''))
       const findStat = (n: string) => stats.find((s: any) => s.name === n)?.value ?? '0'
       setMetrics({
         connections: parseInt(findStat('Threads_connected')),

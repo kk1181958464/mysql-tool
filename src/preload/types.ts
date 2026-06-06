@@ -1,5 +1,5 @@
 import type { ConnectionConfig, ConnectionStatus, ConnectionSavePayload } from '../shared/types/connection'
-import type { QueryResult, ExplainResult, QueryHistoryItem, Snippet } from '../shared/types/query'
+import type { QueryExecuteOptions, QueryResult, ExplainResult, QueryHistoryItem, Snippet } from '../shared/types/query'
 import type { DatabaseInfo, TableInfo, ColumnDetail, IndexInfo, ForeignKeyInfo, ViewInfo, ProcedureInfo, TriggerInfo, EventInfo, ObjectSearchResult } from '../shared/types/metadata'
 import type {
   TableDesign,
@@ -35,11 +35,12 @@ export interface QueryExecuteMultiOptions {
   maxResultRows?: number
   saveHistory?: boolean
   scriptMode?: 'query' | 'import'
+  executionId?: string
 }
 
 export interface ElectronAPI {
   connection: {
-    test(config: ConnectionConfig): Promise<ConnectionStatus>
+    test(config: ConnectionConfig | ConnectionSavePayload): Promise<ConnectionStatus>
     connect(config: ConnectionConfig): Promise<ConnectionStatus>
     disconnect(id: string): Promise<void>
     list(): Promise<ConnectionConfig[]>
@@ -47,10 +48,10 @@ export interface ElectronAPI {
     delete(id: string): Promise<void>
   }
   query: {
-    execute(connectionId: string, sql: string, database?: string): Promise<QueryResult>
+    execute(connectionId: string, sql: string, database?: string, options?: QueryExecuteOptions): Promise<QueryResult>
     executeMulti(connectionId: string, sql: string, database?: string, options?: QueryExecuteMultiOptions): Promise<QueryResult>
-    explain(connectionId: string, sql: string, database?: string): Promise<ExplainResult[]>
-    cancel(connectionId: string): Promise<void>
+    explain(connectionId: string, sql: string, database?: string, options?: QueryExecuteOptions): Promise<ExplainResult[]>
+    cancel(connectionId: string, executionId?: string): Promise<void>
     format(sql: string): Promise<string>
   }
   meta: {
@@ -84,7 +85,7 @@ export interface ElectronAPI {
   importExport: {
     importFile(connId: string, db: string, table: string, filePath: string, options?: any): Promise<{ imported: number; errors?: number; executed?: number }>
     preview(filePath: string): Promise<{ columns: string[]; rows: any[]; totalRows: number }>
-    exportData(connId: string, db: string, sql: string, filePath: string, format: string, options?: any): Promise<void>
+    exportData(connId: string, db: string, sql: string, filePath: string, format: string, options?: any): Promise<string | null>
     exportStructure(connId: string, db: string, tables: string[], filePath: string): Promise<void>
   }
   perf: {

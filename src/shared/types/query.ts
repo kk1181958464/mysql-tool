@@ -4,6 +4,7 @@ export interface QueryStatementResult {
   isSelect: boolean
   success: boolean
   columns: ColumnInfo[]
+  fields?: ColumnInfo[]
   rows: Record<string, unknown>[]
   affectedRows: number
   insertId: number
@@ -16,6 +17,7 @@ export interface QueryStatementResult {
 
 export interface QueryResult {
   columns: ColumnInfo[]
+  fields?: ColumnInfo[]
   rows: Record<string, unknown>[]
   affectedRows: number
   insertId: number
@@ -28,6 +30,10 @@ export interface QueryResult {
   failCount?: number
   limited?: boolean
   limitApplied?: number
+}
+
+export interface QueryExecuteOptions {
+  executionId?: string
 }
 
 export interface ColumnInfo {

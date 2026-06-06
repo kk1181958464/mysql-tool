@@ -52,6 +52,7 @@ const COLUMN_LOAD_CONCURRENCY = 4
 const COLUMN_LOAD_TIMEOUT_MS = 5000
 const COMPLETION_MAX_ITEMS = 300
 const COMPLETION_MAX_COLUMN_ITEMS = 180
+const QUERY_SLOW_HINT_SECONDS = 8
 
 const pushSuggestion = (
   target: monaco.languages.CompletionItem[],
@@ -378,13 +379,18 @@ const normalizeExplainSql = (sql: string): string => {
   return trimmed.replace(/^EXPLAIN(?:\s+(?:ANALYZE|FORMAT\s*=\s*(?:TREE|JSON|TRADITIONAL)))?\s+/i, '').trim()
 }
 
+const createExecutionId = (tabId: string): string => `${tabId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
 interface Props {
   tabId: string
 }
 
 const QueryEditor: React.FC<Props> = ({ tabId }) => {
   const [snippetOpen, setSnippetOpen] = React.useState(false)
+  const [runningElapsedMs, setRunningElapsedMs] = React.useState(0)
   const editorRef = useRef<any>(null)
+  const executionIdRef = useRef<string | null>(null)
+  const runningQueryRef = useRef<{ connectionId: string | null; isExecuting: boolean }>({ connectionId: null, isExecuting: false })
   const { tabs, setQueryResult, setQueryExecuting, setQueryError, updateQueryContent, setQueryDatabase } = useTabStore()
   const { databases, tables, isDatabaseOpen } = useDatabaseStore()
   const { resolvedTheme } = useAppStore()
@@ -404,6 +410,8 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
   const hasSelectedDatabase = !!activeDatabase
   const hasValidDatabase = hasSelectedDatabase && databaseInOpenList
   const hasSql = !!tab?.content.trim()
+  const runningSeconds = Math.max(0, Math.floor(runningElapsedMs / 1000))
+  const showSlowQueryHint = tab?.isExecuting && runningSeconds >= QUERY_SLOW_HINT_SECONDS
   const executeBlockedReason = !hasSelectedDatabase
     ? '请先选择数据库'
     : !hasValidDatabase
@@ -413,6 +421,37 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
   const dbOptions = activeDatabase && !databaseInOpenList
     ? [{ value: activeDatabase, label: `${activeDatabase}（已关闭）`, disabled: true }, ...openDbOptions]
     : openDbOptions
+
+  useEffect(() => {
+    runningQueryRef.current = {
+      connectionId: activeConnectionId,
+      isExecuting: !!tab?.isExecuting,
+    }
+  }, [activeConnectionId, tab?.isExecuting])
+
+  useEffect(() => {
+    return () => {
+      const { connectionId, isExecuting } = runningQueryRef.current
+      const executionId = executionIdRef.current
+      if (!connectionId || !isExecuting || !executionId) return
+      executionIdRef.current = null
+      void api.query.cancel(connectionId, executionId).catch(() => {
+        // Component is unmounting; there is no safe UI surface for this error.
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!tab?.isExecuting || !tab.executionStartedAt) {
+      setRunningElapsedMs(0)
+      return
+    }
+
+    const updateElapsed = () => setRunningElapsedMs(Date.now() - tab.executionStartedAt!)
+    updateElapsed()
+    const timer = window.setInterval(updateElapsed, 500)
+    return () => window.clearInterval(timer)
+  }, [tab?.isExecuting, tab?.executionStartedAt])
 
 
   // 注册 SQL 补全
@@ -481,6 +520,9 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
       setQueryError(tab.id, '没有可执行的 SQL 语句')
       return
     }
+    const executionId = createExecutionId(tab.id)
+    executionIdRef.current = executionId
+    runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: true }
     setQueryExecuting(tab.id, true)
     try {
       let result: QueryResult
@@ -490,14 +532,18 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
         limitResultRows: true,
         saveHistory: true,
         scriptMode: 'query' as const,
+        executionId,
       }
 
       if (mode === 'all' || shouldUseBatchExecution(executableSql)) {
         result = await api.query.executeMulti(activeConnectionId, executableSql, activeDatabase || '', executeOptions)
       } else {
-        result = await api.query.execute(activeConnectionId, executableSql, activeDatabase || '')
+        result = await api.query.execute(activeConnectionId, executableSql, activeDatabase || '', { executionId })
       }
 
+      if (executionIdRef.current !== executionId) return
+      executionIdRef.current = null
+      runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
       setQueryResult(tab.id, result)
       if ((result.failCount ?? 0) > 0) {
         const failedItems = result.statementResults?.filter((item) => !item.success) ?? []
@@ -509,14 +555,20 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
         setQueryError(tab.id, detail ? `${summary}\n${detail}` : summary)
       }
     } catch (e: any) {
+      if (executionIdRef.current !== executionId) return
+      executionIdRef.current = null
+      runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
       setQueryError(tab.id, e.message || '执行失败')
     }
   }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
 
   const handleCancel = useCallback(async () => {
     if (!tab || !activeConnectionId || !tab.isExecuting) return
+    const executionId = executionIdRef.current || undefined
+    executionIdRef.current = null
+    runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
     try {
-      await api.query.cancel(activeConnectionId)
+      await api.query.cancel(activeConnectionId, executionId)
       setQueryError(tab.id, '查询已取消')
     } catch (e: any) {
       setQueryError(tab.id, e.message || '取消失败')
@@ -534,9 +586,12 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
       setQueryError(tab.id, '没有可 Explain 的 SQL 语句')
       return
     }
+    const executionId = createExecutionId(tab.id)
+    executionIdRef.current = executionId
+    runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: true }
     setQueryExecuting(tab.id, true)
     try {
-      const explainRows = await api.query.explain(activeConnectionId, executableSql, activeDatabase || '')
+      const explainRows = await api.query.explain(activeConnectionId, executableSql, activeDatabase || '', { executionId })
       // 转换为 QueryResult 格式
       const result = {
         columns: [
@@ -568,8 +623,14 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
         sql: `EXPLAIN ${executableSql}`,
         isSelect: true,
       }
+      if (executionIdRef.current !== executionId) return
+      executionIdRef.current = null
+      runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
       setQueryResult(tab.id, result)
     } catch (e: any) {
+      if (executionIdRef.current !== executionId) return
+      executionIdRef.current = null
+      runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
       setQueryError(tab.id, e.message || '执行失败')
     }
   }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
@@ -621,6 +682,11 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
                 <StopOutlined /> 取消
               </Button>
             </Tooltip>
+          )}
+          {tab.isExecuting && (
+            <span style={{ fontSize: 12, color: showSlowQueryHint ? 'var(--warning)' : 'var(--text-muted)', minWidth: 160 }}>
+              {showSlowQueryHint ? `长查询执行中 ${runningSeconds}s` : `执行中 ${runningSeconds}s`}
+            </span>
           )}
           <Tooltip title={executeBlockedReason || 'Explain 当前语句或选区'}>
             <Button size="small" onClick={handleExplain} disabled={tab.isExecuting || !hasSql || !hasValidDatabase}>

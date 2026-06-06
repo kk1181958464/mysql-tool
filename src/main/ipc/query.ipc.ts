@@ -5,8 +5,8 @@ import { cancelMultiStatementSql, executeMultiStatementSql, type ExecuteMultiOpt
 import { format } from 'sql-formatter'
 
 export function registerQueryIPC() {
-  ipcMain.handle(IPC.QUERY_EXECUTE, async (_e, connectionId: string, sql: string, database?: string) => {
-    return queryExecutor.execute(connectionId, sql, database)
+  ipcMain.handle(IPC.QUERY_EXECUTE, async (_e, connectionId: string, sql: string, database?: string, options?: { executionId?: string }) => {
+    return queryExecutor.execute(connectionId, sql, database, options)
   })
 
   ipcMain.handle(IPC.QUERY_EXECUTE_MULTI, async (_e, connectionId: string, sql: string, database?: string, options?: ExecuteMultiOptions) => {
@@ -19,13 +19,13 @@ export function registerQueryIPC() {
     })
   })
 
-  ipcMain.handle(IPC.QUERY_EXPLAIN, async (_e, connectionId: string, sql: string, database?: string) => {
-    return queryExecutor.explain(connectionId, sql, database)
+  ipcMain.handle(IPC.QUERY_EXPLAIN, async (_e, connectionId: string, sql: string, database?: string, options?: { executionId?: string }) => {
+    return queryExecutor.explain(connectionId, sql, database, options)
   })
 
-  ipcMain.handle(IPC.QUERY_CANCEL, async (_e, connectionId: string) => {
-    cancelMultiStatementSql(connectionId)
-    return queryExecutor.cancel(connectionId)
+  ipcMain.handle(IPC.QUERY_CANCEL, async (_e, connectionId: string, executionId?: string) => {
+    cancelMultiStatementSql(connectionId, executionId)
+    return queryExecutor.cancel(connectionId, executionId)
   })
 
   ipcMain.handle(IPC.QUERY_FORMAT, async (_e, sql: string) => {

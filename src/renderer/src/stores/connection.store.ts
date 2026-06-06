@@ -105,6 +105,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }
 
     await api.connection.disconnect(id)
+    useDatabaseStore.getState().clearCache(id)
     logConnectionDebug('disconnect.api.done', { id })
     set((s) => {
       const statuses = { ...s.connectionStatuses }

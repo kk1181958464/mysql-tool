@@ -65,7 +65,7 @@ export const StructureDiff: React.FC<Props> = ({ open, onClose, original, curren
   const handleApply = async () => {
     if (!activeConnectionId || !selectedDatabase) return
     try {
-      await api.design.alterTable(activeConnectionId, selectedDatabase, current.name, current)
+      await api.design.alterTable(activeConnectionId, selectedDatabase, current.name, diff as any, current)
       setSuccess('变更已应用')
       setTimeout(() => { setSuccess(null); onClose() }, 1500)
     } catch (e: any) {

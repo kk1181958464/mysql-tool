@@ -4,16 +4,21 @@ import './ui.css'
 // Tag
 interface TagProps {
   color?: 'default' | 'primary' | 'success' | 'warning' | 'error' | string
+  type?: 'default' | 'primary' | 'success' | 'warning' | 'error' | string
   children?: React.ReactNode
   className?: string
+  style?: React.CSSProperties
+  title?: string
 }
 
-export function Tag({ color = 'default', children, className = '' }: TagProps) {
-  const isPreset = ['default', 'primary', 'success', 'warning', 'error'].includes(color)
+export function Tag({ color, type, children, className = '', style, title }: TagProps) {
+  const resolvedColor = color || type || 'default'
+  const isPreset = ['default', 'primary', 'success', 'warning', 'error'].includes(resolvedColor)
   return (
     <span
-      className={`ui-tag ${isPreset ? `ui-tag-${color}` : ''} ${className}`}
-      style={!isPreset ? { background: color, color: '#fff' } : undefined}
+      className={`ui-tag ${isPreset ? `ui-tag-${resolvedColor}` : ''} ${className}`}
+      style={!isPreset ? { background: resolvedColor, color: '#fff', ...style } : style}
+      title={title}
     >
       {children}
     </span>
@@ -51,11 +56,12 @@ interface CardProps {
   children?: React.ReactNode
   className?: string
   style?: React.CSSProperties
+  onClick?: React.MouseEventHandler<HTMLDivElement>
 }
 
-export function Card({ title, extra, size = 'default', children, className = '', style }: CardProps) {
+export function Card({ title, extra, size = 'default', children, className = '', style, onClick }: CardProps) {
   return (
-    <div className={`ui-card ui-card-${size} ${className}`} style={style}>
+    <div className={`ui-card ui-card-${size} ${className}`} style={style} onClick={onClick}>
       {(title || extra) && (
         <div className="ui-card-header">
           {title && <div className="ui-card-title">{title}</div>}
@@ -70,6 +76,7 @@ export function Card({ title, extra, size = 'default', children, className = '',
 // Empty
 interface EmptyProps {
   description?: React.ReactNode
+  icon?: React.ReactNode
   children?: React.ReactNode
   className?: string
 }
@@ -92,11 +99,12 @@ interface AlertProps {
   closable?: boolean
   onClose?: () => void
   className?: string
+  style?: React.CSSProperties
 }
 
-export function Alert({ type = 'info', message, description, closable, onClose, className = '' }: AlertProps) {
+export function Alert({ type = 'info', message, description, closable, onClose, className = '', style }: AlertProps) {
   return (
-    <div className={`ui-alert ui-alert-${type} ${className}`}>
+    <div className={`ui-alert ui-alert-${type} ${className}`} style={style}>
       <div className="ui-alert-content">
         <div className="ui-alert-message">{message}</div>
         {description && <div className="ui-alert-description">{description}</div>}
@@ -252,19 +260,25 @@ interface DropdownItem {
 }
 
 interface DropdownProps {
-  menu: { items: DropdownItem[] }
+  menu?: { items: DropdownItem[] }
+  items?: DropdownItem[]
+  onSelect?: (key: string) => void
+  onClose?: () => void
   trigger?: ('click' | 'hover')[]
-  children: React.ReactElement
+  children?: React.ReactElement
+  style?: React.CSSProperties
 }
 
-export function Dropdown({ menu, trigger = ['hover'], children }: DropdownProps) {
+export function Dropdown({ menu, items, onSelect, onClose, trigger = ['hover'], children, style }: DropdownProps) {
   const [visible, setVisible] = useState(false)
   const isHover = trigger.includes('hover')
   const isClick = trigger.includes('click')
+  const dropdownItems = menu?.items || items || []
 
   return (
     <div
       className="ui-dropdown-wrapper"
+      style={style}
       onMouseEnter={() => isHover && setVisible(true)}
       onMouseLeave={() => isHover && setVisible(false)}
       onClick={() => isClick && setVisible(!visible)}
@@ -272,11 +286,11 @@ export function Dropdown({ menu, trigger = ['hover'], children }: DropdownProps)
       {children}
       {visible && (
         <div className="ui-dropdown-menu">
-          {menu.items.map((item) => (
+          {dropdownItems.map((item) => (
             <div
               key={item.key}
               className={`ui-dropdown-item ${item.danger ? 'danger' : ''} ${item.disabled ? 'disabled' : ''}`}
-              onClick={() => { if (!item.disabled) { item.onClick?.(); setVisible(false) } }}
+              onClick={() => { if (!item.disabled) { item.onClick?.(); onSelect?.(item.key); setVisible(false); onClose?.() } }}
             >
               {item.label}
             </div>

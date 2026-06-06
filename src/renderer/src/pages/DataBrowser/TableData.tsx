@@ -69,6 +69,11 @@ const quoteSqlString = (value: string): string => `'${value.replace(/'/g, "''")}
 const isNumericType = (type: string) => /int|decimal|float|double|numeric|real|bit|serial/i.test(type)
 const isDateLikeType = (type: string) => /date|time|year|timestamp|datetime/i.test(type)
 
+const isElementVisible = (el: HTMLElement | null): boolean => {
+  if (!el) return false
+  return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+}
+
 const quoteSqlList = (value: string, options?: { treatAsNumeric?: boolean }): string => {
   return value
     .split(',')
@@ -582,6 +587,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [exportOpen, setExportOpen] = useState(false)
   const [totalCount, setTotalCount] = useState(0)
   const [error, setError] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
   const [saveErrorModalOpen, setSaveErrorModalOpen] = useState(false)
   const [saveErrorText, setSaveErrorText] = useState('')
   const [pendingChanges, setPendingChanges] = useState<Map<string, Record<string, unknown>>>(new Map())
@@ -645,6 +651,58 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   )
 
   useEffect(() => {
+    fetchRequestIdRef.current += 1
+    const emptyFilter = getDefaultSimpleFilterGroup()
+
+    setResult(null)
+    setLoading(false)
+    setPage(1)
+    setJumpPage('')
+    setFilterMode('simple')
+    setSimpleFilterTree(emptyFilter)
+    setAppliedSimpleFilterTree(cloneSimpleFilterGroup(emptyFilter))
+    setWhereInput('')
+    setWhere('')
+    setIsFilterModalOpen(false)
+    setDraftFilterMode('simple')
+    setDraftSimpleFilterTree(cloneSimpleFilterGroup(emptyFilter))
+    setDraftWhereInput('')
+    setOrderBy('')
+    setSelectedRowKeys(new Set())
+    setDeleteConfirmOpen(false)
+    setDeleteBusy(false)
+    lastCheckedRef.current = null
+    setSelectedCells(new Set())
+    anchorCellRef.current = null
+    setNewRows([])
+    newRowCounter.current = 0
+    setExportOpen(false)
+    setTotalCount(0)
+    setError('')
+    setSuccessMessage('')
+    setSaveErrorModalOpen(false)
+    setSaveErrorText('')
+    setPendingChanges(new Map())
+    setEditingDirtyCells(new Set())
+    setIsSaving(false)
+    setRecentlyUpdatedCells(new Set())
+    setHeaderContextMenu(null)
+    setCellContextMenu(null)
+    setCursor(null)
+    setHasNextPage(false)
+    setLastQueryMode('offset')
+    setPaginationFallbackHint('')
+    setTransformedBaseRows([])
+    setPendingPaginationHint('')
+    countCacheRef.current.clear()
+    if (clearUpdatedTimerRef.current !== null) {
+      window.clearTimeout(clearUpdatedTimerRef.current)
+      clearUpdatedTimerRef.current = null
+    }
+    setDataDirty(tabId, false)
+  }, [connectionId, database, table, setDataDirty, tabId])
+
+  useEffect(() => {
     if (paginationMode !== 'auto') {
       setPendingPaginationHint('')
       return
@@ -657,6 +715,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
     setPendingPaginationHint('')
   }, [paginationMode, result, connectionId, database, table])
+
+  useEffect(() => {
+    if (!successMessage) return
+    const timer = window.setTimeout(() => setSuccessMessage(''), 3500)
+    return () => window.clearTimeout(timer)
+  }, [successMessage])
 
   const fetchData = useCallback(async (
     action: 'reset' | 'next' | 'prev' = 'reset',
@@ -728,16 +792,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       const cache = countCacheRef.current
       const cachedCount = !forceRefreshCount ? cache.get(countCacheKey) : undefined
 
-      const [res, countValue] = await Promise.all([
-        api.query.execute(connectionId, sql, database),
-        cachedCount
-          ? Promise.resolve(cachedCount.count)
-          : api.query.execute(connectionId, countSql, database).then((countRes) => {
-            const count = Number(countRes.rows[0]?.cnt ?? 0)
-            cache.set(countCacheKey, { count, ts: Date.now() })
-            return count
-          })
-      ])
+      const res = await api.query.execute(connectionId, sql, database)
 
       if (requestId !== fetchRequestIdRef.current) return
 
@@ -781,7 +836,30 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         setJumpPage(String(nextPage))
       }
       setResult(res)
-      setTotalCount(countValue)
+      if (cachedCount) {
+        setTotalCount(cachedCount.count)
+      } else {
+        setTotalCount((prev) => {
+          const minimumKnownRows = ((fallbackPage ?? page) - 1) * rowsPerPage + rows.length
+          return Math.max(prev, minimumKnownRows)
+        })
+        void api.query.execute(connectionId, countSql, database)
+          .then((countRes) => {
+            if (requestId !== fetchRequestIdRef.current) return
+            const count = Number(countRes.rows[0]?.cnt ?? 0)
+            cache.set(countCacheKey, { count, ts: Date.now() })
+            setTotalCount(count)
+          })
+          .catch((countError) => {
+            console.warn('[TableData] count query failed; keeping page data usable', {
+              connectionId,
+              database,
+              table,
+              error: countError instanceof Error ? countError.message : String(countError),
+            })
+            // COUNT(*) may be expensive or fail on unstable connections; keep page data usable.
+          })
+      }
     } catch (e: any) {
       if (requestId !== fetchRequestIdRef.current) return
       setError(e.message || '查询失败')
@@ -942,6 +1020,21 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setSelectedRowKeys(new Set())
     anchorCellRef.current = null
   }, [])
+
+  const shouldHandlePanelKeyboardEvent = useCallback((event: Event, options?: { allowSelection?: boolean; allowDirty?: boolean }) => {
+    const root = rootRef.current
+    if (!root || !isElementVisible(root)) return false
+    const target = event.target instanceof HTMLElement ? event.target : null
+    const active = document.activeElement as HTMLElement | null
+    const targetIsPage = !target || target === document.body || target === document.documentElement
+    const activeIsPage = !active || active === document.body || active === document.documentElement
+
+    if (target && !targetIsPage && root.contains(target)) return true
+    if (active && !activeIsPage && root.contains(active)) return true
+    if (options?.allowSelection && (selectedCells.size > 0 || selectedRowKeys.size > 0)) return true
+    if (options?.allowDirty && hasUnsavedChanges) return true
+    return false
+  }, [hasUnsavedChanges, selectedCells.size, selectedRowKeys.size])
 
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement | null
@@ -1144,6 +1237,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }, [])
 
   const handleCellChange = useCallback((rowKey: unknown, colName: string, newValue: unknown) => {
+    setSuccessMessage('')
     const key = String(rowKey)
     setEditingDirtyCells((prev) => {
       const cellKey = `${key}:${colName}`
@@ -1198,7 +1292,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       const active = document.activeElement as HTMLElement | null
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
       const root = rootRef.current
-      if (!root) return
+      if (!root || !isElementVisible(root)) return
       const target = e.target instanceof HTMLElement ? e.target : null
       if (target?.closest('.ui-modal, .context-menu')) return
       const activeIsPage = active === document.body || active === document.documentElement
@@ -1266,6 +1360,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     const onKeyDown = (e: KeyboardEvent) => {
       if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
       if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
       if (!result?.columns?.length || allRowKeys.length === 0 || selectedCells.size === 0) return
 
       const active = document.activeElement as HTMLElement | null
@@ -1322,7 +1417,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [result?.columns, allRowKeys, selectedCells])
+  }, [result?.columns, allRowKeys, selectedCells, shouldHandlePanelKeyboardEvent])
 
   const applyPendingChangesToResult = useCallback((changes: Map<string, Record<string, unknown>>) => {
     if (!pk || changes.size === 0) return
@@ -1358,8 +1453,13 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         })
         return { ...prev, rows: nextRows }
       })
-    } catch {
-      // 静默校准失败不阻断主链路
+    } catch (revalidateError) {
+      console.warn('[TableData] row revalidation after save failed', {
+        connectionId,
+        database,
+        table,
+        error: revalidateError instanceof Error ? revalidateError.message : String(revalidateError),
+      })
     }
   }, [pk, connectionId, database, table])
 
@@ -1371,6 +1471,9 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     if (!hasUpdates && !hasInserts) return
 
     setIsSaving(true)
+    setSuccessMessage('')
+    const updatedCount = pendingChanges.size
+    const insertedCount = newRows.length
     try {
       // 保存修改行：直接本地合并，避免整表刷新闪烁
       if (hasUpdates) {
@@ -1404,6 +1507,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       if (hasInserts) {
         await fetchData('reset', true, undefined, false)
       }
+      const savedParts = [
+        updatedCount > 0 ? `更新 ${updatedCount} 行` : '',
+        insertedCount > 0 ? `新增 ${insertedCount} 行` : '',
+      ].filter(Boolean)
+      setSuccessMessage(savedParts.length ? `保存成功：${savedParts.join('，')}` : '保存成功')
     } catch (e: any) {
       const cleaned = normalizeIpcErrorMessage(e)
       setError(cleaned || '保存失败')
@@ -1442,19 +1550,21 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        if (!shouldHandlePanelKeyboardEvent(e, { allowDirty: true })) return
         e.preventDefault()
         flushEditingAndSave()
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [flushEditingAndSave])
+  }, [flushEditingAndSave, shouldHandlePanelKeyboardEvent])
 
   // Delete：勾选行删除（走与删除按钮一致的确认流程）
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Delete') return
       if (selectedRowKeyList.length === 0 || deleteConfirmOpen) return
+      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
       const active = document.activeElement as HTMLElement | null
       if (active) {
         const tag = active.tagName
@@ -1467,13 +1577,14 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectedRowKeyList, deleteConfirmOpen, openDeleteConfirm])
+  }, [selectedRowKeyList, deleteConfirmOpen, openDeleteConfirm, shouldHandlePanelKeyboardEvent])
 
   // 选区数字键批量改值（列头整列与 Shift 矩形多选共用）
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (selectedCells.size <= 1) return
       if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
       const active = document.activeElement as HTMLElement | null
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
       if (!/^[0-9]$/.test(e.key)) return
@@ -1489,7 +1600,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectedCells, handleCellChange, markCellsRecentlyUpdated])
+  }, [selectedCells, handleCellChange, markCellsRecentlyUpdated, shouldHandlePanelKeyboardEvent])
 
   // 关闭右键菜单
   useEffect(() => {
@@ -1526,6 +1637,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       const target = evt.target as HTMLElement | null
       if (!target) return
       // 排除表格内容、滚动容器（滚动条点击）等
+      const root = rootRef.current
+      if (!root || !isElementVisible(root)) return
       if (target.closest('.ui-table td, .ui-table th, .ui-table-scroll, .context-menu, .ui-modal, .header-menu-btn, .ui-btn, .ui-input, input, textarea, select, a, [role="button"]')) return
       clearAllSelections()
       setHeaderContextMenu(null)
@@ -1605,6 +1718,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return
+      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
       const active = document.activeElement as HTMLElement | null
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
       const root = rootRef.current
@@ -1617,7 +1731,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [allRowKeys])
+  }, [allRowKeys, shouldHandlePanelKeyboardEvent])
 
   // checkbox 列 + 数据列
   const allChecked = useMemo(
@@ -1829,6 +1943,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       </Space>
 
       {error && <div style={{ color: 'var(--color-red)', marginBottom: 8 }}>{error}</div>}
+      {!error && successMessage && <div style={{ color: 'var(--success)', marginBottom: 8 }}>{successMessage}</div>}
 
       <FilterModal
         open={isFilterModalOpen}

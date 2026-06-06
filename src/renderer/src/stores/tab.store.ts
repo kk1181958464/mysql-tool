@@ -21,6 +21,7 @@ export interface QueryTab extends BaseTab {
   content: string
   result: QueryResult | null
   isExecuting: boolean
+  executionStartedAt: number | null
   error: string | null
 }
 
@@ -152,6 +153,7 @@ export const useTabStore = create<TabState>((set, get) => ({
       database: database ?? null,
       result: null,
       isExecuting: false,
+      executionStartedAt: null,
       error: null,
     }
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: id }))
@@ -165,19 +167,25 @@ export const useTabStore = create<TabState>((set, get) => ({
 
   setQueryResult: (id, result) => {
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? { ...t, result, error: null, isExecuting: false } : t)),
+      tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? { ...t, result, error: null, isExecuting: false, executionStartedAt: null } : t)),
     }))
   },
 
   setQueryExecuting: (id, isExecuting) => {
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? { ...t, isExecuting } : t)),
+      tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? {
+        ...t,
+        isExecuting,
+        executionStartedAt: isExecuting ? Date.now() : null,
+        result: isExecuting ? null : t.result,
+        error: isExecuting ? null : t.error,
+      } : t)),
     }))
   },
 
   setQueryError: (id, error) => {
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? { ...t, error, isExecuting: false } : t)),
+      tabs: s.tabs.map((t) => (t.id === id && t.type === 'query' ? { ...t, error, isExecuting: false, executionStartedAt: null } : t)),
     }))
   },
 

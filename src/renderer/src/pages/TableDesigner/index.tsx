@@ -62,7 +62,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       const cols = await api.meta.columns(connectionId, database, tableName)
       const idxs = await api.meta.indexes(connectionId, database, tableName)
       const fks = await api.meta.foreignKeys(connectionId, database, tableName)
-      const status = await api.meta.tableStatus(connectionId, database)
+      const status = (await api.meta.tableStatus(connectionId, database)).find((item) => item.name === tableName)
 
       const columns: ColumnDesign[] = cols.map((c) => ({
         name: c.name, type: c.dataType.toUpperCase(),
@@ -94,7 +94,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       setDesign(d)
       setOriginal(JSON.parse(JSON.stringify(d)))
     } catch (e: any) {
-      setError(e.message || '加载表结构失败')
+      setErrorMsg(e.message || '加载表结构失败')
     }
   }
 

@@ -39,11 +39,21 @@ interface Props {
 export default function ConnectionTree({ filterText = '' }: Props) {
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId)
   const connectionStatuses = useConnectionStore((s) => s.connectionStatuses)
-  const { databases, tables, databaseOpenStates, loadDatabases, loadTables, loadingDatabases, isDatabaseOpen, setDatabaseOpen, resetDatabaseOpenStates, clearDatabaseData } = useDatabaseStore()
+  const { databases, tables, databaseOpenStates, loadDatabases, loadTables, loadingDatabases, isDatabaseOpen, setDatabaseOpen, clearDatabaseData } = useDatabaseStore()
   const { addDataTab, addDesignTab, addQueryTab, addObjectsTab, renameTable: renameTableInTabs, tabs: mainTabs, removeTabsByIds, clearQueryDatabaseByConnectionAndDb } = useTabStore()
   const selectedDatabase = useAppStore((s) => s.selectedDatabase)
   const setSelectedDatabase = useAppStore((s) => s.setSelectedDatabase)
-  const [expandedKeys, setExpandedKeys] = useState<string[]>([])
+  const [expandedKeysByConnection, setExpandedKeysByConnection] = useState<Record<string, string[]>>({})
+  const expandedKeys = activeConnectionId ? expandedKeysByConnection[activeConnectionId] ?? [] : []
+  const setExpandedKeys = (updater: string[] | ((prev: string[]) => string[])) => {
+    if (!activeConnectionId) return
+    setExpandedKeysByConnection((prev) => {
+      const current = prev[activeConnectionId] ?? []
+      const next = typeof updater === 'function' ? updater(current) : updater
+      if (next.length === current.length && next.every((key, index) => key === current[index])) return prev
+      return { ...prev, [activeConnectionId]: next }
+    })
+  }
   const [selectedKeys, setSelectedKeys] = useState<string[]>([])
   const [contextMenu, setContextMenu] = useState<{ key: string; x: number; y: number } | null>(null)
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
@@ -163,21 +173,32 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   // 切换连接时，重置树展开/选中状态，避免复用上一个连接的展开节点
   useEffect(() => {
-    setExpandedKeys([])
     setSelectedKeys([])
     setSelectedDatabase(null)
-    resetDatabaseOpenStates()
   }, [activeConnectionId])
 
   // 连接断开时也重置展开状态；重连后默认保持折叠
   useEffect(() => {
     if (!isConnected) {
-      setExpandedKeys([])
       setSelectedKeys([])
       setSelectedDatabase(null)
-      if (activeConnectionId) resetDatabaseOpenStates(activeConnectionId)
     }
   }, [activeConnectionId, isConnected])
+
+  useEffect(() => {
+    const connectedIds = new Set(Object.keys(connectionStatuses))
+    setExpandedKeysByConnection((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const id of Object.keys(next)) {
+        if (!connectedIds.has(id)) {
+          delete next[id]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [connectionStatuses])
 
   const treeData: TreeNode[] = useMemo(() => {
     return dbs.map((db) => {
@@ -474,8 +495,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
             if (result.rows?.[0]) {
               setEditDb({
                 dbName,
-                charset: result.rows[0].DEFAULT_CHARACTER_SET_NAME || 'utf8mb4',
-                collation: result.rows[0].DEFAULT_COLLATION_NAME || 'utf8mb4_general_ci'
+                charset: String(result.rows[0].DEFAULT_CHARACTER_SET_NAME || 'utf8mb4'),
+                collation: String(result.rows[0].DEFAULT_COLLATION_NAME || 'utf8mb4_general_ci')
               })
             }
           } catch (e) {
@@ -819,7 +840,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     const nodeKey = contextMenu.key
     if (nodeKey.startsWith('db:')) {
       const dbName = nodeKey.slice(3)
-      const dbOpen = isDatabaseOpen(activeConnectionId, dbName)
+      const dbOpen = activeConnectionId ? isDatabaseOpen(activeConnectionId, dbName) : false
       if (!dbOpen) {
         return [
           { key: 'openDatabase', label: '打开数据库', icon: <FolderOpenOutlined /> },

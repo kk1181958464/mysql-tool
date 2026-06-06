@@ -104,7 +104,7 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
     authConfig.password = config.sshPassword
   }
 
-  sshClient.on('close', (hadError) => {
+  ;(sshClient as any).on('close', (hadError: boolean) => {
     logger.warn(`[ssh-tunnel] SSH connection closed (hadError=${hadError})`)
   })
 

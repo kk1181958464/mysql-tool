@@ -12,6 +12,7 @@ interface DatabaseState {
   loadingDatabases: Record<string, boolean>
   _ts: Record<string, number>
   _inflight: Record<string, Promise<void>>
+  _version: Record<string, number>
   loadDatabases: (connectionId: string, force?: boolean) => Promise<void>
   loadTables: (connectionId: string, db: string, force?: boolean) => Promise<void>
   loadColumns: (connectionId: string, db: string, table: string, force?: boolean) => Promise<void>
@@ -35,6 +36,7 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
   loadingDatabases: {},
   _ts: {},
   _inflight: {},
+  _version: {},
 
   loadDatabases: async (connectionId, force) => {
     const key = `dbs:${connectionId}`
@@ -46,15 +48,19 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
     }
 
     const request = (async () => {
+      const version = get()._version[connectionId] ?? 0
       set((s) => ({ loadingDatabases: { ...s.loadingDatabases, [connectionId]: true } }))
       try {
         const dbs = await api.meta.databases(connectionId)
+        if ((get()._version[connectionId] ?? 0) !== version) return
         set((s) => ({
           databases: { ...s.databases, [connectionId]: dbs },
           _ts: { ...s._ts, [connectionId]: Date.now() },
         }))
       } finally {
-        set((s) => ({ loadingDatabases: { ...s.loadingDatabases, [connectionId]: false } }))
+        if ((get()._version[connectionId] ?? 0) === version) {
+          set((s) => ({ loadingDatabases: { ...s.loadingDatabases, [connectionId]: false } }))
+        }
       }
     })()
 
@@ -81,7 +87,9 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
     }
 
     const request = (async () => {
+      const version = get()._version[connectionId] ?? 0
       const tbls = await api.meta.tables(connectionId, db)
+      if ((get()._version[connectionId] ?? 0) !== version) return
       set((s) => ({
         tables: { ...s.tables, [key]: tbls },
         _ts: { ...s._ts, [key]: Date.now() },
@@ -111,7 +119,9 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
     }
 
     const request = (async () => {
+      const version = get()._version[connectionId] ?? 0
       const cols = await api.meta.columns(connectionId, db, table)
+      if ((get()._version[connectionId] ?? 0) !== version) return
       set((s) => ({
         columns: { ...s.columns, [key]: cols },
         _ts: { ...s._ts, [key]: Date.now() },
@@ -167,7 +177,17 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
 
   clearCache: (connectionId) => {
     if (!connectionId) {
-      set({ databases: {}, tables: {}, columns: {}, databaseOpenStates: {}, _ts: {}, _inflight: {} })
+      set((s) => {
+        const _version = { ...s._version }
+        const ids = new Set<string>()
+        Object.keys(s.databases).forEach((id) => ids.add(id))
+        Object.keys(s.loadingDatabases).forEach((id) => ids.add(id))
+        Object.keys(s._version).forEach((id) => ids.add(id))
+        ids.forEach((id) => {
+          _version[id] = (_version[id] ?? 0) + 1
+        })
+        return { databases: {}, tables: {}, columns: {}, databaseOpenStates: {}, loadingDatabases: {}, _ts: {}, _inflight: {}, _version }
+      })
       return
     }
     set((s) => {
@@ -177,9 +197,13 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
       const databaseOpenStates = { ...s.databaseOpenStates }
       const _ts = { ...s._ts }
       const _inflight = { ...s._inflight }
+      const loadingDatabases = { ...s.loadingDatabases }
+      const _version = { ...s._version }
       delete databases[connectionId]
       delete _ts[connectionId]
       delete _inflight[`dbs:${connectionId}`]
+      delete loadingDatabases[connectionId]
+      _version[connectionId] = (_version[connectionId] ?? 0) + 1
       for (const k of Object.keys(databaseOpenStates)) {
         if (k.startsWith(connectionId + ':')) delete databaseOpenStates[k]
       }
@@ -189,7 +213,7 @@ export const useDatabaseStore = create<DatabaseState>((set, get) => ({
       for (const k of Object.keys(columns)) {
         if (k.startsWith(connectionId + ':')) { delete columns[k]; delete _ts[k]; delete _inflight[`columns:${k}`] }
       }
-      return { databases, tables, columns, databaseOpenStates, _ts, _inflight }
+      return { databases, tables, columns, databaseOpenStates, loadingDatabases, _ts, _inflight, _version }
     })
   },
 

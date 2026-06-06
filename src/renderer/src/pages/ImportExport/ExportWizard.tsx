@@ -37,9 +37,10 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
     setLoading(true)
     setProgress(0)
     try {
-      const defaultName = outputPath || `export_${Date.now()}.${format}`
+      const ext = format === 'excel' ? 'xlsx' : format
+      const defaultName = outputPath || `export_${Date.now()}.${ext}`
       const sql = sourceType === 'sql' ? customSql : `SELECT * FROM ${selectedTables.map(t => `\`${t}\``).join(', ')}`
-      await api.importExport.exportData(connId, selectedDb, sql, defaultName, format,
+      const filePath = await api.importExport.exportData(connId, selectedDb, sql, defaultName, format,
         format === 'csv'
           ? csvOptions
           : format === 'json'
@@ -48,8 +49,12 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
               ? { ...sqlOptions, tables: selectedTables, includeData: true }
               : excelOptions
       )
+      if (!filePath) {
+        setResult({ success: false, message: 'Export canceled' })
+        return
+      }
       setProgress(100)
-      setResult({ success: true, message: `导出完成: ${outputPath || `export_${Date.now()}.${format}`}` })
+      setResult({ success: true, message: `Export completed: ${filePath}` })
     } catch (e: any) {
       setResult({ success: false, message: e.message || String(e) })
     } finally {

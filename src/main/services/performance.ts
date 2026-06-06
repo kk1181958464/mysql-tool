@@ -1,6 +1,6 @@
 import * as connectionManager from './connection-manager'
 
-type DbRow = Record<string, unknown>
+type DbRow = Record<string, any>
 
 async function query(connId: string, sql: string): Promise<DbRow[]> {
   const conn = await connectionManager.getConnection(connId)

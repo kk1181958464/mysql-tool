@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState, useRef } from 'react'
 import { Tabs, Table, Tag, Button, Space, Dropdown, Empty, Spin } from '../../components/ui'
 import { DownloadOutlined, CheckCircleOutlined, WarningOutlined, CloseCircleOutlined } from '@ant-design/icons'
 import { useTabStore, QueryTab } from '../../stores/tab.store'
-import { useConnectionStore } from '../../stores/connection.store'
 import { api } from '../../utils/ipc'
 import { reportPerfMetric } from '../../utils/perf'
 import type { QueryHistoryItem, QueryStatementResult } from '../../../../shared/types/query'
@@ -15,6 +14,7 @@ interface Props {
 const RESULT_VIRTUAL_THRESHOLD = 1000
 const HISTORY_VIRTUAL_THRESHOLD = 12
 const RESULT_WORKER_THRESHOLD = 5000
+const QUERY_SLOW_HINT_SECONDS = 8
 
 type StatementKind = 'select' | 'show' | 'describe' | 'explain' | 'ddl' | 'mutation' | 'session' | 'other'
 
@@ -98,9 +98,9 @@ const ExplainView: React.FC<{ rows: Record<string, unknown>[] }> = ({ rows }) =>
               fontSize: 12,
               fontWeight: 600,
             }}>
-              #{row.id}
+              #{String(row.id)}
             </span>
-            <span style={{ fontWeight: 600, fontSize: 14 }}>{row.table || '(无表)'}</span>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>{String(row.table || '(无表)')}</span>
             <span style={{
               color: typeInfo.color,
               display: 'flex',
@@ -113,12 +113,12 @@ const ExplainView: React.FC<{ rows: Record<string, unknown>[] }> = ({ rows }) =>
             </span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px 24px', fontSize: 13 }}>
-            <div><span style={{ color: 'var(--text-muted)' }}>访问类型：</span><Tag type={typeInfo.color === 'var(--success)' ? 'success' : typeInfo.color === 'var(--error)' ? 'error' : 'warning'}>{row.type || '-'}</Tag></div>
-            <div><span style={{ color: 'var(--text-muted)' }}>查询类型：</span>{row.select_type || '-'}</div>
-            <div><span style={{ color: 'var(--text-muted)' }}>使用索引：</span><span style={{ color: row.key ? 'var(--success)' : 'var(--error)' }}>{row.key || '无'}</span></div>
-            <div><span style={{ color: 'var(--text-muted)' }}>可用索引：</span>{row.possible_keys || '-'}</div>
-            <div><span style={{ color: 'var(--text-muted)' }}>扫描行数：</span><span style={{ fontWeight: 600 }}>{row.rows?.toLocaleString() || '-'}</span></div>
-            <div><span style={{ color: 'var(--text-muted)' }}>过滤比例：</span>{row.filtered ? `${row.filtered}%` : '-'}</div>
+            <div><span style={{ color: 'var(--text-muted)' }}>访问类型：</span><Tag type={typeInfo.color === 'var(--success)' ? 'success' : typeInfo.color === 'var(--error)' ? 'error' : 'warning'}>{String(row.type || '-')}</Tag></div>
+            <div><span style={{ color: 'var(--text-muted)' }}>查询类型：</span>{String(row.select_type || '-')}</div>
+            <div><span style={{ color: 'var(--text-muted)' }}>使用索引：</span><span style={{ color: row.key ? 'var(--success)' : 'var(--error)' }}>{String(row.key || '无')}</span></div>
+            <div><span style={{ color: 'var(--text-muted)' }}>可用索引：</span>{String(row.possible_keys || '-')}</div>
+            <div><span style={{ color: 'var(--text-muted)' }}>扫描行数：</span><span style={{ fontWeight: 600 }}>{typeof row.rows === 'number' ? row.rows.toLocaleString() : '-'}</span></div>
+            <div><span style={{ color: 'var(--text-muted)' }}>过滤比例：</span>{row.filtered ? `${String(row.filtered)}%` : '-'}</div>
           </div>
           {row.Extra && (
             <div style={{ marginTop: 10, padding: '8px 12px', background: 'var(--bg-hover)', borderRadius: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -133,7 +133,7 @@ const ExplainView: React.FC<{ rows: Record<string, unknown>[] }> = ({ rows }) =>
 
 export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const { tabs } = useTabStore()
-  const { activeConnectionId } = useConnectionStore()
+  const [runningElapsedMs, setRunningElapsedMs] = useState(0)
   const [historyRows, setHistoryRows] = useState<QueryHistoryItem[]>([])
   const [historyPage, setHistoryPage] = useState(1)
   const [historyPageSize] = useState(20)
@@ -142,12 +142,17 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const [activeKey, setActiveKey] = useState('results')
   const [activeStatementIndex, setActiveStatementIndex] = useState(0)
   const [transformedRows, setTransformedRows] = useState<Array<Record<string, unknown>>>([])
+  const [exportingFormat, setExportingFormat] = useState<string | null>(null)
+  const [exportMessage, setExportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const transformJobIdRef = useRef(0)
 
   const tab = tabs.find((t) => t.id === tabId) as QueryTab | undefined
+  const tabConnectionId = tab?.connectionId ?? null
   const result = tab?.result
   const error = tab?.error
   const executing = tab?.isExecuting
+  const runningSeconds = Math.max(0, Math.floor(runningElapsedMs / 1000))
+  const showSlowQueryHint = executing && runningSeconds >= QUERY_SLOW_HINT_SECONDS
   const statementResults = result?.statementResults?.length
     ? result.statementResults
     : result
@@ -186,22 +191,34 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const selectedStatementStatus = selectedStatement ? getStatementStatusTag(selectedStatement) : null
 
   useEffect(() => {
+    if (!tab?.isExecuting || !tab.executionStartedAt) {
+      setRunningElapsedMs(0)
+      return
+    }
+
+    const updateElapsed = () => setRunningElapsedMs(Date.now() - tab.executionStartedAt!)
+    updateElapsed()
+    const timer = window.setInterval(updateElapsed, 500)
+    return () => window.clearInterval(timer)
+  }, [tab?.isExecuting, tab?.executionStartedAt])
+
+  useEffect(() => {
     setActiveStatementIndex(0)
     setActiveKey((result?.failCount ?? 0) > 0 ? 'messages' : 'results')
   }, [result?.sql, result?.executionTime, result?.statementResults?.length])
 
   useEffect(() => {
     setHistoryPage(1)
-  }, [activeConnectionId])
+  }, [tabConnectionId])
 
   useEffect(() => {
-    if (activeKey !== 'history' || !activeConnectionId) return
+    if (activeKey !== 'history' || !tabConnectionId) return
 
     const offset = (historyPage - 1) * historyPageSize
     const start = performance.now()
     setHistoryLoading(true)
 
-    api.store.getHistory(activeConnectionId, historyPageSize, offset)
+    api.store.getHistory(tabConnectionId, historyPageSize, offset)
       .then((rows) => {
         const data = Array.isArray(rows) ? rows : []
         setHistoryRows(data)
@@ -224,7 +241,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
         setHistoryHasMore(false)
       })
       .finally(() => setHistoryLoading(false))
-  }, [activeKey, activeConnectionId, historyPage, historyPageSize])
+  }, [activeKey, tabConnectionId, historyPage, historyPageSize])
 
   const resultColumns = selectedStatement?.columns.map((col) => ({
     key: col.name,
@@ -303,11 +320,18 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   }, [activeKey, selectedStatement, normalizedRows.length])
 
   const handleExport = async (format: string) => {
-    if (!selectedStatement || !activeConnectionId) return
+    if (!selectedStatement || !tabConnectionId || exportingFormat) return
+    setExportingFormat(format)
+    setExportMessage(null)
     try {
-      await api.importExport.exportData(activeConnectionId, '', selectedStatement.sql, '', format)
-    } catch {
-      // ignore
+      const filePath = await api.importExport.exportData(tabConnectionId, '', selectedStatement.sql, '', format)
+      if (filePath) {
+        setExportMessage({ type: 'success', text: `导出完成: ${filePath}` })
+      }
+    } catch (e: any) {
+      setExportMessage({ type: 'error', text: e?.message || '导出失败' })
+    } finally {
+      setExportingFormat(null)
     }
   }
 
@@ -348,7 +372,12 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       key: 'results',
       label: `结果${result ? ` (${resultCount})` : ''}`,
       children: executing ? (
-        <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="执行中..." /></div>
+        <div style={{ textAlign: 'center', padding: 40 }}>
+          <Spin tip={showSlowQueryHint ? `长查询执行中 ${runningSeconds}s` : `执行中 ${runningSeconds}s`} />
+          <div style={{ marginTop: 12, color: showSlowQueryHint ? 'var(--warning)' : 'var(--text-muted)', fontSize: 12 }}>
+            {showSlowQueryHint ? '数据库仍在执行，必要时可以点击工具栏的取消按钮中止' : '长查询可以点击工具栏的取消按钮中止'}
+          </div>
+        </div>
       ) : selectedStatement ? (
         isExplain ? (
           <div style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -430,15 +459,33 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
               <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
                 {getStatementMetricLabel(selectedStatement)} | {selectedStatement.executionTime}ms
               </span>
+              {exportMessage && (
+                <span
+                  style={{
+                    color: exportMessage.type === 'success' ? 'var(--success)' : 'var(--error)',
+                    fontSize: 12,
+                    maxWidth: 420,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                  title={exportMessage.text}
+                >
+                  {exportMessage.text}
+                </span>
+              )}
               <Dropdown
                 items={[
-                  { key: 'csv', label: 'CSV' },
-                  { key: 'json', label: 'JSON' },
-                  { key: 'sql', label: 'SQL INSERT' },
+                  { key: 'csv', label: 'CSV', disabled: Boolean(exportingFormat) },
+                  { key: 'json', label: 'JSON', disabled: Boolean(exportingFormat) },
+                  { key: 'sql', label: 'SQL INSERT', disabled: Boolean(exportingFormat) },
                 ]}
                 onSelect={handleExport}
+                trigger={['click']}
               >
-                <Button size="small"><DownloadOutlined /> 导出</Button>
+                <Button size="small" loading={Boolean(exportingFormat)} disabled={Boolean(exportingFormat)}>
+                  {!exportingFormat && <DownloadOutlined />} {exportingFormat ? '导出中...' : '导出'}
+                </Button>
               </Dropdown>
             </Space>
           </div>

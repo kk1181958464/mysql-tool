@@ -7,6 +7,8 @@ import * as connectionManager from './services/connection-manager'
 import * as localStore from './services/local-store'
 import * as backupService from './services/backup'
 import * as logger from './utils/logger'
+import * as queryExecutor from './services/query-executor'
+import { cancelMultiStatementSql } from './services/sql-script-executor'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -197,5 +199,9 @@ app.on('before-quit', async () => {
   tray = null
   backupService.stopScheduleRunner()
   localStore.flushLocalStoreQueues()
+  for (const id of connectionManager.getActiveConnectionIds()) {
+    cancelMultiStatementSql(id)
+    await queryExecutor.cancel(id)
+  }
   await connectionManager.disconnectAll()
 })

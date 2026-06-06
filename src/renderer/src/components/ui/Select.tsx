@@ -2,26 +2,31 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import './ui.css'
 
+type SelectValue = string | number | null
+type SelectChangeHandler<T extends SelectValue> =
+  | { bivarianceHack(value: T): void }['bivarianceHack']
+  | React.Dispatch<React.SetStateAction<string>>
+
 interface Option {
   value: string | number
   label: React.ReactNode
   disabled?: boolean
 }
 
-interface SelectProps {
-  value?: string | number
-  defaultValue?: string | number
+interface SelectProps<T extends SelectValue = string> {
+  value?: T | SelectValue
+  defaultValue?: T | SelectValue
   options?: Option[]
   placeholder?: string
   disabled?: boolean
   size?: 'small' | 'medium' | 'large'
   allowClear?: boolean
-  onChange?: (value: string | number) => void
+  onChange?: SelectChangeHandler<T>
   className?: string
   style?: React.CSSProperties
 }
 
-export function Select({
+export function Select<T extends SelectValue = SelectValue>({
   value,
   defaultValue,
   options = [],
@@ -32,7 +37,7 @@ export function Select({
   onChange,
   className = '',
   style,
-}: SelectProps) {
+}: SelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false)
   const [innerValue, setInnerValue] = useState(defaultValue)
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({})
@@ -77,14 +82,14 @@ export function Select({
   const handleSelect = (opt: Option) => {
     if (opt.disabled) return
     setInnerValue(opt.value)
-    onChange?.(opt.value)
+    ;(onChange as ((value: T) => void) | undefined)?.(opt.value as T)
     setIsOpen(false)
   }
 
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation()
     setInnerValue(undefined)
-    onChange?.('' as any)
+    ;(onChange as ((value: T) => void) | undefined)?.('' as T)
   }
 
   return (

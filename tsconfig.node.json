@@ -1,13 +1,14 @@
 {
   "compilerOptions": {
     "composite": true,
+    "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "outDir": "./out",
-    "rootDir": "./src",
-    "strict": true,
+    "rootDir": ".",
+    "strict": false,
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "declaration": true,

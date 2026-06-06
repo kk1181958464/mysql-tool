@@ -2,7 +2,7 @@ import './ui.css'
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 
 interface Column<T> {
-  key: string
+  key?: string
   title: React.ReactNode
   dataIndex?: string
   width?: number | string
@@ -22,7 +22,7 @@ interface TableVirtualConfig {
 interface TableProps<T> {
   columns: Column<T>[]
   dataSource: T[]
-  rowKey?: string | ((record: T) => string)
+  rowKey?: string | ((record: T, index: number) => string)
   loading?: boolean
   size?: 'small' | 'medium' | 'large'
   onRow?: (record: T, index: number) => React.HTMLAttributes<HTMLTableRowElement>
@@ -95,7 +95,7 @@ export function Table<T extends Record<string, any>>({
   }, [])
 
   const getRowKey = (record: T, index: number) => {
-    if (typeof rowKey === 'function') return rowKey(record)
+    if (typeof rowKey === 'function') return rowKey(record, index)
     return record[rowKey] ?? index
   }
 
@@ -105,7 +105,8 @@ export function Table<T extends Record<string, any>>({
   }
 
   const getColWidth = (col: Column<T>) => {
-    if (colWidths[col.key]) return colWidths[col.key]
+    const key = col.key || col.dataIndex || ''
+    if (key && colWidths[key]) return colWidths[key]
     if (typeof col.width === 'number') return col.width
     return col.width
   }
@@ -265,18 +266,21 @@ export function Table<T extends Record<string, any>>({
         <table className={`ui-table ${virtualEnabled ? 'ui-table-virtual-enabled' : ''}`} style={tableStyle}>
           <colgroup>
             {columns.map((col) => (
-              <col key={col.key} style={{ width: getColWidth(col), minWidth: getColWidth(col) }} />
+              <col key={col.key || col.dataIndex || String(columns.indexOf(col))} style={{ width: getColWidth(col), minWidth: getColWidth(col) }} />
             ))}
           </colgroup>
           <thead>
             <tr>
-              {columns.map((col) => (
-                <th key={col.key} style={{ position: 'sticky', top: 0 }}>
+              {columns.map((col, index) => (
+                <th key={col.key || col.dataIndex || String(index)} style={{ position: 'sticky', top: 0 }}>
                   {col.title}
                   {resizable && (
                     <span
                       className="ui-table-resize-handle"
-                      onMouseDown={(e) => handleMouseDown(e, col.key, colWidths[col.key] || (typeof col.width === 'number' ? col.width : 150))}
+                      onMouseDown={(e) => {
+                        const key = col.key || col.dataIndex || String(index)
+                        handleMouseDown(e, key, colWidths[key] || (typeof col.width === 'number' ? col.width : 150))
+                      }}
                     />
                   )}
                 </th>
@@ -301,8 +305,8 @@ export function Table<T extends Record<string, any>>({
                   const actualIndex = virtualEnabled ? virtualWindow.start + index : index
                   return (
                     <tr key={getRowKey(record, actualIndex)} {...onRow?.(record, actualIndex)}>
-                      {columns.map((col) => (
-                        <td key={col.key} className={col.ellipsis ? 'ellipsis' : ''}>
+                      {columns.map((col, colIndex) => (
+                        <td key={col.key || col.dataIndex || String(colIndex)} className={col.ellipsis ? 'ellipsis' : ''}>
                           {col.render ? col.render(getValue(record, col), record, actualIndex) : getValue(record, col)}
                         </td>
                       ))}
@@ -345,7 +349,7 @@ export function Table<T extends Record<string, any>>({
           </div>
         )}
       </div>
-      {pagination && pagination !== false && (
+      {pagination && (
         <div className="ui-table-pagination">
           <span>共 {pagination.total} 条</span>
           <div className="ui-pagination">

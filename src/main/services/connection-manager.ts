@@ -10,6 +10,7 @@ import {
   HEARTBEAT_TIMEOUT_DEFAULT_MS,
   HEARTBEAT_CONCURRENCY_SETTING_KEY,
   HEARTBEAT_CONCURRENCY_DEFAULT,
+  HEARTBEAT_CONCURRENCY_MIN,
   HEARTBEAT_AUTOTUNE_SETTING_KEY,
   HEARTBEAT_AUTOTUNE_DEFAULT,
   normalizeHeartbeatSeconds,
@@ -383,7 +384,7 @@ export async function connect(config: ConnectionConfig): Promise<ConnectionStatu
     const pool = mysql.createPool(buildPoolOptions(config, host, port))
 
     // 监听连接池异常，自动清理残留资源防止内存泄漏
-    pool.on('error', (err) => {
+    ;(pool as any).on('error', (err: Error) => {
       logger.warn(`[connection-manager] Pool error for ${config.id}: ${err.message}`)
     })
 
@@ -428,6 +429,10 @@ export function getPool(id: string): mysql.Pool {
   const pool = pools.get(id)
   if (!pool) throw new Error(`No active connection for id: ${id}`)
   return pool
+}
+
+export function getActiveConnectionIds(): string[] {
+  return Array.from(pools.keys())
 }
 
 export function getConnectionConfig(id: string): ConnectionConfig | undefined {

@@ -48,7 +48,7 @@ export default function DataGrid({
   const tableColumns = useMemo(() => {
     return columns.map((col) => ({
       key: col.name,
-      title: <Tooltip title={col.type}>{col.name}</Tooltip>,
+      title: <Tooltip title={col.type}><span>{col.name}</span></Tooltip>,
       dataIndex: col.name,
       width: 150,
       ellipsis: true,

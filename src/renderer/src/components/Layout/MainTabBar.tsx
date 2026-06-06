@@ -128,7 +128,7 @@ export default function MainTabBar() {
 
   const getClosableTabs = useCallback((inputTabs: Tab[]) => {
     // objects tab / 固定 tab 永不可关闭
-    return inputTabs.filter((t) => t.closable !== false && t.type !== 'objects')
+    return inputTabs.filter((t) => t.closable !== false && String(t.type) !== 'objects')
   }, [])
 
   useEffect(() => {

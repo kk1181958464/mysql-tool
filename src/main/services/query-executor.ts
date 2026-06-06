@@ -2,16 +2,20 @@ import mysql from 'mysql2/promise'
 import type { ResultSetHeader } from 'mysql2/promise'
 import * as connectionManager from './connection-manager'
 import * as localStore from './local-store'
-import type { QueryResult, QueryStatementResult, ExplainResult } from '../../shared/types/query'
+import type { QueryExecuteOptions, QueryResult, QueryStatementResult, ExplainResult } from '../../shared/types/query'
 import * as logger from '../utils/logger'
 import { quoteId } from '../utils/sql'
 import { applyResultRowLimit } from '../utils/sql-result-limit'
 
 /** mysql2 FieldPacket 的运行时字段（类型定义不完整，此处补齐） */
 type MysqlField = { name: string; type?: number; flags?: number }
-type DbRow = Record<string, unknown>
+type DbRow = Record<string, any>
 
 const runningQueries = new Map<string, mysql.PoolConnection>()
+
+function getRunningQueryKey(connectionId: string, executionId?: string): string {
+  return executionId ? `${connectionId}:${executionId}` : connectionId
+}
 
 function mapFields(fields: MysqlField[]): QueryResult['columns'] {
   return fields.map(f => ({
@@ -25,7 +29,7 @@ function mapFields(fields: MysqlField[]): QueryResult['columns'] {
   }))
 }
 
-export async function execute(connectionId: string, sql: string, database?: string): Promise<QueryResult> {
+export async function execute(connectionId: string, sql: string, database?: string, options?: QueryExecuteOptions): Promise<QueryResult> {
   if (!sql.trim()) {
     throw new Error('没有可执行的 SQL 语句')
   }
@@ -35,11 +39,12 @@ export async function execute(connectionId: string, sql: string, database?: stri
   let isSuccess = true
   let errorMessage = ''
   let result: QueryResult | null = null
+  const runningKey = getRunningQueryKey(connectionId, options?.executionId)
+  runningQueries.set(runningKey, conn)
 
   try {
     if (database) await conn.query(`USE ${quoteId(database)}`)
 
-    runningQueries.set(connectionId, conn)
     const limitedSql = applyResultRowLimit(sql, { enabled: true })
     const [rows, fields] = await conn.query(limitedSql.sql)
     const elapsed = Date.now() - start
@@ -154,7 +159,7 @@ export async function execute(connectionId: string, sql: string, database?: stri
     errorMessage = err.message
     throw err
   } finally {
-    runningQueries.delete(connectionId)
+    runningQueries.delete(runningKey)
     conn.release()
     const elapsed = Date.now() - start
     try {
@@ -179,11 +184,12 @@ export async function execute(connectionId: string, sql: string, database?: stri
   return result
 }
 
-export async function explain(connectionId: string, sql: string, database?: string): Promise<ExplainResult[]> {
+export async function explain(connectionId: string, sql: string, database?: string, options?: QueryExecuteOptions): Promise<ExplainResult[]> {
   const conn = await connectionManager.getConnection(connectionId)
+  const runningKey = getRunningQueryKey(connectionId, options?.executionId)
+  runningQueries.set(runningKey, conn)
   try {
     if (database) await conn.query(`USE ${quoteId(database)}`)
-    runningQueries.set(connectionId, conn)
     const [rows] = await conn.query(`EXPLAIN ${sql}`)
     return (rows as DbRow[]).map(r => ({
       id: r.id,
@@ -200,16 +206,26 @@ export async function explain(connectionId: string, sql: string, database?: stri
       extra: r.Extra,
     }))
   } finally {
-    runningQueries.delete(connectionId)
+    runningQueries.delete(runningKey)
     conn.release()
   }
 }
 
-export async function cancel(connectionId: string): Promise<void> {
-  const conn = runningQueries.get(connectionId)
+export async function cancel(connectionId: string, executionId?: string): Promise<void> {
+  const runningKey = getRunningQueryKey(connectionId, executionId)
+  const conn = runningQueries.get(runningKey)
   if (conn) {
     conn.destroy()
-    runningQueries.delete(connectionId)
-    logger.info(`Query cancelled for ${connectionId}`)
+    runningQueries.delete(runningKey)
+    logger.info(`Query cancelled for ${runningKey}`)
+    if (executionId) return
+  }
+
+  if (executionId) return
+
+  for (const [key, runningConn] of runningQueries.entries()) {
+    if (key !== connectionId && !key.startsWith(`${connectionId}:`)) continue
+    runningConn.destroy()
+    runningQueries.delete(key)
   }
 }

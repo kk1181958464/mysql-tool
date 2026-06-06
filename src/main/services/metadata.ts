@@ -6,13 +6,15 @@ import type {
   ViewInfo, ProcedureInfo, TriggerInfo, EventInfo, ObjectSearchResult
 } from '../../shared/types/metadata'
 
-async function runQuery(conn: mysql.PoolConnection, sql: string, params?: unknown[], db?: string): Promise<Record<string, unknown>[]> {
+type DbRow = Record<string, any>
+
+async function runQuery(conn: mysql.PoolConnection, sql: string, params?: unknown[], db?: string): Promise<DbRow[]> {
   if (db) await conn.query(`USE ${quoteId(db)}`)
   const [rows] = await conn.query(sql, params)
-  return rows as Record<string, unknown>[]
+  return rows as DbRow[]
 }
 
-async function query(connId: string, sql: string, params?: unknown[], db?: string): Promise<Record<string, unknown>[]> {
+async function query(connId: string, sql: string, params?: unknown[], db?: string): Promise<DbRow[]> {
   let conn = await connectionManager.ensureConnection(connId)
   try {
     return await runQuery(conn, sql, params, db)

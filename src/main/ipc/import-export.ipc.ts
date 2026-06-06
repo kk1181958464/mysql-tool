@@ -41,7 +41,7 @@ async function resolveExportFilePath(sender: Electron.WebContents, filePath: str
   }
 
   const win = BrowserWindow.fromWebContents(sender) || undefined
-  const result = await dialog.showSaveDialog(win, {
+  const result = await (dialog.showSaveDialog as any)(win, {
     title: '导出数据',
     defaultPath: `export_${Date.now()}.${config.ext}`,
     filters: config.filters,
@@ -87,12 +87,21 @@ export function registerImportExportIPC() {
   ipcMain.handle(IPC.EXPORT_DATA, async (e, connId: string, db: string, sql: string, filePath: string, format: string, options?: ExportDataOptions) => {
     const normalizedFormat = normalizeExportFormat(format)
     const targetPath = await resolveExportFilePath(e.sender, filePath, normalizedFormat)
-    if (!targetPath) return
+    if (!targetPath) return null
 
     validateFilePath(targetPath, EXPORT_EXTS)
-    if (normalizedFormat === 'csv') return importExport.exportToCSV(connId, db, sql, targetPath)
-    if (normalizedFormat === 'json') return importExport.exportToJSON(connId, db, sql, targetPath)
-    if (normalizedFormat === 'xlsx') return importExport.exportToExcel(connId, db, sql, targetPath, options)
+    if (normalizedFormat === 'csv') {
+      await importExport.exportToCSV(connId, db, sql, targetPath)
+      return targetPath
+    }
+    if (normalizedFormat === 'json') {
+      await importExport.exportToJSON(connId, db, sql, targetPath)
+      return targetPath
+    }
+    if (normalizedFormat === 'xlsx') {
+      await importExport.exportToExcel(connId, db, sql, targetPath, options)
+      return targetPath
+    }
     if (normalizedFormat === 'sql') {
       const tables = options?.tables || []
       const win = BrowserWindow.fromWebContents(e.sender)
@@ -100,7 +109,8 @@ export function registerImportExportIPC() {
         if (!win || win.isDestroyed()) return
         win.webContents.send(IPC.EXPORT_PROGRESS, data)
       }
-      return importExport.exportToSQL(connId, db, tables, targetPath, { ...options, onProgress: sendProgress })
+      await importExport.exportToSQL(connId, db, tables, targetPath, { ...options, onProgress: sendProgress })
+      return targetPath
     }
   })
 

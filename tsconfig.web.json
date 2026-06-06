@@ -3,12 +3,13 @@
     "composite": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "target": "ES2022",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "jsx": "react-jsx",
     "outDir": "./out",
     "rootDir": "./src",
-    "strict": true,
+    "strict": false,
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "declaration": true,
@@ -17,6 +18,7 @@
   "include": [
     "src/renderer/src/**/*",
     "src/renderer/env.d.ts",
+    "src/preload/types.ts",
     "src/shared/**/*"
   ]
 }

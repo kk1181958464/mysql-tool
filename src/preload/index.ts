@@ -12,10 +12,10 @@ const api: ElectronAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.CONNECTION_DELETE, id),
   },
   query: {
-    execute: (connId, sql, db) => ipcRenderer.invoke(IPC.QUERY_EXECUTE, connId, sql, db),
+    execute: (connId, sql, db, options) => ipcRenderer.invoke(IPC.QUERY_EXECUTE, connId, sql, db, options),
     executeMulti: (connId, sql, db, options) => ipcRenderer.invoke(IPC.QUERY_EXECUTE_MULTI, connId, sql, db, options),
-    explain: (connId, sql, db) => ipcRenderer.invoke(IPC.QUERY_EXPLAIN, connId, sql, db),
-    cancel: (connId) => ipcRenderer.invoke(IPC.QUERY_CANCEL, connId),
+    explain: (connId, sql, db, options) => ipcRenderer.invoke(IPC.QUERY_EXPLAIN, connId, sql, db, options),
+    cancel: (connId, executionId) => ipcRenderer.invoke(IPC.QUERY_CANCEL, connId, executionId),
     format: (sql) => ipcRenderer.invoke(IPC.QUERY_FORMAT, sql),
   },
   meta: {

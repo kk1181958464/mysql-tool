@@ -2,6 +2,10 @@
 
 import type { ElectronAPI } from '../preload/types'
 
-interface Window {
-  api: ElectronAPI
+declare global {
+  interface Window {
+    api: ElectronAPI
+  }
 }
+
+export {}
