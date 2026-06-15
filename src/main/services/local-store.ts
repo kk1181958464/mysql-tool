@@ -107,6 +107,7 @@ function createTables() {
       createdAt TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_query_history_connection_id_id ON query_history(connectionId, id);
+    CREATE INDEX IF NOT EXISTS idx_query_history_conn_created ON query_history(connectionId, createdAt);
   `)
 }
 

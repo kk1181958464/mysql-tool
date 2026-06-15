@@ -880,7 +880,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   useEffect(() => {
     if (refreshVersion === lastRefreshVersionRef.current) return
     lastRefreshVersionRef.current = refreshVersion
-    countCacheRef.current.delete(countCacheKey)
+    // LRU 淘汰：超过 50 条目时清空最旧
+    const cache = countCacheRef.current
+    if (cache.size > 50) {
+      cache.delete(cache.keys().next().value!)
+    }
+    cache.delete(countCacheKey)
     fetchData('reset', true, page)
   }, [refreshVersion, countCacheKey, fetchData, page])
 
@@ -1047,7 +1052,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }, [clearAllSelections])
 
   const invalidateCountCache = useCallback(() => {
-    countCacheRef.current.delete(countCacheKey)
+    const cache = countCacheRef.current
+    if (cache.size > 50) {
+      cache.delete(cache.keys().next().value!)
+    }
+    cache.delete(countCacheKey)
   }, [countCacheKey])
 
   const applyWhereFilter = useCallback((nextFilterMode: FilterMode, nextSimpleFilterTree: SimpleFilterGroup, nextWhereInput: string) => {
@@ -1356,69 +1365,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     return () => document.removeEventListener('paste', onPaste)
   }, [result?.columns, allRowKeys, selectedCells, handleCellChange, markCellsRecentlyUpdated])
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
-      if (e.ctrlKey || e.metaKey || e.altKey) return
-      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
-      if (!result?.columns?.length || allRowKeys.length === 0 || selectedCells.size === 0) return
-
-      const active = document.activeElement as HTMLElement | null
-      if (active) {
-        const tag = active.tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || active.isContentEditable) return
-      }
-
-      const colNames = result.columns.map((c) => c.name)
-      const pickCell = (): { rowKey: string; colName: string } | null => {
-        const anchor = anchorCellRef.current
-        if (anchor && allRowKeys.includes(anchor.rowKey) && colNames.includes(anchor.colName)) {
-          return anchor
-        }
-        const first = selectedCells.values().next().value as string | undefined
-        if (!first) return null
-        const parsed = parseCellKey(first)
-        if (!parsed) return null
-        const { rowKey, colName } = parsed
-        if (!allRowKeys.includes(rowKey) || !colNames.includes(colName)) return null
-        return { rowKey, colName }
-      }
-
-      const current = pickCell()
-      if (!current) return
-
-      const rowIndex = allRowKeys.indexOf(current.rowKey)
-      const colIndex = colNames.indexOf(current.colName)
-      if (rowIndex < 0 || colIndex < 0) return
-
-      let nextRowIndex = rowIndex
-      let nextColIndex = colIndex
-      if (e.key === 'ArrowUp') nextRowIndex = Math.max(0, rowIndex - 1)
-      if (e.key === 'ArrowDown') nextRowIndex = Math.min(allRowKeys.length - 1, rowIndex + 1)
-      if (e.key === 'ArrowLeft') nextColIndex = Math.max(0, colIndex - 1)
-      if (e.key === 'ArrowRight') nextColIndex = Math.min(colNames.length - 1, colIndex + 1)
-
-      if (nextRowIndex === rowIndex && nextColIndex === colIndex) return
-      e.preventDefault()
-
-      const nextRowKey = allRowKeys[nextRowIndex]
-      const nextColName = colNames[nextColIndex]
-      const nextCellKey = toCellKey(nextRowKey, nextColName)
-      const nextCellDomId = toCellDomId(nextRowKey, nextColName)
-
-      anchorCellRef.current = { rowKey: nextRowKey, colName: nextColName }
-      setSelectedCells(new Set([nextCellKey]))
-
-      window.requestAnimationFrame(() => {
-        const target = rootRef.current?.querySelector(`[data-cell-id="${nextCellDomId}"]`) as HTMLElement | null
-        target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-      })
-    }
-
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [result?.columns, allRowKeys, selectedCells, shouldHandlePanelKeyboardEvent])
-
   const applyPendingChangesToResult = useCallback((changes: Map<string, Record<string, unknown>>) => {
     if (!pk || changes.size === 0) return
     setResult((prev) => {
@@ -1546,23 +1492,36 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     void handleSaveChangesRef.current()
   }, [])
 
-  // Ctrl+S 保存
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        if (!shouldHandlePanelKeyboardEvent(e, { allowDirty: true })) return
+  // 键盘快捷键合并处理器 — 5→1 全局监听器
+  const keyboardHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {})
+
+  keyboardHandlerRef.current = (e: KeyboardEvent) => {
+    // 1) Ctrl+S 保存
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      if (shouldHandlePanelKeyboardEvent(e, { allowDirty: true })) {
         e.preventDefault()
         flushEditingAndSave()
       }
+      return
     }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [flushEditingAndSave, shouldHandlePanelKeyboardEvent])
 
-  // Delete：勾选行删除（走与删除按钮一致的确认流程）
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete') return
+    // 2) Ctrl+A 全选所有复选框行
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
+      const active = document.activeElement as HTMLElement | null
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
+      const root = rootRef.current
+      if (!root || root.offsetParent === null) return
+      if (allRowKeys.length === 0) return
+      e.preventDefault()
+      setSelectedRowKeys(new Set(allRowKeys))
+      setSelectedCells(new Set())
+      lastCheckedRef.current = allRowKeys[allRowKeys.length - 1] || null
+      return
+    }
+
+    // 3) Delete — 删除勾选行
+    if (e.key === 'Delete') {
       if (selectedRowKeyList.length === 0 || deleteConfirmOpen) return
       if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
       const active = document.activeElement as HTMLElement | null
@@ -1574,33 +1533,88 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
       e.preventDefault()
       openDeleteConfirm(selectedRowKeyList)
+      return
     }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectedRowKeyList, deleteConfirmOpen, openDeleteConfirm, shouldHandlePanelKeyboardEvent])
 
-  // 选区数字键批量改值（列头整列与 Shift 矩形多选共用）
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (selectedCells.size <= 1) return
+    // 4) 数字键批量改值（多选单元格时）
+    if (selectedCells.size > 1 && /^[0-9]$/.test(e.key)) {
       if (e.ctrlKey || e.metaKey || e.altKey) return
       if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
       const active = document.activeElement as HTMLElement | null
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
-      if (!/^[0-9]$/.test(e.key)) return
       e.preventDefault()
       const nextValue = e.key
       selectedCells.forEach((cellKey) => {
         const cell = parseCellKey(cellKey)
         if (!cell) return
-        const { rowKey, colName } = cell
-        handleCellChange(rowKey, colName, nextValue)
+        handleCellChange(cell.rowKey, cell.colName, nextValue)
       })
       markCellsRecentlyUpdated(selectedCells)
+      return
     }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [selectedCells, handleCellChange, markCellsRecentlyUpdated, shouldHandlePanelKeyboardEvent])
+
+    // 5) 方向键单格导航
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
+      if (!result?.columns?.length || allRowKeys.length === 0 || selectedCells.size === 0) return
+      const active = document.activeElement as HTMLElement | null
+      if (active) {
+        const tag = active.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || active.isContentEditable) return
+      }
+
+      const colNames = result.columns.map((c) => c.name)
+      const pickCell = (): { rowKey: string; colName: string } | null => {
+        const anchor = anchorCellRef.current
+        if (anchor && allRowKeys.includes(anchor.rowKey) && colNames.includes(anchor.colName)) {
+          return anchor
+        }
+        const first = selectedCells.values().next().value as string | undefined
+        if (!first) return null
+        const parsed = parseCellKey(first)
+        if (!parsed) return null
+        if (!allRowKeys.includes(parsed.rowKey) || !colNames.includes(parsed.colName)) return null
+        return parsed
+      }
+
+      const current = pickCell()
+      if (!current) return
+
+      const rowIndex = allRowKeys.indexOf(current.rowKey)
+      const colIndex = colNames.indexOf(current.colName)
+      if (rowIndex < 0 || colIndex < 0) return
+
+      let nextRowIndex = rowIndex
+      let nextColIndex = colIndex
+      if (e.key === 'ArrowUp') nextRowIndex = Math.max(0, rowIndex - 1)
+      if (e.key === 'ArrowDown') nextRowIndex = Math.min(allRowKeys.length - 1, rowIndex + 1)
+      if (e.key === 'ArrowLeft') nextColIndex = Math.max(0, colIndex - 1)
+      if (e.key === 'ArrowRight') nextColIndex = Math.min(colNames.length - 1, colIndex + 1)
+
+      if (nextRowIndex === rowIndex && nextColIndex === colIndex) return
+      e.preventDefault()
+
+      const nextRowKey = allRowKeys[nextRowIndex]
+      const nextColName = colNames[nextColIndex]
+      const nextCellKey = toCellKey(nextRowKey, nextColName)
+      const nextCellDomId = toCellDomId(nextRowKey, nextColName)
+
+      anchorCellRef.current = { rowKey: nextRowKey, colName: nextColName }
+      setSelectedCells(new Set([nextCellKey]))
+
+      window.requestAnimationFrame(() => {
+        const target = rootRef.current?.querySelector(`[data-cell-id="${nextCellDomId}"]`) as HTMLElement | null
+        target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      })
+    }
+  }
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => keyboardHandlerRef.current(e)
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [])
 
   // 关闭右键菜单
   useEffect(() => {
@@ -1713,25 +1727,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const handleToolbarDelete = useCallback(() => {
     openDeleteConfirm(selectedRowKeyList)
   }, [openDeleteConfirm, selectedRowKeyList])
-
-  // Ctrl/Cmd + A：数据详情页全选所有复选框行（用于批量删除/导出）
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return
-      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
-      const active = document.activeElement as HTMLElement | null
-      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
-      const root = rootRef.current
-      if (!root || root.offsetParent === null) return
-      if (allRowKeys.length === 0) return
-      e.preventDefault()
-      setSelectedRowKeys(new Set(allRowKeys))
-      setSelectedCells(new Set())
-      lastCheckedRef.current = allRowKeys[allRowKeys.length - 1] || null
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [allRowKeys, shouldHandlePanelKeyboardEvent])
 
   // checkbox 列 + 数据列
   const allChecked = useMemo(

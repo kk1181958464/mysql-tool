@@ -7,6 +7,7 @@ import * as connectionManager from './connection-manager'
 import * as localStore from './local-store'
 import { quoteId } from '../utils/sql'
 import { applyResultRowLimit } from '../utils/sql-result-limit'
+import { stripLeadingTrivia, findTopLevelKeyword, isWordBoundaryChar } from '../utils/sql-cursor'
 import * as logger from '../utils/logger'
 import type { QueryResult, QueryStatementResult } from '../../shared/types/query'
 
@@ -99,36 +100,6 @@ function removeRunningScriptConnection(key: string, conn: mysql.Connection): voi
   }
 }
 
-function stripLeadingTrivia(stmt: string): string {
-  let s = stmt
-  while (true) {
-    const ws = s.match(/^\s+/)
-    if (ws) s = s.slice(ws[0].length)
-
-    if (s.startsWith('--')) {
-      const idx = s.indexOf('\n')
-      s = idx >= 0 ? s.slice(idx + 1) : ''
-      continue
-    }
-    if (s.startsWith('#')) {
-      const idx = s.indexOf('\n')
-      s = idx >= 0 ? s.slice(idx + 1) : ''
-      continue
-    }
-    if (s.startsWith('/*')) {
-      const end = s.indexOf('*/')
-      s = end >= 0 ? s.slice(end + 2) : ''
-      continue
-    }
-
-    return s
-  }
-}
-
-function isWordBoundaryChar(ch: string | undefined): boolean {
-  return !ch || !/[A-Za-z0-9_$]/.test(ch)
-}
-
 function matchKeywordAt(sql: string, index: number): string | null {
   for (const keyword of BLOCK_START_KEYWORDS) {
     if (sql.slice(index, index + keyword.length).toUpperCase() !== keyword) continue
@@ -139,99 +110,6 @@ function matchKeywordAt(sql: string, index: number): string | null {
     }
   }
   return null
-}
-
-function findTopLevelKeyword(sql: string, keyword: string, startIndex = 0): number {
-  const upperKeyword = keyword.toUpperCase()
-  let inSQ = false, inDQ = false, inBT = false, inLC = false, inBC = false
-  let parenDepth = 0
-
-  for (let i = startIndex; i < sql.length; i += 1) {
-    const ch = sql[i]
-    const next = sql[i + 1]
-
-    if (inLC) {
-      if (ch === '\n') inLC = false
-      continue
-    }
-    if (inBC) {
-      if (ch === '*' && next === '/') {
-        inBC = false
-        i += 1
-      }
-      continue
-    }
-    if (inSQ) {
-      if (ch === "'" && next === "'") {
-        i += 1
-        continue
-      }
-      if (ch === '\\') {
-        i += 1
-        continue
-      }
-      if (ch === "'") inSQ = false
-      continue
-    }
-    if (inDQ) {
-      if (ch === '"' && next === '"') {
-        i += 1
-        continue
-      }
-      if (ch === '\\') {
-        i += 1
-        continue
-      }
-      if (ch === '"') inDQ = false
-      continue
-    }
-    if (inBT) {
-      if (ch === '`') inBT = false
-      continue
-    }
-
-    if (ch === '-' && next === '-') {
-      inLC = true
-      i += 1
-      continue
-    }
-    if (ch === '/' && next === '*') {
-      inBC = true
-      i += 1
-      continue
-    }
-    if (ch === "'") {
-      inSQ = true
-      continue
-    }
-    if (ch === '"') {
-      inDQ = true
-      continue
-    }
-    if (ch === '`') {
-      inBT = true
-      continue
-    }
-    if (ch === '(') {
-      parenDepth += 1
-      continue
-    }
-    if (ch === ')' && parenDepth > 0) {
-      parenDepth -= 1
-      continue
-    }
-
-    if (
-      parenDepth === 0
-      && sql.slice(i, i + keyword.length).toUpperCase() === upperKeyword
-      && isWordBoundaryChar(sql[i - 1])
-      && isWordBoundaryChar(sql[i + keyword.length])
-    ) {
-      return i
-    }
-  }
-
-  return -1
 }
 
 function parseBatchableInsert(stmt: string): BatchableInsertStatement | null {
