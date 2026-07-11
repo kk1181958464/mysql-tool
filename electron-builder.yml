@@ -4,7 +4,6 @@ directories:
   buildResources: resources
   output: dist
 npmRebuild: false
-electronDist: node_modules/electron/dist
 files:
   - out/**
   - package.json

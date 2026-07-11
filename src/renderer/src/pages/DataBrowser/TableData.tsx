@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Table, Input, Space, Button, DateTimePicker, Modal, Tag } from '../../components/ui'
+import { Table, Input, Space, Button, DateTimePicker, Modal, Tag, Checkbox } from '../../components/ui'
 import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined } from '@ant-design/icons'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
@@ -606,6 +606,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [transformedBaseRows, setTransformedBaseRows] = useState<Array<Record<string, unknown>>>([])
   const [pendingPaginationHint, setPendingPaginationHint] = useState('')
   const [columnFilter, setColumnFilter] = useState('')
+  const [visibleColumnNames, setVisibleColumnNames] = useState<Set<string>>(new Set())
+  const knownColumnNamesRef = useRef<Set<string>>(new Set())
   const fetchRequestIdRef = useRef(0)
   const transformJobIdRef = useRef(0)
 
@@ -619,6 +621,26 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     ;((columnCache[columnCacheKey] || []) as ColumnDetail[]).forEach((c) => map.set(c.name, c))
     return map
   }, [columnCache, columnCacheKey])
+
+  useEffect(() => {
+    knownColumnNamesRef.current = new Set()
+    setVisibleColumnNames(new Set())
+    setColumnFilter('')
+  }, [connectionId, database, table])
+
+  useEffect(() => {
+    const names = (result?.columns || []).map((column) => column.name)
+    if (!names.length) return
+    setVisibleColumnNames((previous) => {
+      const known = knownColumnNamesRef.current
+      const next = new Set([...previous].filter((name) => names.includes(name)))
+      for (const name of names) {
+        if (!known.has(name)) next.add(name)
+      }
+      knownColumnNamesRef.current = new Set(names)
+      return next
+    })
+  }, [result?.columns])
 
   const simpleFilterColumnOptions = useMemo(
     () => (result?.columns || []).map((col) => ({ value: col.name, label: col.name })),
@@ -1796,14 +1818,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }, [headerContextMenu, fetchData])
 
   const dataCols = useMemo(() => {
-    const filterLower = columnFilter.toLowerCase().trim()
-    const filtered = !filterLower
-      ? result?.columns || []
-      : (result?.columns || []).filter((col) => {
-          const nameMatch = col.name.toLowerCase().includes(filterLower)
-          const commentMatch = columnDetailsByName.get(col.name)?.comment?.toLowerCase().includes(filterLower)
-          return nameMatch || commentMatch
-        })
+    const filtered = (result?.columns || []).filter((col) => visibleColumnNames.has(col.name))
 
     return filtered.map((col) => {
       const columnComment = columnDetailsByName.get(col.name)?.comment?.trim() || ''
@@ -1888,9 +1903,19 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       },
     }
     })
-  }, [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, orderBy, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange, columnFilter])
+  }, [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, orderBy, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange, visibleColumnNames])
 
   const columns = useMemo(() => [checkboxCol, ...dataCols], [checkboxCol, dataCols])
+  const columnPickerItems = useMemo(() => {
+    const keyword = columnFilter.trim().toLowerCase()
+    return (result?.columns || []).filter((column) => {
+      if (!keyword) return true
+      const comment = columnDetailsByName.get(column.name)?.comment || ''
+      return column.name.toLowerCase().includes(keyword) || comment.toLowerCase().includes(keyword)
+    })
+  }, [result?.columns, columnDetailsByName, columnFilter])
+  const visibleColumnCount = visibleColumnNames.size
+  const totalColumnCount = result?.columns.length || 0
   const isKeysetMode = lastQueryMode === 'keyset'
   const configuredModeLabel = PAGINATION_MODE_LABEL[paginationMode]
   const effectiveModeLabel = lastQueryMode === 'keyset' ? '游标' : '偏移'
@@ -1953,15 +1978,41 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       {!error && successMessage && <div style={{ color: 'var(--success)', marginBottom: 8 }}>{successMessage}</div>}
 
       {result && result.columns.length > 0 && (
-        <div style={{ marginBottom: 8 }}>
-          <Input
-            size="small"
-            placeholder="搜索字段（按名称或注释）"
-            value={columnFilter}
-            onChange={(e) => setColumnFilter(e.target.value)}
-            allowClear
-            style={{ width: 260 }}
-          />
+        <div style={{ marginBottom: 8, border: '1px solid var(--border)', background: 'var(--bg-surface)' }}>
+          <div style={{ padding: 8, display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
+            <Input
+              size="small"
+              placeholder="搜索字段名称或注释"
+              value={columnFilter}
+              onChange={(e) => setColumnFilter(e.target.value)}
+              allowClear
+              style={{ width: 260 }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>已显示 {visibleColumnCount}/{totalColumnCount}</span>
+            <Button size="small" onClick={() => setVisibleColumnNames(new Set((result.columns || []).map((column) => column.name)))}>全选</Button>
+            <Button size="small" disabled={visibleColumnCount === 0} onClick={() => setVisibleColumnNames(new Set())}>清空</Button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', maxHeight: 152, overflow: 'auto', padding: 8, gap: 4 }}>
+            {columnPickerItems.map((column) => {
+              const comment = columnDetailsByName.get(column.name)?.comment?.trim() || ''
+              return (
+                <label key={column.name} title={comment ? `${column.name} - ${comment}` : column.name} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, padding: '4px 6px', cursor: 'pointer' }}>
+                  <Checkbox
+                    checked={visibleColumnNames.has(column.name)}
+                    onChange={(checked) => setVisibleColumnNames((previous) => {
+                      const next = new Set(previous)
+                      if (checked) next.add(column.name)
+                      else next.delete(column.name)
+                      return next
+                    })}
+                  />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>{column.name}</span>
+                  {comment && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: 11 }}>({comment})</span>}
+                </label>
+              )
+            })}
+            {columnPickerItems.length === 0 && <span style={{ color: 'var(--text-muted)', fontSize: 12, padding: 4 }}>没有匹配字段</span>}
+          </div>
         </div>
       )}
 
