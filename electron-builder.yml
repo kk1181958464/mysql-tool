@@ -3,7 +3,6 @@ productName: MySQL连接工具
 directories:
   buildResources: resources
   output: dist
-npmRebuild: false
 files:
   - out/**
   - package.json
