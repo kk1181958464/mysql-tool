@@ -13,6 +13,33 @@ import { cancelMultiStatementSql } from './services/sql-script-executor'
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let cleanupComplete = false
+let cleanupPromise: Promise<void> | null = null
+
+async function cleanupBeforeQuit(): Promise<void> {
+  if (cleanupPromise) return cleanupPromise
+
+  cleanupPromise = (async () => {
+    logger.info('App quitting, cleaning up...')
+    backupService.stopScheduleRunner()
+
+    const connectionIds = connectionManager.getActiveConnectionIds()
+    for (const id of connectionIds) {
+      cancelMultiStatementSql(id)
+    }
+    await Promise.allSettled(connectionIds.map((id) => queryExecutor.cancel(id)))
+
+    try {
+      await connectionManager.disconnectAll()
+    } finally {
+      localStore.flushLocalStoreQueues()
+      tray?.destroy()
+      tray = null
+    }
+  })()
+
+  return cleanupPromise
+}
 
 const getAppIconPath = () => {
   const candidates = [
@@ -80,7 +107,6 @@ function createTray() {
         {
           label: '退出',
           click: () => {
-            isQuitting = true
             app.quit()
           },
         },
@@ -111,8 +137,22 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
       preload: path.join(__dirname, '../preload/index.js'),
     },
+  })
+
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowedUrl = process.env.VITE_DEV_SERVER_URL
+    const allowed = allowedUrl
+      ? new URL(url).origin === new URL(allowedUrl).origin
+      : url.startsWith('file:')
+    if (!allowed) {
+      event.preventDefault()
+      logger.warn(`[security] Blocked renderer navigation to ${url}`)
+    }
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -167,7 +207,6 @@ app.whenReady().then(() => {
   ipcMain.on(IPC.WIN_CLOSE, () => mainWindow?.close())
   ipcMain.on(IPC.WIN_HIDE_TO_TRAY, () => mainWindow?.hide())
   ipcMain.on(IPC.WIN_QUIT, () => {
-    isQuitting = true
     app.quit()
   })
   ipcMain.handle(IPC.WIN_IS_MAXIMIZED, () => mainWindow?.isMaximized() ?? false)
@@ -192,16 +231,17 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', async () => {
+app.on('before-quit', (event) => {
+  if (cleanupComplete) return
+
+  event.preventDefault()
   isQuitting = true
-  logger.info('App quitting, cleaning up...')
-  tray?.destroy()
-  tray = null
-  backupService.stopScheduleRunner()
-  localStore.flushLocalStoreQueues()
-  for (const id of connectionManager.getActiveConnectionIds()) {
-    cancelMultiStatementSql(id)
-    await queryExecutor.cancel(id)
-  }
-  await connectionManager.disconnectAll()
+  void cleanupBeforeQuit()
+    .catch((error) => {
+      logger.error('Failed to clean up before quit', error)
+    })
+    .finally(() => {
+      cleanupComplete = true
+      app.quit()
+    })
 })

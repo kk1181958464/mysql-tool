@@ -72,12 +72,14 @@ function stopHeartbeatScheduler(reason: string): void {
 async function runHeartbeatForConnection(id: string): Promise<void> {
   const conn = await ensureConnection(id)
   let timeoutTimer: NodeJS.Timeout | null = null
+  let timedOut = false
 
   try {
     await Promise.race([
       conn.query('SELECT 1').then(() => undefined),
       new Promise<never>((_, reject) => {
         timeoutTimer = setTimeout(() => {
+          timedOut = true
           reject(new Error(`heartbeat timeout after ${heartbeatQueryTimeoutMs}ms (${id})`))
         }, heartbeatQueryTimeoutMs)
       }),
@@ -87,7 +89,11 @@ async function runHeartbeatForConnection(id: string): Promise<void> {
     if (timeoutTimer) {
       clearTimeout(timeoutTimer)
     }
-    conn.release()
+    if (timedOut) {
+      conn.destroy()
+    } else {
+      conn.release()
+    }
   }
 }
 
@@ -300,6 +306,10 @@ export function updateHeartbeatAutoTuneEnabled(enabled: boolean): boolean {
 }
 
 function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overridePort?: number): mysql.PoolOptions {
+  const connectionLimit = Math.max(1, Math.min(Math.trunc(Number(config.poolMax) || 10), 100))
+  const connectTimeout = Math.max(1000, Math.min(Math.trunc(Number(config.connectTimeout) || 10000), 300000))
+  const idleTimeout = Math.max(1000, Math.min(Math.trunc(Number(config.idleTimeout) || 60000), 3600000))
+  const timezone = /^(?:local|Z|[+-]\d{2}:\d{2})$/.test(config.timezone || '') ? config.timezone : 'local'
   const opts: mysql.PoolOptions = {
     host: overrideHost || config.host,
     port: overridePort || config.port,
@@ -307,12 +317,14 @@ function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overr
     password: config.password,
     database: config.databaseName || undefined,
     charset: config.charset,
-    timezone: 'local',
-    connectTimeout: config.connectTimeout,
-    connectionLimit: config.poolMax,
+    timezone,
+    connectTimeout,
+    connectionLimit,
+    maxIdle: connectionLimit,
+    idleTimeout,
     waitForConnections: true,
     enableKeepAlive: true,
-    multipleStatements: true,
+    multipleStatements: false,
     typeCast: function (field: any, next: any) {
       if (field.type === 'DATETIME' || field.type === 'DATE' || field.type === 'TIMESTAMP' || field.type === 'NEWDATE') {
         return field.string()
@@ -370,35 +382,58 @@ function getSavedConfig(id: string): ConnectionConfig | null {
 
 export async function connect(config: ConnectionConfig): Promise<ConnectionStatus> {
   const startedAt = Date.now()
+  let tunnel: { localPort: number; close: () => void } | null = null
+  let pool: mysql.Pool | null = null
+  let conn: mysql.PoolConnection | null = null
+
   try {
     let host = config.host
     let port = config.port
 
     if (config.sshEnabled) {
-      const tunnel = await createTunnel(config)
-      tunnels.set(config.id, tunnel)
+      tunnel = await createTunnel(config)
       host = '127.0.0.1'
       port = tunnel.localPort
     }
 
-    const pool = mysql.createPool(buildPoolOptions(config, host, port))
+    pool = mysql.createPool(buildPoolOptions(config, host, port))
 
     // 监听连接池异常，自动清理残留资源防止内存泄漏
     ;(pool as any).on('error', (err: Error) => {
       logger.warn(`[connection-manager] Pool error for ${config.id}: ${err.message}`)
     })
 
-    const conn = await pool.getConnection()
-    const [rows] = await conn.query('SELECT VERSION() as version')
-    const version = (rows as Record<string, string>[])[0]?.version || ''
-    conn.release()
+    conn = await pool.getConnection()
+    let version = ''
+    try {
+      const [rows] = await conn.query('SELECT VERSION() as version')
+      version = (rows as Record<string, string>[])[0]?.version || ''
+    } finally {
+      conn.release()
+      conn = null
+    }
 
     pools.set(config.id, pool)
+    if (tunnel) {
+      tunnels.set(config.id, tunnel)
+    }
     connectionConfigs.set(config.id, config)
     ensureHeartbeatSchedulerState()
 
+    pool = null
+    tunnel = null
+
     return { id: config.id, connected: true, serverVersion: version, currentDatabase: config.databaseName }
   } catch (err: any) {
+    if (conn) {
+      try { conn.destroy() } catch { /* 连接初始化失败，忽略清理异常 */ }
+    }
+    if (pool) {
+      try { await pool.end() } catch { /* 连接池初始化失败，忽略清理异常 */ }
+    }
+    if (tunnel) {
+      try { tunnel.close() } catch { /* SSH 隧道初始化失败，忽略清理异常 */ }
+    }
     logger.error('[connection.connect.failed]', {
       id: config.id,
       name: config.name,
@@ -475,6 +510,7 @@ export async function ensureConnection(id: string): Promise<mysql.PoolConnection
 
 export async function testConnection(config: ConnectionConfig): Promise<ConnectionStatus> {
   let tunnel: { localPort: number; close: () => void } | null = null
+  let conn: mysql.Connection | null = null
   try {
     let host = config.host
     let port = config.port
@@ -483,15 +519,19 @@ export async function testConnection(config: ConnectionConfig): Promise<Connecti
       host = '127.0.0.1'
       port = tunnel.localPort
     }
-    const conn = await mysql.createConnection(buildPoolOptions(config, host, port))
+    conn = await mysql.createConnection(buildPoolOptions(config, host, port))
     const [rows] = await conn.query('SELECT VERSION() as version')
     const version = (rows as Record<string, string>[])[0]?.version || ''
-    await conn.end()
     return { id: config.id, connected: true, serverVersion: version }
   } catch (err: any) {
     return { id: config.id, connected: false, error: err.message }
   } finally {
-    tunnel?.close()
+    if (conn) {
+      try { await conn.end() } catch { /* 测试连接已失效，忽略清理异常 */ }
+    }
+    if (tunnel) {
+      try { tunnel.close() } catch { /* SSH 测试隧道已失效，忽略清理异常 */ }
+    }
   }
 }
 

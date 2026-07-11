@@ -127,6 +127,9 @@ export async function execute(connectionId: string, sql: string, database?: stri
         failCount: 0,
         limited: statementResults.some((item) => item.limited),
         limitApplied: statementResults.find((item) => item.limited)?.limitApplied,
+        resultSets: statementResults
+          .filter((item) => item.isSelect)
+          .map((item) => ({ columns: item.columns, rows: item.rows, rowCount: item.rowCount })),
       }
     } else if (Array.isArray(rows)) {
       result = {

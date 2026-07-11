@@ -48,9 +48,10 @@ const api: ElectronAPI = {
   },
   importExport: {
     importFile: (connId, db, table, filePath, options) => ipcRenderer.invoke(IPC.IMPORT_FILE, connId, db, table, filePath, options),
-    preview: (filePath) => ipcRenderer.invoke(IPC.IMPORT_PREVIEW, filePath),
+    preview: (filePath, options) => ipcRenderer.invoke(IPC.IMPORT_PREVIEW, filePath, options),
     exportData: (connId, db, sql, filePath, format, options) => ipcRenderer.invoke(IPC.EXPORT_DATA, connId, db, sql, filePath, format, options),
     exportStructure: (connId, db, tables, filePath) => ipcRenderer.invoke(IPC.EXPORT_STRUCTURE, connId, db, tables, filePath),
+    cancel: (taskId) => ipcRenderer.invoke(IPC.IMPORT_EXPORT_CANCEL, taskId),
   },
   perf: {
     processList: (connId) => ipcRenderer.invoke(IPC.PERF_PROCESS_LIST, connId),
@@ -90,8 +91,8 @@ const api: ElectronAPI = {
   },
   onImportProgress: (cb: (data: ImportProgressPayload) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: ImportProgressPayload) => cb(data)
-    ipcRenderer.on('import:progress', handler)
-    return () => ipcRenderer.removeListener('import:progress', handler)
+    ipcRenderer.on(IPC.IMPORT_PROGRESS, handler)
+    return () => ipcRenderer.removeListener(IPC.IMPORT_PROGRESS, handler)
   },
   onExportProgress: (cb: (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => cb(data)

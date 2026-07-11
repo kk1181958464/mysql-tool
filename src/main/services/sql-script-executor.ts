@@ -9,7 +9,7 @@ import { quoteId } from '../utils/sql'
 import { applyResultRowLimit } from '../utils/sql-result-limit'
 import { stripLeadingTrivia, findTopLevelKeyword, isWordBoundaryChar } from '../utils/sql-cursor'
 import * as logger from '../utils/logger'
-import type { QueryResult, QueryStatementResult } from '../../shared/types/query'
+import type { QueryResult, QueryResultSet, QueryStatementResult } from '../../shared/types/query'
 
 const STMT_KEYWORDS = /^(?:CREATE|INSERT|DROP|ALTER|LOCK|UNLOCK|SET|DELETE|UPDATE|REPLACE|SELECT|WITH|CALL|TRUNCATE|USE|GRANT|REVOKE|COMMIT|ROLLBACK|START\s+TRANSACTION|BEGIN|SHOW|DESCRIBE|DESC|EXPLAIN|ANALYZE|OPTIMIZE|RENAME)\s/i
 const PARSE_YIELD_EVERY = 5000
@@ -110,6 +110,15 @@ function matchKeywordAt(sql: string, index: number): string | null {
     }
   }
   return null
+}
+
+function getCompoundEndLength(sql: string, index: number): number {
+  if (sql.slice(index, index + 3).toUpperCase() !== 'END'
+    || !isWordBoundaryChar(sql[index - 1])
+    || !isWordBoundaryChar(sql[index + 3])) return 0
+
+  const suffix = sql.slice(index + 3).match(/^(\s+)(IF|CASE|LOOP|REPEAT|WHILE)\b/i)
+  return 3 + (suffix?.[0].length || 0)
 }
 
 function parseBatchableInsert(stmt: string): BatchableInsertStatement | null {
@@ -239,8 +248,7 @@ async function executeStatement(conn: mysql.Connection, stmt: string, index: num
     if (isMultipleStatements) {
       let totalAffectedRows = 0
       let lastInsertId = 0
-      const allRows: Record<string, unknown>[] = []
-      let allColumns: QueryResult['columns'] = []
+      const resultSets: QueryResultSet[] = []
       let hasSelectResult = false
       const multiRows = rows as unknown[]
       const multiFields = fields as unknown[]
@@ -250,10 +258,8 @@ async function executeStatement(conn: mysql.Connection, stmt: string, index: num
         const statementFields = multiFields?.[i] as Array<{ name: string; type?: number; flags?: number }> | undefined
         if (Array.isArray(statementResult)) {
           hasSelectResult = true
-          allRows.push(...statementResult as Record<string, unknown>[])
-          if (allColumns.length === 0 && statementFields) {
-            allColumns = mapFields(statementFields)
-          }
+          const resultRows = statementResult as Record<string, unknown>[]
+          resultSets.push({ columns: mapFields(statementFields), rows: resultRows, rowCount: resultRows.length })
         } else if (statementResult && typeof statementResult === 'object') {
           const header = statementResult as ResultSetHeader
           totalAffectedRows += Number(header.affectedRows || 0)
@@ -263,20 +269,23 @@ async function executeStatement(conn: mysql.Connection, stmt: string, index: num
         }
       }
 
+      const firstResultSet = resultSets[0]
+
       return {
         index,
         sql: stmt,
         isSelect: hasSelectResult,
         success: true,
-        columns: allColumns,
-        rows: allRows,
+        columns: firstResultSet?.columns || [],
+        rows: firstResultSet?.rows || [],
         affectedRows: totalAffectedRows,
         insertId: lastInsertId,
         executionTime,
-        rowCount: allRows.length,
+        rowCount: resultSets.reduce((sum, item) => sum + item.rowCount, 0),
         error: null,
         limited: limitedStmt.limited,
         limitApplied: limitedStmt.limited ? limitedStmt.limit : undefined,
+        resultSets,
       }
     }
 
@@ -393,6 +402,7 @@ async function splitStatementsWithProgress(
     if (inDQ) { if (c === '"' && n === '"') { currentStatement += '""'; i += 2; await maybeReport(); continue } if (c === '\\') { currentStatement += c + (n || ''); i += 2; await maybeReport(); continue } if (c === '"') inDQ = false; currentStatement += c; i += 1; await maybeReport(); continue }
     if (inBT) { if (c === '`') inBT = false; currentStatement += c; i += 1; await maybeReport(); continue }
     if (c === '-' && n === '-') { inLC = true; currentStatement += c; i += 1; await maybeReport(); continue }
+    if (c === '#') { inLC = true; currentStatement += c; i += 1; await maybeReport(); continue }
     if (c === '/' && n === '*') { inBC = true; currentStatement += '/*'; i += 2; await maybeReport(); continue }
     if (c === "'") { inSQ = true; currentStatement += c; i += 1; await maybeReport(); continue }
     if (c === '"') { inDQ = true; currentStatement += c; i += 1; await maybeReport(); continue }
@@ -435,10 +445,11 @@ async function splitStatementsWithProgress(
         continue
       }
 
-      if (sql.slice(i, i + 3).toUpperCase() === 'END' && isWordBoundaryChar(sql[i - 1]) && isWordBoundaryChar(sql[i + 3])) {
+      const endLength = getCompoundEndLength(sql, i)
+      if (endLength > 0) {
         if (compoundDepth > 0) compoundDepth -= 1
-        currentStatement += 'END'
-        i += 3
+        currentStatement += sql.slice(i, i + endLength)
+        i += endLength
         await maybeReport()
         continue
       }
@@ -539,6 +550,7 @@ function ensureSemicolons(sql: string): string {
     }
 
     if (ch === '-' && next === '-') { inLineComment = true; out.push(ch); statementBuffer += ch; i += 1; continue }
+    if (ch === '#') { inLineComment = true; out.push(ch); statementBuffer += ch; i += 1; continue }
     if (ch === '/' && next === '*') { inBlockComment = true; out.push('/*'); statementBuffer += '/*'; i += 2; continue }
     if (ch === "'") { inSingle = true; out.push(ch); statementBuffer += ch; i += 1; continue }
     if (ch === '"') { inDouble = true; out.push(ch); statementBuffer += ch; i += 1; continue }
@@ -561,12 +573,14 @@ function ensureSemicolons(sql: string): string {
       continue
     }
 
-    if (sql.slice(i, i + 3).toUpperCase() === 'END' && isWordBoundaryChar(sql[i - 1]) && isWordBoundaryChar(sql[i + 3])) {
+    const endLength = getCompoundEndLength(sql, i)
+    if (endLength > 0) {
       if (inCompoundStatement && compoundDepth > 0) compoundDepth -= 1
-      out.push('END')
-      statementBuffer += 'END'
+      const endSql = sql.slice(i, i + endLength)
+      out.push(endSql)
+      statementBuffer += endSql
       lastNonWS = 'D'
-      i += 3
+      i += endLength
       continue
     }
 
@@ -879,10 +893,11 @@ export async function executeSqlFile(
 ): Promise<ExecuteSqlFileResult> {
   const conn = await mysql.createConnection(getScriptConnectionOptions(connectionId, database))
 
-  let runningSet = runningScriptConnections.get(connectionId)
+  const runningKey = getRunningScriptKey(connectionId, options?.executionId)
+  let runningSet = runningScriptConnections.get(runningKey)
   if (!runningSet) {
     runningSet = new Set()
-    runningScriptConnections.set(connectionId, runningSet)
+    runningScriptConnections.set(runningKey, runningSet)
   }
   runningSet.add(conn)
 
@@ -1117,10 +1132,11 @@ export async function executeSqlFile(
             continue
           }
 
-          if (sql.slice(i, i + 3).toUpperCase() === 'END' && isWordBoundaryChar(sql[i - 1]) && isWordBoundaryChar(sql[i + 3])) {
+          const endLength = getCompoundEndLength(sql, i)
+          if (endLength > 0) {
             if (compoundDepth > 0) compoundDepth -= 1
-            currentStatement += 'END'
-            i += 2
+            currentStatement += sql.slice(i, i + endLength)
+            i += endLength - 1
             continue
           }
         }
@@ -1156,10 +1172,10 @@ export async function executeSqlFile(
     } catch {
       // ignore cleanup reset errors
     }
-    const runningSet = runningScriptConnections.get(connectionId)
+    const runningSet = runningScriptConnections.get(runningKey)
     runningSet?.delete(conn)
     if (runningSet && runningSet.size === 0) {
-      runningScriptConnections.delete(connectionId)
+      runningScriptConnections.delete(runningKey)
     }
     try {
       await conn.end()

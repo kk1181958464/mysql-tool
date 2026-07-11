@@ -67,14 +67,14 @@ const ProcedureManager: React.FC = () => {
     } catch (e: unknown) { setError(e instanceof Error ? e.message : '执行失败') }
   }
 
-  const drop = async (name: string, type: string) => { await api.object.drop(connId!, db!, type, name); load() }
+  const drop = async (name: string, type: 'PROCEDURE' | 'FUNCTION') => { await api.object.drop(connId!, db!, type, name); load() }
 
   const parseParamNames = (paramList: string): string[] => {
     if (!paramList) return []
     return paramList.split(',').map((p) => p.trim().split(/\s+/).filter((s) => !['IN', 'OUT', 'INOUT'].includes(s.toUpperCase()))[0] || '').filter(Boolean)
   }
 
-  const makeColumns = (type: string) => [
+  const makeColumns = (type: 'PROCEDURE' | 'FUNCTION') => [
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '定义者', dataIndex: 'definer', key: 'definer', width: 160 },
     { title: '创建时间', dataIndex: 'created', key: 'created', width: 170 },

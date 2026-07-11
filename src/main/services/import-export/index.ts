@@ -1,29 +1,30 @@
 import * as fs from 'fs'
 import * as zlib from 'zlib'
 import { once } from 'events'
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, stat, writeFile } from 'fs/promises'
 import * as path from 'path'
-import type { Writable } from 'stream'
+import type { Readable, Writable } from 'stream'
 import { parse as parseStream } from 'csv-parse'
-import { parse as parseSync } from 'csv-parse/sync'
 import { stringify as stringifyStream } from 'csv-stringify'
-import { stringify as stringifySync } from 'csv-stringify/sync'
 import { finished } from 'stream/promises'
 import * as XLSX from 'xlsx'
 import * as connectionManager from '../connection-manager'
-import { executeSqlFile } from '../sql-script-executor'
+import { cancelMultiStatementSql, executeSqlFile } from '../sql-script-executor'
 import { quoteId } from '../../utils/sql'
 import { formatNavicatDDL, formatTableStructureTitle, formatRecordsTitle, formatObjectTitle, isNumericColumnType } from './navicat-ddl'
 
 type Primitive = string | number | boolean | bigint | null | undefined
 type SqlValue = Primitive | Date | Buffer | Record<string, unknown> | unknown[]
 type RowRecord = Record<string, SqlValue>
+type StreamableConnection = { query(sql: string): { stream(options?: { highWaterMark?: number }): Readable } }
 type TableColumn = {
   name: string
   type: string
 }
 
 type ExportSqlOptions = {
+  signal?: AbortSignal
+  consistentSnapshot?: boolean
   dropTable?: boolean
   createTable?: boolean
   includeData?: boolean
@@ -36,19 +37,47 @@ type SqlExportStreamOptions = ExportSqlOptions & {
 }
 
 type ImportFileOptions = {
+  taskId?: string
+  signal?: AbortSignal
   batchSize?: number
   ignoreErrors?: boolean
+  truncate?: boolean
+  atomic?: boolean
+  columnMapping?: Record<string, string>
+  delimiter?: string
+  quote?: string
+  columns?: boolean
+  sheetName?: string
+  onProgress?: (data: { current: number; total: number; fail: number; stage: 'reading' | 'executing' }) => void
 }
+type ImportTargetColumn = {
+  name: string
+  required: boolean
+}
+type FailedImportRow = { row: RowRecord; error: string }
+
+type ExportCsvOptions = { delimiter?: string; quote?: string; headers?: boolean; signal?: AbortSignal; consistentSnapshot?: boolean }
+type ExportJsonOptions = { pretty?: boolean; arrayMode?: boolean; signal?: AbortSignal; consistentSnapshot?: boolean }
 
 type ExportExcelOptions = {
   sheetName?: string
+  signal?: AbortSignal
+  consistentSnapshot?: boolean
 }
 
 const DEFAULT_IMPORT_BATCH_SIZE = 1000
 const MIN_IMPORT_BATCH_SIZE = 100
 const MAX_IMPORT_BATCH_SIZE = 10000
 const EXPORT_BATCH_SIZE = 1000
+const IMPORT_PREVIEW_ROWS = 100
+const MAX_EXCEL_FILE_SIZE = 100 * 1024 * 1024
+const MAX_EXCEL_IMPORT_ROWS = 250000
+const MAX_EXCEL_EXPORT_ROWS = 250000
 const NAVICAT_EOL = '\r\n'
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('任务已取消')
+}
 
 function getImportBatchSize(options?: ImportFileOptions): number {
   const raw = Number(options?.batchSize)
@@ -399,6 +428,19 @@ async function closeStream(stream: Writable): Promise<void> {
   await finished(stream)
 }
 
+function createTemporaryExportPath(filePath: string): string {
+  return path.join(path.dirname(filePath), `${path.basename(filePath)}.tmp.${process.pid}.${Date.now()}`)
+}
+
+async function commitTemporaryExport(tmpPath: string, filePath: string): Promise<void> {
+  await fs.promises.rename(tmpPath, filePath)
+}
+
+async function removeTemporaryExport(tmpPath: string | null): Promise<void> {
+  if (!tmpPath) return
+  try { await fs.promises.unlink(tmpPath) } catch { /* ignore cleanup errors */ }
+}
+
 async function exportToSqlStream(
   connId: string,
   db: string,
@@ -426,6 +468,7 @@ async function exportToSqlStream(
     const insertHead = 'INSERT INTO'
 
     for (let tableIndex = 0; tableIndex < requestedTables.length; tableIndex += 1) {
+      throwIfAborted(options?.signal)
       const table = requestedTables[tableIndex]
       const reportProgress = (rows: number, doneOverride?: number) => {
         options?.onProgress?.({
@@ -492,6 +535,7 @@ async function exportToSqlStream(
 
       let exportedRows = 0
       await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
+        throwIfAborted(options?.signal)
         if (!rows.length) return
         for (const row of rows) {
           const vals = getRowNavicatSqlValues(row, tableColumns).join(', ')
@@ -577,19 +621,29 @@ async function queryInBatches(
   table: string,
   batchSize: number,
   onBatch: (rows: RowRecord[], offset: number) => Promise<void>,
-  selectSql?: string
+  selectSql?: string,
+  signal?: AbortSignal,
+  consistentSnapshot = false,
 ): Promise<void> {
   const MAX_RETRIES = 2
+  let offset = 0
+  let lastCursorValue: unknown = null
+  let cursorColumn: string | null | undefined
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
     const conn = await connectionManager.ensureConnection(connId)
     try {
       await conn.query(`USE ${quoteId(db)}`)
-      let offset = 0
+      if (consistentSnapshot) {
+        await conn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+        await conn.query('START TRANSACTION WITH CONSISTENT SNAPSHOT')
+      }
       const baseSelect = selectSql || `SELECT * FROM ${quoteId(table)}`
-      const cursorColumn = selectSql ? null : await getSingleColumnPrimaryKey(conn, table)
-      let lastCursorValue: unknown = null
+      if (cursorColumn === undefined) {
+        cursorColumn = selectSql ? null : await getSingleColumnPrimaryKey(conn, table)
+      }
       while (true) {
+        throwIfAborted(signal)
         const [rows] = cursorColumn
           ? lastCursorValue === null
             ? await conn.query(`${baseSelect} ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`)
@@ -607,9 +661,13 @@ async function queryInBatches(
         offset += batch.length
         if (batch.length < batchSize) break
       }
+      if (consistentSnapshot) await conn.commit()
       return
     } catch (err: any) {
-      if (attempt < MAX_RETRIES && connectionManager.isConnectionLostError(err)) {
+      if (consistentSnapshot) {
+        try { await conn.rollback() } catch { /* preserve original error */ }
+      }
+      if (!consistentSnapshot && attempt < MAX_RETRIES && connectionManager.isConnectionLostError(err)) {
         continue
       }
       throw err
@@ -619,17 +677,68 @@ async function queryInBatches(
   }
 }
 
-export async function previewImport(filePath: string): Promise<{ columns: string[]; rows: Record<string, unknown>[]; totalRows: number }> {
+export async function previewImport(filePath: string, options?: { sheetName?: string; delimiter?: string; quote?: string; columns?: boolean }): Promise<{ columns: string[]; rows: Record<string, unknown>[]; totalRows: number; sheetNames?: string[] }> {
   const ext = path.extname(filePath).toLowerCase()
   if (ext === '.csv' || ext === '.tsv') {
-    const content = await readFile(filePath, 'utf-8')
-    const records = parseSync(content, { columns: true, skip_empty_lines: true }) as Record<string, unknown>[]
-    return { columns: records.length ? Object.keys(records[0]) : [], rows: records.slice(0, 100), totalRows: records.length }
+    const input = fs.createReadStream(filePath, { encoding: 'utf-8' })
+    const parser = parseStream({
+      columns: options?.columns === false ? (header: string[]) => header.map((_value, index) => `column_${index + 1}`) : true,
+      skip_empty_lines: true,
+      bom: true,
+      delimiter: options?.delimiter || (ext === '.tsv' ? '\t' : ','),
+      quote: options?.quote || '"',
+    })
+    const rows: Record<string, unknown>[] = []
+    let totalRows = 0
+    input.pipe(parser)
+    try {
+      for await (const row of parser as AsyncIterable<Record<string, unknown>>) {
+        totalRows += 1
+        if (rows.length < IMPORT_PREVIEW_ROWS) rows.push(row)
+      }
+    } finally {
+      input.destroy()
+    }
+    return { columns: rows.length ? Object.keys(rows[0]) : [], rows, totalRows }
   }
-  const wb = XLSX.readFile(filePath)
-  const sheet = wb.Sheets[wb.SheetNames[0]]
+
+  await assertExcelFileSize(filePath)
+  const wb = XLSX.readFile(filePath, { sheetRows: IMPORT_PREVIEW_ROWS + 1 })
+  const sheet = wb.Sheets[options?.sheetName || wb.SheetNames[0]]
+  if (!sheet) return { columns: [], rows: [], totalRows: 0, sheetNames: wb.SheetNames }
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet)
-  return { columns: rows.length ? Object.keys(rows[0]) : [], rows: rows.slice(0, 100), totalRows: rows.length }
+  const fullRange = sheet['!fullref'] || sheet['!ref']
+  const totalRows = fullRange ? Math.max(0, XLSX.utils.decode_range(fullRange).e.r) : rows.length
+  return { columns: rows.length ? Object.keys(rows[0]) : [], rows: rows.slice(0, IMPORT_PREVIEW_ROWS), totalRows, sheetNames: wb.SheetNames }
+}
+
+async function streamQueryRows(
+  connId: string,
+  db: string,
+  sql: string,
+  onRow: (row: RowRecord) => Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const conn = await connectionManager.getConnection(connId)
+  try {
+    if (db) await conn.query(`USE ${quoteId(db)}`)
+    const rawConnection = conn.connection as unknown as StreamableConnection
+    const stream = rawConnection.query(sql).stream({ highWaterMark: 128 })
+    for await (const row of stream as AsyncIterable<RowRecord>) {
+      throwIfAborted(signal)
+      await onRow(row)
+    }
+  } finally {
+    conn.release()
+  }
+}
+
+async function assertExcelFileSize(filePath: string): Promise<void> {
+  const fileStat = await stat(filePath)
+  if (!fileStat.isFile()) throw new Error('Excel 路径不是文件')
+  if (fileStat.size > MAX_EXCEL_FILE_SIZE) {
+    throw new Error(`Excel 文件不能超过 ${MAX_EXCEL_FILE_SIZE / 1024 / 1024} MiB`)
+  }
 }
 
 async function insertRowsBatch(conn: any, table: string, rows: RowRecord[]): Promise<number> {
@@ -643,78 +752,223 @@ async function insertRowsBatch(conn: any, table: string, rows: RowRecord[]): Pro
   return rows.length
 }
 
-async function bulkInsert(connId: string, db: string, table: string, rows: RowRecord[], batchSize: number): Promise<number> {
-  if (!rows.length) return 0
-  const conn = await connectionManager.getConnection(connId)
+function mapImportRow(row: RowRecord, mapping?: Record<string, string>): RowRecord {
+  if (!mapping) return row
+  return Object.fromEntries(Object.entries(row).flatMap(([source, value]) => {
+    const target = mapping[source] === undefined ? source : mapping[source]
+    return target ? [[target, value]] : []
+  }))
+}
+
+async function validateImportColumns(conn: any, table: string, sourceColumns: string[], mapping?: Record<string, string>): Promise<void> {
+  if (!sourceColumns.length) throw new Error('导入文件没有可用的数据列')
+  const [columnRows] = await conn.query(`SHOW COLUMNS FROM ${quoteId(table)}`)
+  const targetColumns = (columnRows as Array<{ Field: string; Null: string; Default: unknown; Extra: string }>).map((column): ImportTargetColumn => ({
+    name: column.Field,
+    required: column.Null === 'NO' && column.Default === null && !String(column.Extra || '').toLowerCase().includes('auto_increment'),
+  }))
+  const targetNames = new Set(targetColumns.map((column) => column.name))
+  const mappedNames = sourceColumns
+    .map((source) => mapping?.[source] === undefined ? source : mapping[source])
+    .filter(Boolean)
+  if (!mappedNames.length) throw new Error('列映射后没有可导入的目标列')
+  const duplicates = mappedNames.filter((name, index) => mappedNames.indexOf(name) !== index)
+  if (duplicates.length) throw new Error(`多个源列映射到了同一目标列：${[...new Set(duplicates)].join('、')}`)
+  const unknown = mappedNames.filter((name) => !targetNames.has(name))
+  if (unknown.length) throw new Error(`目标表不存在以下列：${unknown.join('、')}`)
+  const mappedSet = new Set(mappedNames)
+  const missing = targetColumns.filter((column) => column.required && !mappedSet.has(column.name)).map((column) => column.name)
+  if (missing.length) throw new Error(`缺少目标表必填列：${missing.join('、')}`)
+}
+
+async function insertImportBatch(conn: any, table: string, rows: RowRecord[], ignoreErrors: boolean): Promise<{ imported: number; errors: number; failed: FailedImportRow[] }> {
   try {
-    await conn.query(`USE ${quoteId(db)}`)
-    let imported = 0
-    for (let i = 0; i < rows.length; i += batchSize) {
-      imported += await insertRowsBatch(conn, table, rows.slice(i, i + batchSize))
+    return { imported: await insertRowsBatch(conn, table, rows), errors: 0, failed: [] }
+  } catch (error: any) {
+    if (!ignoreErrors || rows.length === 1) {
+      if (!ignoreErrors) throw error
+      return { imported: 0, errors: 1, failed: [{ row: rows[0], error: error?.message || '写入失败' }] }
     }
-    return imported
-  } finally {
-    conn.release()
+    let imported = 0
+    let errors = 0
+    const failed: FailedImportRow[] = []
+    for (const row of rows) {
+      const result = await insertImportBatch(conn, table, [row], true)
+      imported += result.imported
+      errors += result.errors
+      failed.push(...result.failed)
+    }
+    return { imported, errors, failed }
   }
 }
 
-export async function importCSV(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number }> {
+async function writeFailedRowsReport(filePath: string, failed: FailedImportRow[]): Promise<string | undefined> {
+  if (!failed.length) return undefined
+  const reportPath = `${filePath}.errors.csv`
+  const tmpPath = createTemporaryExportPath(reportPath)
+  const out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
+  const csv = stringifyStream({ header: true })
+  csv.pipe(out)
+  try {
+    for (const item of failed) {
+      if (!csv.write({ ...item.row, __error: item.error })) await once(csv, 'drain')
+    }
+    csv.end()
+    await finished(out)
+    await commitTemporaryExport(tmpPath, reportPath)
+    return reportPath
+  } catch (error) {
+    csv.destroy()
+    out.destroy()
+    throw error
+  } finally {
+    await removeTemporaryExport(tmpPath)
+  }
+}
+
+export async function importCSV(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number; errors: number; errorReportPath?: string }> {
+  const fileSize = Math.max(1, (await stat(filePath)).size)
   const conn = await connectionManager.getConnection(connId)
   const input = fs.createReadStream(filePath, { encoding: 'utf-8' })
-  const parser = parseStream({ columns: true, skip_empty_lines: true, bom: true })
+  const parser = parseStream({
+    columns: options?.columns === false ? (header: string[]) => header.map((_value, index) => `column_${index + 1}`) : true,
+    skip_empty_lines: true,
+    bom: true,
+    delimiter: options?.delimiter || (path.extname(filePath).toLowerCase() === '.tsv' ? '\t' : ','),
+    quote: options?.quote || '"',
+  })
   const batchSize = getImportBatchSize(options)
 
   input.pipe(parser)
 
   try {
     await conn.query(`USE ${quoteId(db)}`)
+    if (options?.atomic) await conn.beginTransaction()
 
     let imported = 0
+    let errors = 0
     let batch: RowRecord[] = []
+    const failed: FailedImportRow[] = []
+    let columnsValidated = false
 
     for await (const row of parser as AsyncIterable<RowRecord>) {
-      batch.push(row)
+      throwIfAborted(options?.signal)
+      if (!columnsValidated) {
+        await validateImportColumns(conn, table, Object.keys(row), options?.columnMapping)
+        if (options?.truncate) {
+          await conn.query(options.atomic ? `DELETE FROM ${quoteId(table)}` : `TRUNCATE TABLE ${quoteId(table)}`)
+        }
+        columnsValidated = true
+      }
+      batch.push(mapImportRow(row, options?.columnMapping))
       if (batch.length >= batchSize) {
-        imported += await insertRowsBatch(conn, table, batch)
+        const result = await insertImportBatch(conn, table, batch, options?.ignoreErrors === true)
+        imported += result.imported
+        errors += result.errors
+        failed.push(...result.failed)
+        options?.onProgress?.({ current: Math.min(input.bytesRead, fileSize), total: fileSize, fail: errors, stage: 'reading' })
         batch = []
       }
     }
 
     if (batch.length > 0) {
-      imported += await insertRowsBatch(conn, table, batch)
+      const result = await insertImportBatch(conn, table, batch, options?.ignoreErrors === true)
+      imported += result.imported
+      errors += result.errors
+      failed.push(...result.failed)
     }
 
-    return { imported }
+    if (options?.atomic) await conn.commit()
+    options?.onProgress?.({ current: fileSize, total: fileSize, fail: errors, stage: 'reading' })
+    return { imported, errors, errorReportPath: await writeFailedRowsReport(filePath, failed) }
+  } catch (error) {
+    if (options?.atomic) {
+      try { await conn.rollback() } catch { /* preserve original error */ }
+    }
+    throw error
   } finally {
     input.destroy()
     conn.release()
   }
 }
 
-export async function importExcel(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number }> {
-  const wb = XLSX.readFile(filePath)
-  const sheet = wb.Sheets[wb.SheetNames[0]]
+export async function importExcel(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number; errors: number; errorReportPath?: string }> {
+  await assertExcelFileSize(filePath)
+  const wb = XLSX.readFile(filePath, { sheetRows: MAX_EXCEL_IMPORT_ROWS + 2 })
+  const sheet = wb.Sheets[options?.sheetName || wb.SheetNames[0]]
+  if (!sheet) return { imported: 0, errors: 0 }
   const rows = XLSX.utils.sheet_to_json<RowRecord>(sheet)
-  const imported = await bulkInsert(connId, db, table, rows, getImportBatchSize(options))
-  return { imported }
+  if (rows.length > MAX_EXCEL_IMPORT_ROWS) {
+    throw new Error(`Excel 单工作表最多导入 ${MAX_EXCEL_IMPORT_ROWS.toLocaleString('en-US')} 行`)
+  }
+  const conn = await connectionManager.getConnection(connId)
+  try {
+    await conn.query(`USE ${quoteId(db)}`)
+    await validateImportColumns(conn, table, rows.length ? Object.keys(rows[0]) : [], options?.columnMapping)
+    if (options?.atomic) await conn.beginTransaction()
+    if (options?.truncate) {
+      await conn.query(options.atomic ? `DELETE FROM ${quoteId(table)}` : `TRUNCATE TABLE ${quoteId(table)}`)
+    }
+    let imported = 0
+    let errors = 0
+    const failed: FailedImportRow[] = []
+    const mappedRows = rows.map((row) => mapImportRow(row, options?.columnMapping))
+    const batchSize = getImportBatchSize(options)
+    for (let i = 0; i < mappedRows.length; i += batchSize) {
+      throwIfAborted(options?.signal)
+      const result = await insertImportBatch(conn, table, mappedRows.slice(i, i + batchSize), options?.ignoreErrors === true)
+      imported += result.imported
+      errors += result.errors
+      failed.push(...result.failed)
+      options?.onProgress?.({ current: Math.min(i + batchSize, mappedRows.length), total: Math.max(mappedRows.length, 1), fail: errors, stage: 'executing' })
+    }
+    if (options?.atomic) await conn.commit()
+    return { imported, errors, errorReportPath: await writeFailedRowsReport(filePath, failed) }
+  } catch (error) {
+    if (options?.atomic) {
+      try { await conn.rollback() } catch { /* preserve original error */ }
+    }
+    throw error
+  } finally {
+    conn.release()
+  }
 }
 
 export async function importSQL(connId: string, db: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number; errors: number; executed: number }> {
-  const input = filePath.toLowerCase().endsWith('.gz')
-    ? fs.createReadStream(filePath).pipe(zlib.createGunzip())
-    : filePath
-  const result = await executeSqlFile(
-    connId,
-    input,
-    db || undefined,
-    {
-      optimizeInserts: true,
-      stopOnError: options?.ignoreErrors !== true,
-    },
-  )
+  const fileSize = Math.max(1, (await stat(filePath)).size)
+  const source = fs.createReadStream(filePath)
+  let lastReported = 0
+  source.on('data', () => {
+    if (options?.signal?.aborted) source.destroy(new Error('任务已取消'))
+    if (source.bytesRead - lastReported < 256 * 1024 && source.bytesRead < fileSize) return
+    lastReported = source.bytesRead
+    options?.onProgress?.({ current: Math.min(source.bytesRead, fileSize), total: fileSize, fail: 0, stage: 'reading' })
+  })
+  const input = filePath.toLowerCase().endsWith('.gz') ? source.pipe(zlib.createGunzip()) : source
+  const abortSql = () => {
+    source.destroy(new Error('任务已取消'))
+    cancelMultiStatementSql(connId, options?.taskId)
+  }
+  options?.signal?.addEventListener('abort', abortSql, { once: true })
+  let result
+  try {
+    result = await executeSqlFile(
+      connId,
+      input,
+      db || undefined,
+      {
+        optimizeInserts: true,
+        stopOnError: options?.ignoreErrors !== true,
+        executionId: options?.taskId,
+      },
+    )
+  } finally {
+    options?.signal?.removeEventListener('abort', abortSql)
+  }
   if (result.errors > 0 && options?.ignoreErrors !== true) {
     throw new Error(result.firstError || 'SQL 导入失败')
   }
+  options?.onProgress?.({ current: fileSize, total: fileSize, fail: result.errors, stage: 'executing' })
 
   return {
     imported: result.imported,
@@ -723,24 +977,48 @@ export async function importSQL(connId: string, db: string, filePath: string, op
   }
 }
 
-export async function exportToCSV(connId: string, db: string, sql: string, filePath: string): Promise<void> {
+export async function exportToCSV(connId: string, db: string, sql: string, filePath: string, options?: ExportCsvOptions): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
   const table = extractTableFromSelectSql(sql)
+  const tmpPath = createTemporaryExportPath(filePath)
 
-  if (table) {
-    const out = fs.createWriteStream(filePath, { encoding: 'utf-8' })
-    const csv = stringifyStream({ header: true })
+  try {
+    if (table) {
+      const out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
+      const csv = stringifyStream({ header: options?.headers !== false, delimiter: options?.delimiter || ',', quote: options?.quote || '"' })
+      csv.pipe(out)
+      let success = false
+
+      try {
+        await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
+          throwIfAborted(options?.signal)
+          for (const row of rows) {
+            if (!csv.write(row)) {
+              await once(csv, 'drain')
+            }
+          }
+        }, undefined, options?.signal, options?.consistentSnapshot)
+        csv.end()
+        await finished(out)
+        success = true
+      } finally {
+        if (!success) {
+          csv.destroy()
+          out.destroy()
+        }
+      }
+      await commitTemporaryExport(tmpPath, filePath)
+      return
+    }
+
+    const out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
+    const csv = stringifyStream({ header: options?.headers !== false, delimiter: options?.delimiter || ',', quote: options?.quote || '"' })
     csv.pipe(out)
     let success = false
-
     try {
-      await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
-        for (const row of rows) {
-          if (!csv.write(row)) {
-            await once(csv, 'drain')
-          }
-        }
-      })
+      await streamQueryRows(connId, db, sql, async (row) => {
+        if (!csv.write(row)) await once(csv, 'drain')
+      }, options?.signal)
       csv.end()
       await finished(out)
       success = true
@@ -750,91 +1028,111 @@ export async function exportToCSV(connId: string, db: string, sql: string, fileP
         out.destroy()
       }
     }
-    return
-  }
-
-  const conn = await connectionManager.getConnection(connId)
-  try {
-    await conn.query(`USE ${quoteId(db)}`)
-    const [rows] = await conn.query(sql)
-    const csv = stringifySync(rows as RowRecord[], { header: true })
-    await writeFile(filePath, csv, 'utf-8')
+    await commitTemporaryExport(tmpPath, filePath)
   } finally {
-    conn.release()
+    await removeTemporaryExport(tmpPath)
   }
 }
 
-export async function exportToJSON(connId: string, db: string, sql: string, filePath: string): Promise<void> {
+export async function exportToJSON(connId: string, db: string, sql: string, filePath: string, options?: ExportJsonOptions): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
   const table = extractTableFromSelectSql(sql)
+  const tmpPath = createTemporaryExportPath(filePath)
 
-  if (table) {
-    const out = fs.createWriteStream(filePath, { encoding: 'utf-8' })
+  try {
+    if (table) {
+      const out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
+      let streamClosed = false
+      try {
+        const conn = await connectionManager.getConnection(connId)
+        try {
+          await conn.query(`USE ${quoteId(db)}`)
+          const columns = await getTableColumnNames(conn, table)
+          const arrayMode = options?.arrayMode !== false
+          const pretty = options?.pretty !== false
+          if (arrayMode) await writeChunk(out, pretty ? '[\n' : '[')
+          let isFirst = true
+          await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
+            throwIfAborted(options?.signal)
+            for (const row of rows) {
+              const normalizedRow = normalizeRowForJson(row, columns)
+              const separator = arrayMode ? (isFirst ? '' : pretty ? ',\n' : ',') : (isFirst ? '' : '\n')
+              const line = `${separator}${JSON.stringify(normalizedRow, null, pretty && arrayMode ? 2 : undefined)}`
+              await writeChunk(out, line)
+              isFirst = false
+            }
+          }, undefined, options?.signal, options?.consistentSnapshot)
+          if (arrayMode) await writeChunk(out, pretty ? '\n]\n' : ']\n')
+          else await writeChunk(out, '\n')
+          await closeStream(out)
+          streamClosed = true
+        } finally {
+          conn.release()
+        }
+      } finally {
+        if (!streamClosed) out.destroy()
+      }
+      await commitTemporaryExport(tmpPath, filePath)
+      return
+    }
+
+    const out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
     let streamClosed = false
     try {
-      const conn = await connectionManager.getConnection(connId)
-      try {
-        await conn.query(`USE ${quoteId(db)}`)
-        const columns = await getTableColumnNames(conn, table)
-        await writeChunk(out, '[\n')
-        let isFirst = true
-        await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
-          for (const row of rows) {
-            const normalizedRow = normalizeRowForJson(row, columns)
-            const line = `${isFirst ? '' : ',\n'}${JSON.stringify(normalizedRow)}`
-            await writeChunk(out, line)
-            isFirst = false
-          }
-        })
-        await writeChunk(out, '\n]\n')
-        await closeStream(out)
-        streamClosed = true
-      } finally {
-        conn.release()
-      }
+      const arrayMode = options?.arrayMode !== false
+      const pretty = options?.pretty !== false
+      if (arrayMode) await writeChunk(out, pretty ? '[\n' : '[')
+      let isFirst = true
+      await streamQueryRows(connId, db, sql, async (row) => {
+        const normalizedRow = normalizeRowForJson(row, Object.keys(row))
+        const separator = arrayMode ? (isFirst ? '' : pretty ? ',\n' : ',') : (isFirst ? '' : '\n')
+        await writeChunk(out, `${separator}${JSON.stringify(normalizedRow, null, pretty && arrayMode ? 2 : undefined)}`)
+        isFirst = false
+      }, options?.signal)
+      if (arrayMode) await writeChunk(out, pretty ? '\n]\n' : ']\n')
+      else await writeChunk(out, '\n')
+      await closeStream(out)
+      streamClosed = true
     } finally {
-      if (!streamClosed) {
-        out.destroy()
-      }
+      if (!streamClosed) out.destroy()
     }
-    return
-  }
-
-  const conn = await connectionManager.getConnection(connId)
-  try {
-    await conn.query(`USE ${quoteId(db)}`)
-    const [rows] = await conn.query(sql)
-    const normalizedRows = (rows as RowRecord[]).map((row) => normalizeRowForJson(row, Object.keys(row)))
-    await writeFile(filePath, JSON.stringify(normalizedRows, null, 2), 'utf-8')
+    await commitTemporaryExport(tmpPath, filePath)
   } finally {
-    conn.release()
+    await removeTemporaryExport(tmpPath)
   }
 }
 
 export async function exportToExcel(connId: string, db: string, sql: string, filePath: string, options?: ExportExcelOptions): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
+  const tmpPath = createTemporaryExportPath(filePath)
   const table = extractTableFromSelectSql(sql)
   const rows: RowRecord[] = []
 
   if (table) {
     await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (batchRows) => {
+      if (rows.length + batchRows.length > MAX_EXCEL_EXPORT_ROWS) {
+        throw new Error(`Excel 最多导出 ${MAX_EXCEL_EXPORT_ROWS.toLocaleString('en-US')} 行，请改用 CSV 或 JSON 导出大数据`)
+      }
       rows.push(...batchRows)
-    })
+    }, undefined, options?.signal, options?.consistentSnapshot)
   } else {
-    const conn = await connectionManager.getConnection(connId)
-    try {
-      if (db) await conn.query(`USE ${quoteId(db)}`)
-      const [queryRows] = await conn.query(sql)
-      rows.push(...(queryRows as RowRecord[]))
-    } finally {
-      conn.release()
-    }
+    await streamQueryRows(connId, db, sql, async (row) => {
+      if (rows.length >= MAX_EXCEL_EXPORT_ROWS) {
+        throw new Error(`Excel 最多导出 ${MAX_EXCEL_EXPORT_ROWS.toLocaleString('en-US')} 行，请改用 CSV 或 JSON 导出大数据`)
+      }
+      rows.push(row)
+    }, options?.signal)
   }
 
   const wb = XLSX.utils.book_new()
   const sheet = XLSX.utils.json_to_sheet(rows.map((row) => normalizeRowForJson(row, Object.keys(row))))
   XLSX.utils.book_append_sheet(wb, sheet, (options?.sheetName || 'Sheet1').slice(0, 31))
-  XLSX.writeFile(wb, filePath)
+  try {
+    XLSX.writeFile(wb, tmpPath, { bookType: 'xlsx' })
+    await commitTemporaryExport(tmpPath, filePath)
+  } finally {
+    await removeTemporaryExport(tmpPath)
+  }
 }
 
 export async function exportToSQL(connId: string, db: string, tables: string[], filePath: string, options?: ExportSqlOptions): Promise<void> {
@@ -844,10 +1142,7 @@ export async function exportToSQL(connId: string, db: string, tables: string[], 
   try {
     await mkdir(path.dirname(filePath), { recursive: true })
 
-    tmpPath = path.join(
-      path.dirname(filePath),
-      `${path.basename(filePath)}.tmp.${process.pid}.${Date.now()}`
-    )
+    tmpPath = createTemporaryExportPath(filePath)
     out = fs.createWriteStream(tmpPath, { encoding: 'utf-8' })
     await exportToSqlStream(connId, db, tables, out, options)
     await closeStream(out)

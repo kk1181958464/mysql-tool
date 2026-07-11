@@ -13,7 +13,7 @@ import {
   LoadingOutlined,
   FolderAddOutlined,
 } from '@ant-design/icons'
-import logoImg from '../../assets/logo.png'
+import logoImg from '../../assets/logo-sidebar.png'
 import { useAppStore } from '../../stores/app.store'
 import { useConnection } from '../../hooks/useConnection'
 import { useConnectionStore } from '../../stores/connection.store'

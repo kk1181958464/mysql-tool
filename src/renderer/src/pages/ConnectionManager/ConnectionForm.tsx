@@ -73,6 +73,10 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
     if (!form.name?.trim()) { setError('请输入连接名称'); return false }
     if (!form.host?.trim()) { setError('请输入主机地址'); return false }
     if (!form.port || form.port < 1 || form.port > 65535) { setError('端口范围 1-65535'); return false }
+    if (!Number.isInteger(form.poolMax) || form.poolMax! < 1 || form.poolMax! > 100) { setError('最大连接数范围 1-100'); return false }
+    if (!Number.isInteger(form.connectTimeout) || form.connectTimeout! < 1000 || form.connectTimeout! > 300000) { setError('连接超时范围 1000-300000 ms'); return false }
+    if (!Number.isInteger(form.idleTimeout) || form.idleTimeout! < 1000 || form.idleTimeout! > 3600000) { setError('空闲超时范围 1000-3600000 ms'); return false }
+    if (!/^(?:local|Z|[+-]\d{2}:\d{2})$/.test(form.timezone || '')) { setError('时区格式应为 local、Z 或 ±HH:MM'); return false }
     setError('')
     return true
   }

@@ -9,7 +9,8 @@ import {
   StopOutlined,
 } from '@ant-design/icons'
 import Editor, { loader } from '@monaco-editor/react'
-import * as monaco from 'monaco-editor'
+import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
+import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import { ResultPanel } from './ResultPanel'
 import { SnippetManager } from './SnippetManager'
@@ -258,6 +259,11 @@ const shouldUseBatchExecution = (sql: string): boolean => {
   const trimmed = sql.trim()
   if (!trimmed) return false
 
+  if (/^\s*DELIMITER\s+/im.test(trimmed)
+    || /^\s*CREATE\s+(?:DEFINER\s*=\s*\S+\s+)?(?:OR\s+REPLACE\s+)?(?:TRIGGER|PROCEDURE|FUNCTION|EVENT)\b/i.test(trimmed)) {
+    return true
+  }
+
   const withoutTrailingSemicolon = trimmed.replace(/;\s*$/, '')
   if (/;\s*\S/.test(withoutTrailingSemicolon)) {
     return true
@@ -356,6 +362,214 @@ const findCurrentStatement = (sql: string, offset: number): string => {
   return sql.slice(start, end).trim()
 }
 
+const splitSqlStatements = (sql: string): string[] => {
+  const statements: string[] = []
+  let start = 0
+  let inSingle = false
+  let inDouble = false
+  let inBacktick = false
+  let inLineComment = false
+  let inBlockComment = false
+
+  for (let i = 0; i < sql.length; i += 1) {
+    const ch = sql[i]
+    const next = sql[i + 1]
+
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false
+      continue
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false
+        i += 1
+      }
+      continue
+    }
+    if (inSingle) {
+      if (ch === "'" && next === "'") {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === "'") inSingle = false
+      continue
+    }
+    if (inDouble) {
+      if (ch === '"' && next === '"') {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === '"') inDouble = false
+      continue
+    }
+    if (inBacktick) {
+      if (ch === '`') inBacktick = false
+      continue
+    }
+
+    if (ch === '-' && next === '-') {
+      inLineComment = true
+      i += 1
+      continue
+    }
+    if (ch === '#') {
+      inLineComment = true
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true
+      i += 1
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      continue
+    }
+    if (ch === '"') {
+      inDouble = true
+      continue
+    }
+    if (ch === '`') {
+      inBacktick = true
+      continue
+    }
+    if (ch !== ';') continue
+
+    const statement = sql.slice(start, i).trim()
+    if (statement) statements.push(statement)
+    start = i + 1
+  }
+
+  const tail = sql.slice(start).trim()
+  if (tail) statements.push(tail)
+  return statements
+}
+
+const extractUserVariables = (sql: string): Set<string> => {
+  const variables = new Set<string>()
+  let inSingle = false
+  let inDouble = false
+  let inBacktick = false
+  let inLineComment = false
+  let inBlockComment = false
+
+  for (let i = 0; i < sql.length; i += 1) {
+    const ch = sql[i]
+    const next = sql[i + 1]
+
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false
+      continue
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false
+        i += 1
+      }
+      continue
+    }
+    if (inSingle) {
+      if (ch === "'" && next === "'") {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === "'") inSingle = false
+      continue
+    }
+    if (inDouble) {
+      if (ch === '"' && next === '"') {
+        i += 1
+        continue
+      }
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === '"') inDouble = false
+      continue
+    }
+    if (inBacktick) {
+      if (ch === '`') inBacktick = false
+      continue
+    }
+
+    if (ch === '-' && next === '-') {
+      inLineComment = true
+      i += 1
+      continue
+    }
+    if (ch === '#') {
+      inLineComment = true
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true
+      i += 1
+      continue
+    }
+    if (ch === "'") {
+      inSingle = true
+      continue
+    }
+    if (ch === '"') {
+      inDouble = true
+      continue
+    }
+    if (ch === '`') {
+      inBacktick = true
+      continue
+    }
+    if (ch !== '@') continue
+
+    const match = sql.slice(i + 1).match(/^([A-Za-z0-9_$]+)/)
+    if (!match) continue
+
+    variables.add(match[1].toLowerCase())
+    i += match[1].length
+  }
+  return variables
+}
+
+const getUserVariableAssignmentsBefore = (sql: string, offset: number, currentStatement: string): string[] => {
+  const requiredVariables = extractUserVariables(currentStatement)
+  if (requiredVariables.size === 0) return []
+
+  const assignments = splitSqlStatements(sql.slice(0, offset))
+    .map((statement) => {
+      const match = statement.match(/^\s*SET\s+@([A-Za-z0-9_$]+)\b/i)
+      return match ? { variable: match[1].toLowerCase(), statement } : null
+    })
+    .filter((item): item is { variable: string; statement: string } => !!item)
+
+  const selectedReversed: string[] = []
+  for (let i = assignments.length - 1; i >= 0; i -= 1) {
+    const assignment = assignments[i]
+    if (!requiredVariables.has(assignment.variable)) continue
+
+    selectedReversed.push(assignment.statement)
+    requiredVariables.delete(assignment.variable)
+    extractUserVariables(assignment.statement).forEach((variable) => {
+      if (variable !== assignment.variable) {
+        requiredVariables.add(variable)
+      }
+    })
+  }
+
+  return selectedReversed.reverse()
+}
+
 const getExecutableSql = (editor: any, fallbackSql: string, mode: 'current' | 'all'): string => {
   if (mode === 'all' || !editor) return fallbackSql.trim()
 
@@ -371,7 +585,9 @@ const getExecutableSql = (editor: any, fallbackSql: string, mode: 'current' | 'a
   const position = editor.getPosition?.()
   if (!position) return fallbackSql.trim()
   const offset = model.getOffsetAt(position)
-  return findCurrentStatement(fallbackSql, offset) || fallbackSql.trim()
+  const currentStatement = findCurrentStatement(fallbackSql, offset) || fallbackSql.trim()
+  const userVariableAssignments = getUserVariableAssignmentsBefore(fallbackSql, offset, currentStatement)
+  return [...userVariableAssignments, currentStatement].join(';\n')
 }
 
 const normalizeExplainSql = (sql: string): string => {

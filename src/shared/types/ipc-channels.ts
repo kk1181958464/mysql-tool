@@ -34,6 +34,8 @@ export const IPC = {
   DATA_BATCH_DELETE: 'data:batchDelete',
   IMPORT_FILE: 'import:file',
   IMPORT_PREVIEW: 'import:preview',
+  IMPORT_PROGRESS: 'import:progress',
+  IMPORT_EXPORT_CANCEL: 'import-export:cancel',
   EXPORT_DATA: 'export:data',
   EXPORT_STRUCTURE: 'export:structure',
   EXPORT_PROGRESS: 'export:progress',

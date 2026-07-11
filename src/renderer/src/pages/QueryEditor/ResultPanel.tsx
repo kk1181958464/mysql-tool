@@ -141,6 +141,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [activeKey, setActiveKey] = useState('results')
   const [activeStatementIndex, setActiveStatementIndex] = useState(0)
+  const [activeResultSetIndex, setActiveResultSetIndex] = useState(0)
   const [transformedRows, setTransformedRows] = useState<Array<Record<string, unknown>>>([])
   const [exportingFormat, setExportingFormat] = useState<string | null>(null)
   const [exportMessage, setExportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -171,6 +172,9 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
         } satisfies QueryStatementResult]
       : []
   const selectedStatement = statementResults[activeStatementIndex] || statementResults[0] || null
+  const selectedResultSet = selectedStatement?.resultSets?.[activeResultSetIndex]
+  const displayedColumns = selectedResultSet?.columns || selectedStatement?.columns || []
+  const displayedRows = selectedResultSet?.rows || selectedStatement?.rows || []
   const hasMultipleStatements = statementResults.length > 1
   const aggregateExecutionTime = statementResults.reduce((sum, item) => sum + item.executionTime, 0)
   const aggregateSuccessCount = statementResults.filter((item) => item.success).length
@@ -204,6 +208,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
 
   useEffect(() => {
     setActiveStatementIndex(0)
+    setActiveResultSetIndex(0)
     setActiveKey((result?.failCount ?? 0) > 0 ? 'messages' : 'results')
   }, [result?.sql, result?.executionTime, result?.statementResults?.length])
 
@@ -243,7 +248,11 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       .finally(() => setHistoryLoading(false))
   }, [activeKey, tabConnectionId, historyPage, historyPageSize])
 
-  const resultColumns = selectedStatement?.columns.map((col) => ({
+  useEffect(() => {
+    setActiveResultSetIndex(0)
+  }, [activeStatementIndex])
+
+  const resultColumns = displayedColumns.map((col) => ({
     key: col.name,
     title: <span>{col.name} <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{col.type}</span></span>,
     dataIndex: col.name,
@@ -253,10 +262,10 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       if (v === null) return <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>NULL</span>
       return String(v)
     },
-  })) || []
+  }))
 
   useEffect(() => {
-    const rows = selectedStatement?.rows
+    const rows = displayedRows
     if (!rows || rows.length === 0) {
       setTransformedRows([])
       return
@@ -294,12 +303,12 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     return () => {
       worker.terminate()
     }
-  }, [selectedStatement?.rows, tabId, activeStatementIndex])
+  }, [displayedRows, tabId, activeStatementIndex, activeResultSetIndex])
 
   const normalizedRows = useMemo(() => {
-    const rows = transformedRows.length ? transformedRows : (selectedStatement?.rows || [])
+    const rows = transformedRows.length ? transformedRows : displayedRows
     return rows.map((r, i) => ({ ...r, _key: i }))
-  }, [transformedRows, selectedStatement?.rows])
+  }, [transformedRows, displayedRows])
 
   useEffect(() => {
     if (activeKey !== 'results' || !selectedStatement) return
@@ -438,6 +447,20 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
               }}>
                 <WarningOutlined style={{ color: 'var(--warning)' }} />
                 <span>未写 LIMIT，已自动限制为前 {selectedStatement.limitApplied || selectedStatement.rowCount} 行。需要全量结果时请在 SQL 中显式指定 LIMIT。</span>
+              </div>
+            )}
+            {(selectedStatement.resultSets?.length || 0) > 1 && (
+              <div style={{ padding: '8px 12px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>结果集</span>
+                <select
+                  value={activeResultSetIndex}
+                  onChange={(e) => setActiveResultSetIndex(Number(e.target.value))}
+                  style={{ minWidth: 150, padding: '4px 8px', background: 'var(--bg-surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: 6 }}
+                >
+                  {selectedStatement.resultSets?.map((item, index) => (
+                    <option key={index} value={index}>#{index + 1} ({item.rowCount} 行)</option>
+                  ))}
+                </select>
               </div>
             )}
             <div style={{ flex: 1, minHeight: 0, padding: selectedStatement.limited ? '8px 12px 0' : '0 12px' }}>

@@ -13,6 +13,13 @@ export interface QueryStatementResult {
   error: string | null
   limited?: boolean
   limitApplied?: number
+  resultSets?: QueryResultSet[]
+}
+
+export interface QueryResultSet {
+  columns: ColumnInfo[]
+  rows: Record<string, unknown>[]
+  rowCount: number
 }
 
 export interface QueryResult {
@@ -30,6 +37,7 @@ export interface QueryResult {
   failCount?: number
   limited?: boolean
   limitApplied?: number
+  resultSets?: QueryResultSet[]
 }
 
 export interface QueryExecuteOptions {

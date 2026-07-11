@@ -10,13 +10,11 @@ interface Props {
 export const SSLConfig: React.FC<Props> = ({ form, updateField }) => {
   const pickFile = async (field: string) => {
     try {
-      const result = await (window as any).api.showOpenDialog({
+      const filePath = await window.api.dialog.openFile({
         properties: ['openFile'],
         filters: [{ name: 'Certificates', extensions: ['pem', 'crt', 'key', 'ca'] }],
       })
-      if (result && !result.canceled && result.filePaths?.[0]) {
-        updateField(field, result.filePaths[0])
-      }
+      if (filePath) updateField(field, filePath)
     } catch { /* cancelled */ }
   }
 

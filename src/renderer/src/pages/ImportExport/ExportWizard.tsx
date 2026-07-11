@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { Button, Select, Card, Input, Switch, Alert, Space, Checkbox } from '../../components/ui'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
@@ -14,14 +14,17 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
   const [selectedTables, setSelectedTables] = useState<string[]>([])
   const [customSql, setCustomSql] = useState('')
   const [format, setFormat] = useState<'csv' | 'json' | 'sql' | 'excel'>('csv')
-  const [csvOptions, setCsvOptions] = useState({ delimiter: ',', quote: '"', headers: true, encoding: 'utf-8' })
+  const [csvOptions, setCsvOptions] = useState({ delimiter: ',', quote: '"', headers: true })
   const [jsonOptions, setJsonOptions] = useState({ pretty: true, arrayMode: true })
   const [sqlOptions, setSqlOptions] = useState({ insertStyle: 'single', dropTable: true, createTable: true })
   const [excelOptions, setExcelOptions] = useState({ sheetName: 'Sheet1' })
+  const [consistentSnapshot, setConsistentSnapshot] = useState(false)
   const [outputPath, setOutputPath] = useState('')
   const [progress, setProgress] = useState(0)
+  const [progressText, setProgressText] = useState('准备中')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null)
+  const taskIdRef = useRef<string | null>(null)
 
   const connId = useConnectionStore((s) => s.activeConnectionId)
   const databases = useDatabaseStore((s) => connId ? s.databases[connId] ?? [] : [])
@@ -34,30 +37,58 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
 
   const execute = async () => {
     if (!connId || !selectedDb) return
+    if (sourceType === 'tables' && selectedTables.length === 0) {
+      setResult({ success: false, message: '请至少选择一张表' })
+      return
+    }
+    if (sourceType === 'tables' && format !== 'sql' && selectedTables.length !== 1) {
+      setResult({ success: false, message: 'CSV、JSON 和 Excel 每次只能导出一张表' })
+      return
+    }
+    if (sourceType === 'sql' && !customSql.trim()) {
+      setResult({ success: false, message: '请输入要导出的查询 SQL' })
+      return
+    }
+    if (sourceType === 'sql' && format === 'sql') {
+      setResult({ success: false, message: 'SQL 脚本格式用于导出表结构和数据；自定义查询请选择 CSV、JSON 或 Excel' })
+      return
+    }
     setLoading(true)
     setProgress(0)
+    setProgressText('正在导出')
+    const taskId = crypto.randomUUID()
+    taskIdRef.current = taskId
+    const unsubscribe = api.onExportProgress((data) => {
+      if (data.taskId !== taskId) return
+      const percent = data.total > 0 ? Math.round((data.done / data.total) * 100) : 0
+      setProgress(Math.min(99, Math.max(0, percent)))
+      setProgressText(data.current ? `${data.current}，已处理 ${data.rows} 行` : '正在导出')
+    })
     try {
       const ext = format === 'excel' ? 'xlsx' : format
       const defaultName = outputPath || `export_${Date.now()}.${ext}`
-      const sql = sourceType === 'sql' ? customSql : `SELECT * FROM ${selectedTables.map(t => `\`${t}\``).join(', ')}`
+      const sql = sourceType === 'sql' ? customSql : `SELECT * FROM \`${selectedTables[0]}\``
       const filePath = await api.importExport.exportData(connId, selectedDb, sql, defaultName, format,
         format === 'csv'
-          ? csvOptions
+          ? { ...csvOptions, taskId, consistentSnapshot }
           : format === 'json'
-            ? jsonOptions
+            ? { ...jsonOptions, taskId, consistentSnapshot }
             : format === 'sql'
-              ? { ...sqlOptions, tables: selectedTables, includeData: true }
-              : excelOptions
+              ? { ...sqlOptions, taskId, consistentSnapshot, tables: selectedTables, includeData: true }
+              : { ...excelOptions, taskId, consistentSnapshot }
       )
       if (!filePath) {
         setResult({ success: false, message: 'Export canceled' })
         return
       }
       setProgress(100)
+      setProgressText('完成')
       setResult({ success: true, message: `Export completed: ${filePath}` })
     } catch (e: any) {
       setResult({ success: false, message: e.message || String(e) })
     } finally {
+      taskIdRef.current = null
+      unsubscribe()
       setLoading(false)
     }
   }
@@ -75,7 +106,7 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
             </div>
             <div style={{ display: 'flex', gap: 16 }}>
               <label><input type="radio" checked={sourceType === 'tables'} onChange={() => setSourceType('tables')} /> 选择表</label>
-              <label><input type="radio" checked={sourceType === 'sql'} onChange={() => setSourceType('sql')} /> 自定义 SQL</label>
+              <label><input type="radio" checked={sourceType === 'sql'} onChange={() => { setSourceType('sql'); if (format === 'sql') setFormat('csv') }} /> 自定义 SQL</label>
             </div>
             {sourceType === 'tables' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -96,8 +127,8 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
         return (
           <div style={{ display: 'flex', gap: 16 }}>
             {(['csv', 'json', 'sql', 'excel'] as const).map((f) => (
-              <div key={f} onClick={() => setFormat(f)}
-                style={{ width: 100, height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${format === f ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 8, cursor: 'pointer', background: format === f ? 'var(--bg-hover)' : 'transparent', fontWeight: format === f ? 600 : 400 }}>
+              <div key={f} onClick={() => { if (!(sourceType === 'sql' && f === 'sql')) setFormat(f) }}
+                style={{ width: 100, height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${format === f ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 8, cursor: sourceType === 'sql' && f === 'sql' ? 'not-allowed' : 'pointer', opacity: sourceType === 'sql' && f === 'sql' ? 0.45 : 1, background: format === f ? 'var(--bg-hover)' : 'transparent', fontWeight: format === f ? 600 : 400 }}>
                 {f.toUpperCase()}
               </div>
             ))}
@@ -111,10 +142,6 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
                 <div><label>分隔符：</label><Input style={{ width: 80 }} value={csvOptions.delimiter} onChange={(e) => setCsvOptions((o) => ({ ...o, delimiter: e.target.value }))} /></div>
                 <div><label>引号符：</label><Input style={{ width: 80 }} value={csvOptions.quote} onChange={(e) => setCsvOptions((o) => ({ ...o, quote: e.target.value }))} /></div>
                 <div><Switch checked={csvOptions.headers} onChange={(v) => setCsvOptions((o) => ({ ...o, headers: v }))} /> <span style={{ marginLeft: 8 }}>{csvOptions.headers ? '包含表头' : '无表头'}</span></div>
-                <div><label>编码：</label>
-                  <Select style={{ width: 150 }} value={csvOptions.encoding} onChange={(v) => setCsvOptions((o) => ({ ...o, encoding: v }))}
-                    options={[{ label: 'UTF-8', value: 'utf-8' }, { label: 'GBK', value: 'gbk' }]} />
-                </div>
               </Space>
             )}
             {format === 'json' && (
@@ -136,6 +163,7 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
             {format === 'excel' && (
               <div><label>Sheet 名称：</label><Input style={{ width: 200 }} value={excelOptions.sheetName} onChange={(e) => setExcelOptions((o) => ({ ...o, sheetName: e.target.value }))} /></div>
             )}
+            {sourceType === 'tables' && <div style={{ marginTop: 12 }}><Switch checked={consistentSnapshot} onChange={setConsistentSnapshot} /> <span style={{ marginLeft: 8 }}>{consistentSnapshot ? '一致性快照，导出期间保持同一数据视图' : '实时读取，允许导出期间数据变化'}</span></div>}
           </Card>
         )
       case 3:
@@ -150,7 +178,11 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
                 <div style={{ width: '100%', height: 8, background: 'var(--bg-hover)', borderRadius: 4, marginBottom: 16 }}>
                   <div style={{ width: `${progress}%`, height: '100%', background: 'var(--accent)', borderRadius: 4, transition: 'width 0.3s' }} />
                 </div>
-                <Button type="primary" size="large" loading={loading} onClick={execute}>开始导出</Button>
+                <div style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 12 }}>{progressText} {progress}%</div>
+                <Space>
+                  <Button type="primary" size="large" loading={loading} onClick={execute}>开始导出</Button>
+                  {loading && <Button size="large" onClick={() => taskIdRef.current && api.importExport.cancel(taskIdRef.current)}>取消</Button>}
+                </Space>
               </>
             ) : (
               <Alert type={result.success ? 'success' : 'error'} message={result.success ? '导出完成' : '导出失败'} description={result.message} />
@@ -174,7 +206,11 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
       <Card>{renderStep()}</Card>
       <div style={{ marginTop: 16, display: 'flex', justifyContent: 'space-between' }}>
         <Button disabled={step === 0} onClick={() => setStep((s) => s - 1)}>上一步</Button>
-        <Button type="primary" disabled={step === stepTitles.length - 1 && !!result} onClick={() => setStep((s) => s + 1)}>下一步</Button>
+        <Button type="primary" disabled={
+          loading
+          || (step === 0 && (!selectedDb || (sourceType === 'tables' ? selectedTables.length === 0 : !customSql.trim())))
+          || (step === stepTitles.length - 1 && !!result)
+        } onClick={() => setStep((s) => Math.min(stepTitles.length - 1, s + 1))}>下一步</Button>
       </div>
     </div>
   )

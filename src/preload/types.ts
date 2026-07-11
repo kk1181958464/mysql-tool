@@ -13,10 +13,11 @@ import type {
 } from '../shared/types/table-design'
 
 export interface ImportProgressPayload {
+  taskId?: string
   current: number
   total: number
   fail: number
-  stage?: 'parsing' | 'executing'
+  stage?: 'reading' | 'parsing' | 'executing'
   originalStatementTotal?: number
   executableStatementTotal?: number
 }
@@ -83,10 +84,11 @@ export interface ElectronAPI {
     batchDelete(connId: string, db: string, table: string, wheres: Record<string, unknown>[]): Promise<any>
   }
   importExport: {
-    importFile(connId: string, db: string, table: string, filePath: string, options?: any): Promise<{ imported: number; errors?: number; executed?: number }>
-    preview(filePath: string): Promise<{ columns: string[]; rows: any[]; totalRows: number }>
+    importFile(connId: string, db: string, table: string, filePath: string, options?: any): Promise<{ imported: number; errors?: number; executed?: number; errorReportPath?: string }>
+    preview(filePath: string, options?: { sheetName?: string; delimiter?: string; quote?: string; columns?: boolean }): Promise<{ columns: string[]; rows: any[]; totalRows: number; sheetNames?: string[] }>
     exportData(connId: string, db: string, sql: string, filePath: string, format: string, options?: any): Promise<string | null>
     exportStructure(connId: string, db: string, tables: string[], filePath: string): Promise<void>
+    cancel(taskId: string): Promise<void>
   }
   perf: {
     processList(connId: string): Promise<any[]>
@@ -107,7 +109,7 @@ export interface ElectronAPI {
     createProcedure(connId: string, db: string, sql: string): Promise<void>
     createTrigger(connId: string, db: string, sql: string): Promise<void>
     createEvent(connId: string, db: string, sql: string): Promise<void>
-    drop(connId: string, db: string, type: string, name: string): Promise<void>
+    drop(connId: string, db: string, type: 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT', name: string): Promise<void>
     execRoutine(connId: string, db: string, name: string, type: 'PROCEDURE' | 'FUNCTION', params: string[]): Promise<{ rows: unknown[] }>
   }
   store: {
@@ -125,7 +127,7 @@ export interface ElectronAPI {
     readFile(filePath: string): Promise<string>
   }
   onImportProgress(cb: (data: ImportProgressPayload) => void): () => void
-  onExportProgress(cb: (data: { current: string; done: number; total: number; rows: number; finished?: boolean }) => void): () => void
+  onExportProgress(cb: (data: { taskId?: string; current: string; done: number; total: number; rows: number; finished?: boolean }) => void): () => void
   win: {
     minimize(): void
     maximize(): void

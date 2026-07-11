@@ -605,6 +605,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [paginationFallbackHint, setPaginationFallbackHint] = useState('')
   const [transformedBaseRows, setTransformedBaseRows] = useState<Array<Record<string, unknown>>>([])
   const [pendingPaginationHint, setPendingPaginationHint] = useState('')
+  const [columnFilter, setColumnFilter] = useState('')
   const fetchRequestIdRef = useRef(0)
   const transformJobIdRef = useRef(0)
 
@@ -1794,11 +1795,21 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     fetchData('reset', false, 1, true, nextOrderBy)
   }, [headerContextMenu, fetchData])
 
-  const dataCols = useMemo(() => result?.columns.map((col) => {
-    const columnComment = columnDetailsByName.get(col.name)?.comment?.trim() || ''
-    const isSorted = orderBy.startsWith(`\`${col.name}\``)
-    const sortDirection = isSorted && /\bDESC$/i.test(orderBy) ? 'DESC' : isSorted ? 'ASC' : ''
-    return {
+  const dataCols = useMemo(() => {
+    const filterLower = columnFilter.toLowerCase().trim()
+    const filtered = !filterLower
+      ? result?.columns || []
+      : (result?.columns || []).filter((col) => {
+          const nameMatch = col.name.toLowerCase().includes(filterLower)
+          const commentMatch = columnDetailsByName.get(col.name)?.comment?.toLowerCase().includes(filterLower)
+          return nameMatch || commentMatch
+        })
+
+    return filtered.map((col) => {
+      const columnComment = columnDetailsByName.get(col.name)?.comment?.trim() || ''
+      const isSorted = orderBy.startsWith(`\`${col.name}\``)
+      const sortDirection = isSorted && /\bDESC$/i.test(orderBy) ? 'DESC' : isSorted ? 'ASC' : ''
+      return {
       key: col.name,
       title: (
         <div
@@ -1876,7 +1887,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         )
       },
     }
-  }) || [], [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, orderBy, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange])
+    })
+  }, [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, orderBy, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange, columnFilter])
 
   const columns = useMemo(() => [checkboxCol, ...dataCols], [checkboxCol, dataCols])
   const isKeysetMode = lastQueryMode === 'keyset'
@@ -1939,6 +1951,19 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       {error && <div style={{ color: 'var(--color-red)', marginBottom: 8 }}>{error}</div>}
       {!error && successMessage && <div style={{ color: 'var(--success)', marginBottom: 8 }}>{successMessage}</div>}
+
+      {result && result.columns.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <Input
+            size="small"
+            placeholder="搜索字段（按名称或注释）"
+            value={columnFilter}
+            onChange={(e) => setColumnFilter(e.target.value)}
+            allowClear
+            style={{ width: 260 }}
+          />
+        </div>
+      )}
 
       <FilterModal
         open={isFilterModalOpen}
