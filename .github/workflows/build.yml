@@ -31,7 +31,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.12.0
           cache: 'npm'
 
       - name: Install Linux dependencies
@@ -49,8 +49,14 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build Electron app
-        run: npx electron-vite build && npx electron-builder --config.npmRebuild=true --publish never
+      - name: Build application
+        run: npm run build
+
+      - name: Rebuild native dependencies
+        run: npx electron-rebuild --force --only better-sqlite3
+
+      - name: Package Electron app
+        run: npx electron-builder --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
