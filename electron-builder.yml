@@ -7,13 +7,16 @@ npmRebuild: false
 files:
   - out/**
   - package.json
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
 asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/build/Release/*.node
 win:
   executableName: mysql-connection-tool
   icon: resources/icon.png
-  signAndEditExecutable: false
+  signExecutable: false
   target:
     - nsis
     - portable
