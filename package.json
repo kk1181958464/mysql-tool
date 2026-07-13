@@ -1,7 +1,7 @@
 {
-  "name": "mysql-connection-tool",
-  "version": "1.0.46",
-  "description": "MySQL连接工具",
+  "name": "kmysql",
+  "version": "1.0.47",
+  "description": "kMysql",
   "author": {
     "name": "KK1181958464",
     "email": "1181958464@qq.com"

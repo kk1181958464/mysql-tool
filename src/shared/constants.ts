@@ -1,4 +1,4 @@
-export const APP_NAME = 'MySQL连接工具'
+export const APP_NAME = 'kMysql'
 export const DEFAULT_PORT = 3306
 export const DEFAULT_SSH_PORT = 22
 export const DEFAULT_CHARSET = 'utf8mb4'

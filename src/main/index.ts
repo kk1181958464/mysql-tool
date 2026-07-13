@@ -10,6 +10,7 @@ import * as logger from './utils/logger'
 import * as queryExecutor from './services/query-executor'
 import { cancelMultiStatementSql } from './services/sql-script-executor'
 import { initializeAppUpdater, scheduleStartupUpdateCheck } from './services/app-updater'
+import { APP_NAME } from '../shared/constants'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -95,7 +96,7 @@ function createTray() {
     }
 
     tray = new Tray(icon)
-    tray.setToolTip('MySQL 连接工具')
+    tray.setToolTip(APP_NAME)
     tray.setContextMenu(
       Menu.buildFromTemplate([
         {

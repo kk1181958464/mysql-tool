@@ -1,6 +1,6 @@
-appId: com.mysql.connection-tool
-productName: MySQL连接工具
-artifactName: ${name}-${version}-${arch}.${ext}
+appId: com.kmysql.desktop
+productName: kMysql
+artifactName: kMysql-${version}-${arch}.${ext}
 directories:
   buildResources: resources
   output: dist
@@ -19,14 +19,14 @@ asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/build/Release/*.node
 win:
-  executableName: mysql-connection-tool
+  executableName: kMysql
   icon: resources/icon.png
   signExecutable: false
   target:
     - nsis
     - portable
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: kMysql-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   oneClick: false

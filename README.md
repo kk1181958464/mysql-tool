@@ -1,4 +1,4 @@
-# MySQL 连接工具
+# kMysql
 
 一个基于 **Electron + React + TypeScript** 的桌面 MySQL 客户端，面向日常开发与运维场景，提供连接管理、对象浏览、SQL 查询、数据编辑与导入导出能力。
 
