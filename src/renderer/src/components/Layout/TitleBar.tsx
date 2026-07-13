@@ -3,7 +3,6 @@ import { Modal, Button } from '../ui'
 import { api } from '../../utils/ipc'
 import SettingsModal from '../SettingsModal'
 import AppUpdater from '../AppUpdater'
-import { APP_NAME } from '../../../../shared/constants'
 
 export default function TitleBar() {
   const [maximized, setMaximized] = useState(false)
@@ -38,9 +37,7 @@ export default function TitleBar() {
   return (
     <>
       <div className="title-bar">
-        <div className="title-bar-drag">
-          <span className="title-bar-text">{APP_NAME}</span>
-        </div>
+        <div className="title-bar-drag" />
         <div className="title-bar-controls">
           <AppUpdater />
           <button className="title-btn" onClick={() => setShowSettings(true)} title="设置" style={{ fontSize: 14 }}>

@@ -164,8 +164,8 @@ export default function Sidebar() {
       {/* Header */}
       <div className="sidebar-header">
         <div className="app-logo">
-          <img src={logoImg} alt="MySQL Tool Logo" className="app-logo-img" />
-          <span>MySQL Tool</span>
+          <img src={logoImg} alt="KMysql Logo" className="app-logo-img" />
+          <span>KMysql</span>
         </div>
         <div style={{ flex: 1 }} />
         <Tooltip title="管理连接" placement="left">
