@@ -25,6 +25,13 @@ function formatBytes(value: number): string {
   return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
+function formatReleaseNotes(value?: string): string {
+  if (!value) return ''
+  const document = new DOMParser().parseFromString(value, 'text/html')
+  const text = document.body.textContent?.replace(/\s+/g, ' ').trim() || ''
+  return text.replace(/^Full Changelog\s*:/i, '完整更新记录：')
+}
+
 export default function AppUpdater() {
   const [state, setState] = useState<AppUpdateState>(initialState)
   const [open, setOpen] = useState(false)
@@ -61,6 +68,7 @@ export default function AppUpdater() {
 
   const hasUpdate = state.status === 'available' || state.status === 'downloading' || state.status === 'downloaded'
   const progress = Math.max(0, Math.min(100, state.progress?.percent || 0))
+  const releaseNotes = formatReleaseNotes(state.releaseNotes)
 
   const renderContent = () => {
     if (state.status === 'checking' || state.status === 'idle') {
@@ -83,7 +91,7 @@ export default function AppUpdater() {
               <span>当前版本 {state.currentVersion}</span>
             </div>
           </div>
-          {state.releaseNotes && <div className="app-update-notes">{state.releaseNotes}</div>}
+          {releaseNotes && <div className="app-update-notes">{releaseNotes}</div>}
         </div>
       )
     }
@@ -152,6 +160,7 @@ export default function AppUpdater() {
     if (state.status === 'available') {
       return (
         <>
+          <Button onClick={() => void api.updater.openRelease()}>查看 Release</Button>
           <Button onClick={() => setOpen(false)}>稍后提醒</Button>
           <Button variant="primary" icon={<DownloadOutlined />} onClick={() => void api.updater.download()}>下载更新</Button>
         </>
