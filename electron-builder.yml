@@ -15,18 +15,21 @@ files:
 extraResources:
   - from: resources/icon.png
     to: icon.png
+  - from: resources/icon.ico
+    to: icon.ico
 asarUnpack:
   - resources/**
   - node_modules/better-sqlite3/build/Release/*.node
 win:
   executableName: kMysql
-  icon: resources/icon.png
+  icon: resources/icon.ico
   signExecutable: false
   target:
     - nsis
     - portable
 nsis:
   artifactName: kMysql-${version}-setup.${ext}
+  include: resources/installer.nsh
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   oneClick: false
