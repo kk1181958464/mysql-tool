@@ -11,6 +11,7 @@ import type {
   BackupSchedule,
   BackupScheduleRequest,
 } from '../shared/types/table-design'
+import type { AppUpdateState } from '../shared/types/app-update'
 
 export interface ImportProgressPayload {
   taskId?: string
@@ -128,6 +129,14 @@ export interface ElectronAPI {
   }
   onImportProgress(cb: (data: ImportProgressPayload) => void): () => void
   onExportProgress(cb: (data: { taskId?: string; current: string; done: number; total: number; rows: number; finished?: boolean }) => void): () => void
+  updater: {
+    getState(): Promise<AppUpdateState>
+    check(): Promise<AppUpdateState>
+    download(): Promise<AppUpdateState>
+    install(): Promise<void>
+    openRelease(): Promise<void>
+    onStateChanged(cb: (state: AppUpdateState) => void): () => void
+  }
   win: {
     minimize(): void
     maximize(): void

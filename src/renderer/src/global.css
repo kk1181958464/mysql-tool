@@ -869,3 +869,114 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* ===== Application Update ===== */
+.app-update-trigger {
+  position: relative;
+  font-size: 14px;
+}
+
+.app-update-trigger.has-update {
+  color: var(--accent);
+}
+
+.app-update-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--error);
+  box-shadow: 0 0 0 2px var(--bg-mantle);
+}
+
+.app-update-content,
+.app-update-message {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 0;
+}
+
+.app-update-message {
+  align-items: center;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.app-update-message strong,
+.app-update-heading strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.app-update-message span,
+.app-update-heading span,
+.app-update-progress-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.app-update-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.app-update-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.app-update-hero-icon {
+  color: var(--accent);
+  font-size: 30px;
+  flex-shrink: 0;
+}
+
+.app-update-success {
+  color: var(--success);
+}
+
+.app-update-warning {
+  color: var(--warning);
+}
+
+.app-update-notes {
+  max-height: 180px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.app-update-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
+
+.app-update-progress > div {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.app-update-progress-meta {
+  display: flex;
+  justify-content: space-between;
+}
+
+.app-update-error {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}

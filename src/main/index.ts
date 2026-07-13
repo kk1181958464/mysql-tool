@@ -9,6 +9,7 @@ import * as backupService from './services/backup'
 import * as logger from './utils/logger'
 import * as queryExecutor from './services/query-executor'
 import { cancelMultiStatementSql } from './services/sql-script-executor'
+import { initializeAppUpdater, scheduleStartupUpdateCheck } from './services/app-updater'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -197,6 +198,13 @@ app.whenReady().then(() => {
   connectionManager.initializeHeartbeatInterval()
   backupService.startScheduleRunner()
   registerAllIPC()
+  initializeAppUpdater({
+    beforeInstall: async () => {
+      isQuitting = true
+      await cleanupBeforeQuit()
+      cleanupComplete = true
+    },
+  })
 
   // Window control IPC
   ipcMain.on(IPC.WIN_MINIMIZE, () => mainWindow?.minimize())
@@ -213,6 +221,7 @@ app.whenReady().then(() => {
 
   createWindow()
   createTray()
+  scheduleStartupUpdateCheck()
 
   nativeTheme.on('updated', () => {
     mainWindow?.webContents.send('native-theme-changed', nativeTheme.shouldUseDarkColors)

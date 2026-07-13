@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Modal, Button } from '../ui'
 import { api } from '../../utils/ipc'
 import SettingsModal from '../SettingsModal'
+import AppUpdater from '../AppUpdater'
 
 export default function TitleBar() {
   const [maximized, setMaximized] = useState(false)
@@ -40,6 +41,7 @@ export default function TitleBar() {
           <span className="title-bar-text">MySQL 连接工具</span>
         </div>
         <div className="title-bar-controls">
+          <AppUpdater />
           <button className="title-btn" onClick={() => setShowSettings(true)} title="设置" style={{ fontSize: 14 }}>
             <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M7.07 0l-.26 1.59a5.97 5.97 0 00-1.5.63L3.98 1.28 2.28 2.98l.94 1.33a5.97 5.97 0 00-.63 1.5L1 6.07v2.4l1.59.26c.14.53.36 1.03.63 1.5l-.94 1.33 1.7 1.7 1.33-.94c.47.27.97.49 1.5.63L7.07 15h2.4l.26-1.59a5.97 5.97 0 001.5-.63l1.33.94 1.7-1.7-.94-1.33c.27-.47.49-.97.63-1.5L15.54 8.93v-2.4l-1.59-.26a5.97 5.97 0 00-.63-1.5l.94-1.33-1.7-1.7-1.33.94a5.97 5.97 0 00-1.5-.63L9.47 0H7.07zM8.27 5a2.73 2.73 0 110 5.46 2.73 2.73 0 010-5.46z"/></svg>
           </button>

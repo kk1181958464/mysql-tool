@@ -99,6 +99,18 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC.EXPORT_PROGRESS, handler)
     return () => ipcRenderer.removeListener(IPC.EXPORT_PROGRESS, handler)
   },
+  updater: {
+    getState: () => ipcRenderer.invoke(IPC.APP_UPDATE_GET_STATE),
+    check: () => ipcRenderer.invoke(IPC.APP_UPDATE_CHECK),
+    download: () => ipcRenderer.invoke(IPC.APP_UPDATE_DOWNLOAD),
+    install: () => ipcRenderer.invoke(IPC.APP_UPDATE_INSTALL),
+    openRelease: () => ipcRenderer.invoke(IPC.APP_UPDATE_OPEN_RELEASE),
+    onStateChanged: (cb) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof cb>[0]) => cb(state)
+      ipcRenderer.on(IPC.APP_UPDATE_STATE_CHANGED, handler)
+      return () => ipcRenderer.removeListener(IPC.APP_UPDATE_STATE_CHANGED, handler)
+    },
+  },
   win: {
     minimize: () => ipcRenderer.send(IPC.WIN_MINIMIZE),
     maximize: () => ipcRenderer.send(IPC.WIN_MAXIMIZE),
