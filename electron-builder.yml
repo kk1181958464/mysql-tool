@@ -1,5 +1,6 @@
 appId: com.mysql.connection-tool
 productName: MySQL连接工具
+artifactName: ${name}-${version}-${arch}.${ext}
 directories:
   buildResources: resources
   output: dist
