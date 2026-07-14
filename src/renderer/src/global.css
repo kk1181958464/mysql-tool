@@ -423,20 +423,50 @@ body {
 .query-editor-main {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
+  overflow: hidden;
 }
 
 .query-editor-monaco {
-  flex: 1;
-  min-height: 200px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .query-editor-result {
-  height: 280px;
-  flex-shrink: 0;
-  border-top: 1px solid var(--border);
+  height: 100%;
+  min-height: 0;
   overflow: auto;
+}
+
+.query-editor-resize-handle {
+  position: relative;
+  height: 7px;
+  flex: 0 0 7px;
+  cursor: row-resize;
+  background: var(--bg-mantle);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  outline: none;
+}
+
+.query-editor-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-muted);
+  opacity: 0.45;
+  transform: translate(-50%, -50%);
+  transition: background var(--transition), opacity var(--transition);
+}
+
+.query-editor-resize-handle:hover::after,
+.query-editor-resize-handle[data-resize-handle-active]::after {
+  background: var(--accent);
+  opacity: 1;
 }
 
 /* Content Navigation */

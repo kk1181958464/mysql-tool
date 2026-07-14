@@ -9,6 +9,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons'
 import Editor, { loader } from '@monaco-editor/react'
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
@@ -929,34 +930,40 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
         </Space>
       </div>
 
-      <div className="query-editor-main">
-        <div className="query-editor-monaco">
-          <Editor
-            height="100%"
-            width="100%"
-            language="sql"
-            theme={resolvedTheme === 'dark' ? 'vs-dark' : 'light'}
-            value={tab.content}
-            onChange={(value) => updateQueryContent(tab.id, value || '')}
-            onMount={handleEditorMount}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 14,
-              lineNumbers: 'on',
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              tabSize: 2,
-              wordWrap: 'on',
-              suggestOnTriggerCharacters: true,
-              quickSuggestions: true,
-            }}
-          />
-        </div>
+      <PanelGroup direction="vertical" autoSaveId="query-editor-layout" className="query-editor-main">
+        <Panel id="query-editor-sql" defaultSize={65} minSize={20}>
+          <div className="query-editor-monaco">
+            <Editor
+              height="100%"
+              width="100%"
+              language="sql"
+              theme={resolvedTheme === 'dark' ? 'vs-dark' : 'light'}
+              value={tab.content}
+              onChange={(value) => updateQueryContent(tab.id, value || '')}
+              onMount={handleEditorMount}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 14,
+                lineNumbers: 'on',
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                tabSize: 2,
+                wordWrap: 'on',
+                suggestOnTriggerCharacters: true,
+                quickSuggestions: true,
+              }}
+            />
+          </div>
+        </Panel>
 
-        <div className="query-editor-result">
-          <ResultPanel tabId={tabId} />
-        </div>
-      </div>
+        <PanelResizeHandle className="query-editor-resize-handle" />
+
+        <Panel id="query-editor-results" defaultSize={35} minSize={15}>
+          <div className="query-editor-result">
+            <ResultPanel tabId={tabId} />
+          </div>
+        </Panel>
+      </PanelGroup>
 
       <SnippetManager
         open={snippetOpen}
