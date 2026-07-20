@@ -606,6 +606,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [transformedBaseRows, setTransformedBaseRows] = useState<Array<Record<string, unknown>>>([])
   const [pendingPaginationHint, setPendingPaginationHint] = useState('')
   const [columnFilter, setColumnFilter] = useState('')
+  const [isColumnPickerExpanded, setIsColumnPickerExpanded] = useState(false)
   const [visibleColumnNames, setVisibleColumnNames] = useState<Set<string>>(new Set())
   const knownColumnNamesRef = useRef<Set<string>>(new Set())
   const fetchRequestIdRef = useRef(0)
@@ -626,6 +627,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     knownColumnNamesRef.current = new Set()
     setVisibleColumnNames(new Set())
     setColumnFilter('')
+    setIsColumnPickerExpanded(false)
   }, [connectionId, database, table])
 
   useEffect(() => {
@@ -1979,6 +1981,18 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       {result && result.columns.length > 0 && (
         <div style={{ marginBottom: 8, border: '1px solid var(--border)', background: 'var(--bg-surface)' }}>
+          <button
+            type="button"
+            aria-expanded={isColumnPickerExpanded}
+            onClick={() => setIsColumnPickerExpanded((expanded) => !expanded)}
+            style={{ width: '100%', height: 32, padding: '0 10px', border: 0, background: 'transparent', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left' }}
+          >
+            <span style={{ width: 0, height: 0, borderTop: '4px solid transparent', borderBottom: '4px solid transparent', borderLeft: '6px solid currentColor', transform: isColumnPickerExpanded ? 'rotate(90deg)' : undefined, transition: 'transform 0.15s ease' }} />
+            <span style={{ fontSize: 12 }}>字段筛选</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>已显示 {visibleColumnCount}/{totalColumnCount}</span>
+          </button>
+          {isColumnPickerExpanded && (
+            <>
           <div style={{ padding: 8, display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
             <Input
               size="small"
@@ -2013,6 +2027,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
             })}
             {columnPickerItems.length === 0 && <span style={{ color: 'var(--text-muted)', fontSize: 12, padding: 4 }}>没有匹配字段</span>}
           </div>
+            </>
+          )}
         </div>
       )}
 
