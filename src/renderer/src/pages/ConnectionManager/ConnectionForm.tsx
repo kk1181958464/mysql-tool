@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Tabs, Input, Button, Space, Select, Alert } from '../../components/ui'
+import { Tabs, Input, Button, Space, Select, Alert, Toast } from '../../components/ui'
 import { useConnectionStore } from '../../stores/connection.store'
 import { SSLConfig } from './SSLConfig'
 import { SSHConfig } from './SSHConfig'
@@ -196,7 +196,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
       />
       <div style={{ flexShrink: 0, paddingTop: 12, borderTop: '1px solid var(--border)', marginTop: 12 }}>
-        {success && <Alert type="success" message={success} style={{ marginBottom: 8 }} />}
+        <Toast open={Boolean(success)} message={success} type="success" />
         {error && <Alert type="error" message={error} style={{ marginBottom: 8 }} />}
         <Space>
           <Button onClick={handleTest} disabled={testing}>{testing ? '测试中...' : '测试连接'}</Button>

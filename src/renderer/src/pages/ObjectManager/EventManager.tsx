@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Table, Button, Modal, Space, Tag, Input, Select, Switch, Alert, Popconfirm } from '../../components/ui'
+import { Table, Button, Modal, Space, Tag, Input, Select, Switch, Alert, Popconfirm, Toast } from '../../components/ui'
 import { PlusOutlined, EyeOutlined, DeleteOutlined, PauseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import type { EventInfo } from '../../../../shared/types/metadata'
 import { useConnectionStore } from '../../stores/connection.store'
@@ -78,7 +78,7 @@ const EventManager: React.FC = () => {
   return (
     <div>
       {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
-      {success && <Alert type="success" message={success} style={{ marginBottom: 12 }} />}
+      <Toast open={Boolean(success)} message={success} type="success" />
       <div style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => {
           setForm({ name: '', type: 'RECURRING', atDatetime: '', everyInterval: 1, everyUnit: 'DAY', starts: '', ends: '', body: '', enabled: true })

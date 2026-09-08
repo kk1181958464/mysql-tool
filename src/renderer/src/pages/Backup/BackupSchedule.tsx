@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Table, Button, Modal, Space, Tag, Select, Switch, Input, Alert, Popconfirm } from '../../components/ui'
+import { Table, Button, Modal, Space, Tag, Select, Switch, Input, Alert, Popconfirm, Toast } from '../../components/ui'
 import { PlusOutlined, ArrowLeftOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons'
 import type { BackupSchedule as ScheduleType } from '../../../../shared/types/table-design'
 import { useConnectionStore } from '../../stores/connection.store'
@@ -102,7 +102,7 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
   return (
     <div style={{ padding: 16 }}>
       {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
-      {success && <Alert type="success" message={success} style={{ marginBottom: 12 }} />}
+      <Toast open={Boolean(success)} message={success} type="success" />
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>添加定时备份</Button>

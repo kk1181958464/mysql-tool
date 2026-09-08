@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Tabs, Button, Modal } from '../../components/ui'
+import { Tabs, Button, Modal, Toast } from '../../components/ui'
 import { SaveOutlined, DiffOutlined } from '@ant-design/icons'
 import { ColumnEditor } from './ColumnEditor'
 import { IndexEditor } from './IndexEditor'
@@ -306,16 +306,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
         </div>
       )}
 
-      {/* 成功提示 - 顶部浮动 */}
-      {successMsg && (
-        <div style={{
-          position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)',
-          background: 'var(--success)', color: '#fff', padding: '8px 24px',
-          borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 1000
-        }}>
-          ✓ {successMsg}
-        </div>
-      )}
+      <Toast open={Boolean(successMsg)} message={successMsg} type="success" />
 
       {/* 错误弹窗 */}
       <Modal

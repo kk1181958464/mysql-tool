@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Table, Button, Modal, Space, Tag, Input, Select, Alert, Popconfirm } from '../../components/ui'
+import { Table, Button, Modal, Space, Tag, Input, Select, Alert, Popconfirm, Toast } from '../../components/ui'
 import { PlusOutlined, EyeOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import type { ViewInfo } from '../../../../shared/types/metadata'
 import { useConnectionStore } from '../../stores/connection.store'
@@ -79,7 +79,7 @@ const ViewManager: React.FC = () => {
   return (
     <div>
       {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
-      {success && <Alert type="success" message={success} style={{ marginBottom: 12 }} />}
+      <Toast open={Boolean(success)} message={success} type="success" />
       <div style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建视图</Button>
       </div>

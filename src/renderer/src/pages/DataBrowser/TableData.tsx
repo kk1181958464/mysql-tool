@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Table, Input, Space, Button, DateTimePicker, Modal, Tag, Checkbox } from '../../components/ui'
+import { Table, Input, Space, Button, DateTimePicker, Modal, Tag, Checkbox, Toast } from '../../components/ui'
 import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined } from '@ant-design/icons'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
@@ -1977,7 +1977,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       </Space>
 
       {error && <div style={{ color: 'var(--color-red)', marginBottom: 8 }}>{error}</div>}
-      {!error && successMessage && <div style={{ color: 'var(--success)', marginBottom: 8 }}>{successMessage}</div>}
+      <Toast open={!error && Boolean(successMessage)} message={successMessage} type="success" />
 
       {result && result.columns.length > 0 && (
         <div style={{ marginBottom: 8, border: '1px solid var(--border)', background: 'var(--bg-surface)' }}>
