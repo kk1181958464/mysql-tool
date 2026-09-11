@@ -260,6 +260,9 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     ellipsis: true,
     render: (v: unknown) => {
       if (v === null) return <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>NULL</span>
+      if (typeof v === 'object') {
+        try { return JSON.stringify(v) } catch { return String(v) }
+      }
       return String(v)
     },
   }))

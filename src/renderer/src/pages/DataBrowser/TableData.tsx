@@ -51,6 +51,15 @@ const fmtDT = (d: Date) =>
 
 const fmtValue = (val: unknown, isDateOnly = false): string => {
   if (val === null || val === undefined) return ''
+  // mysql2 may return JSON columns as objects. String(object) produces
+  // "[object Object]", which hides the actual value in the data grid.
+  if (typeof val === 'object' && !isDateValue(val)) {
+    try {
+      return JSON.stringify(val)
+    } catch {
+      return String(val)
+    }
+  }
   if (typeof val === 'string') {
     // 已经是格式化字符串（来自 pendingChanges），直接返回
     if (/^\d{4}-\d{2}-\d{2}/.test(val)) return val
@@ -301,6 +310,13 @@ const valIsDate = (val: unknown): boolean => {
 const escSQL = (v: unknown): string => {
   if (v === null || v === undefined) return 'NULL'
   if (typeof v === 'number') return String(v)
+  if (typeof v === 'object') {
+    try {
+      return quoteSqlString(JSON.stringify(v))
+    } catch {
+      return quoteSqlString(String(v))
+    }
+  }
   return `'${String(v).replace(/'/g, "''")}'`
 }
 
@@ -493,7 +509,7 @@ const EditableCell: React.FC<{
       } else if (e.key === 'F2' || e.key === 'Enter') {
         e.preventDefault()
         enterEditing()
-        setInputValue(isDT ? displayValue : (value === null ? '' : String(value)))
+        setInputValue(isDT ? displayValue : (value === null ? '' : displayValue))
       } else if (e.key === 'Delete') {
         e.preventDefault()
         onSave(null)
@@ -546,7 +562,7 @@ const EditableCell: React.FC<{
       onDoubleClick={() => {
         window.dispatchEvent(new Event('app:close-context-menus'))
         enterEditing()
-        setInputValue(isDT ? displayValue : (value === null ? '' : String(value)))
+        setInputValue(isDT ? displayValue : (value === null ? '' : displayValue))
       }}
       onContextMenu={onContextMenu}
       style={displayStyle}

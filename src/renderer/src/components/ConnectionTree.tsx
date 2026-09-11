@@ -727,6 +727,9 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           const v = row[c]
           if (v === null) return 'NULL'
           if (typeof v === 'number') return v
+          if (typeof v === 'object') {
+            try { return `'${JSON.stringify(v).replace(/'/g, "''")}'` } catch { /* fall through */ }
+          }
           return `'${String(v).replace(/'/g, "''")}'`
         }).join(', ') + ')'
       ).join(',\n')

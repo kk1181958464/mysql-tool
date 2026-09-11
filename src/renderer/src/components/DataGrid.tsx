@@ -14,6 +14,14 @@ interface DataGridProps {
   onCellEdit?: (rowIndex: number, field: string, value: unknown) => void
 }
 
+const displayCellValue = (value: unknown): string => {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value) } catch { return String(value) }
+  }
+  return String(value)
+}
+
 export default function DataGrid({
   columns,
   rows,
@@ -32,7 +40,7 @@ export default function DataGrid({
   const handleDoubleClick = useCallback((rowIndex: number, field: string, value: unknown) => {
     if (!editable) return
     setEditingCell({ row: rowIndex, col: field })
-    setEditValue(value === null ? '' : String(value))
+    setEditValue(value === null ? '' : displayCellValue(value))
     setTimeout(() => inputRef.current?.focus(), 0)
   }, [editable])
 
@@ -72,7 +80,7 @@ export default function DataGrid({
         if (value === null || value === undefined) {
           return <span className="null-value">(NULL)</span>
         }
-        return String(value)
+        return displayCellValue(value)
       },
     }))
   }, [columns, editingCell, editValue, commitEdit, cancelEdit])
