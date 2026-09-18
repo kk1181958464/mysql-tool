@@ -496,7 +496,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const mergedTables = tableList.map(t => {
     const status = tableStatus.find(s => s.name === t.name)
     return { ...t, ...status }
-  }).filter(t => !filter || t.name.toLowerCase().includes(filter.toLowerCase()))
+  }).filter(t => !filter || t.name.toLowerCase().includes(filter.toLowerCase()) || (t.comment || '').toLowerCase().includes(filter.toLowerCase()))
 
   const validSelectedTableNames = useMemo(() => {
     const mergedTableNameSet = new Set(mergedTables.map(t => t.name))

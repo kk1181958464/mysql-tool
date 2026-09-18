@@ -284,7 +284,7 @@ export default function Sidebar() {
       <div className="sidebar-search">
         <Input
           size="small"
-          placeholder="搜索表..."
+          placeholder="搜索库名或备注..."
           prefix={<SearchOutlined style={{ color: 'var(--text-muted)', fontSize: 11 }} />}
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}

@@ -210,45 +210,42 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       const views = tbls.filter((t) => t.type === 'VIEW')
       const tablesLoaded = tbls.length > 0 || tables[`${activeConnectionId}:${db.name}`] !== undefined
 
-      const filteredTables = filter ? realTables.filter((t) => t.name.toLowerCase().includes(filter)) : realTables
-      const filteredViews = filter ? views.filter((v) => v.name.toLowerCase().includes(filter)) : views
+      const remarkKey = `${activeConnectionId}:${db.name}`
+      const remark = dbRemarks[remarkKey] || ''
 
-      // 搜索时：匹配数据库名 或 匹配表名/视图名
-      const dbNameMatch = filter && db.name.toLowerCase().includes(filter)
-      if (filter && !dbNameMatch && filteredTables.length === 0 && filteredViews.length === 0) return null
+      // 左侧搜索只匹配数据库名和备注名（表名在右侧对象页搜索）
+      const dbNameMatch = !!(filter && (
+        db.name.toLowerCase().includes(filter) ||
+        remark.toLowerCase().includes(filter)
+      ))
+      if (filter && !dbNameMatch) return null
 
       const children: TreeNode[] = []
 
       if (dbOpen) {
-        if (!filter || filteredTables.length > 0 || dbNameMatch) {
-          const tableCount = filter && !dbNameMatch ? filteredTables.length : realTables.length
-          children.push({
-            key: `folder:${db.name}:tables`,
-            title: tablesLoaded ? `表 (${tableCount})` : '表',
-            icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
-            children: (filter && !dbNameMatch ? filteredTables : realTables).map((t) => ({
-              key: `table:${db.name}:${t.name}`,
-              title: t.name,
-              icon: <TableOutlined style={{ color: 'var(--color-cyan)' }} />,
-              isLeaf: true,
-            })),
-          })
-        }
+        children.push({
+          key: `folder:${db.name}:tables`,
+          title: tablesLoaded ? `表 (${realTables.length})` : '表',
+          icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
+          children: realTables.map((t) => ({
+            key: `table:${db.name}:${t.name}`,
+            title: t.name,
+            icon: <TableOutlined style={{ color: 'var(--color-cyan)' }} />,
+            isLeaf: true,
+          })),
+        })
 
-        if (!filter || filteredViews.length > 0 || dbNameMatch) {
-          const viewCount = filter && !dbNameMatch ? filteredViews.length : views.length
-          children.push({
-            key: `folder:${db.name}:views`,
-            title: tablesLoaded ? `视图 (${viewCount})` : '视图',
-            icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
-            children: (filter && !dbNameMatch ? filteredViews : views).map((v) => ({
-              key: `view:${db.name}:${v.name}`,
-              title: v.name,
-              icon: <EyeOutlined style={{ color: 'var(--color-purple)' }} />,
-              isLeaf: true,
-            })),
-          })
-        }
+        children.push({
+          key: `folder:${db.name}:views`,
+          title: tablesLoaded ? `视图 (${views.length})` : '视图',
+          icon: <FolderOutlined style={{ color: 'var(--text-muted)' }} />,
+          children: views.map((v) => ({
+            key: `view:${db.name}:${v.name}`,
+            title: v.name,
+            icon: <EyeOutlined style={{ color: 'var(--color-purple)' }} />,
+            isLeaf: true,
+          })),
+        })
 
         if (!filter) {
           children.push(
@@ -260,8 +257,6 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         }
       }
 
-      const remarkKey = `${activeConnectionId}:${db.name}`
-      const remark = dbRemarks[remarkKey]
       const titleNode = remark
         ? (
           <span className={dbOpen ? 'db-node-open' : 'db-node-closed'}>
