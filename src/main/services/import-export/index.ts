@@ -188,19 +188,6 @@ async function getExistingTableNames(conn: any): Promise<Set<string>> {
   )
 }
 
-async function getTableAutoIncrement(conn: any, db: string, table: string): Promise<number | null> {
-  // Navicat dump 会在尾部始终输出 AUTO_INCREMENT（即使为 1）。
-  // 但 SHOW CREATE TABLE 在 AUTO_INCREMENT=1 时通常会省略，因此需要额外查 information_schema.
-  const [rows] = await conn.query(
-    'SELECT AUTO_INCREMENT AS autoIncrement FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? LIMIT 1',
-    [db, table]
-  )
-  const raw = (rows as Array<{ autoIncrement?: number | string | null }>)[0]?.autoIncrement
-  if (raw === undefined || raw === null) return null
-  const n = Number(raw)
-  return Number.isFinite(n) ? n : null
-}
-
 function assertTablesExist(existingTables: Set<string>, tables: string[]): void {
   const missingTables = tables.filter((table) => !existingTables.has(table))
   if (!missingTables.length) return
@@ -497,8 +484,7 @@ async function exportToSqlStream(
           }
 
           if (row0['Create Table']) {
-            const autoInc = await getTableAutoIncrement(conn, db, table)
-            ddlBlock += `${formatNavicatDDL(table, ddlRaw, undefined, undefined, autoInc)}\n\n`
+            ddlBlock += `${formatNavicatDDL(ddlRaw)}\n\n`
           } else {
             const body = ddlRaw.trimEnd().endsWith(';') ? ddlRaw.trimEnd().slice(0, -1) : ddlRaw.trimEnd()
             ddlBlock += `${body};\n\n`
@@ -1199,8 +1185,7 @@ export async function exportStructure(connId: string, db: string, tables: string
         : `DROP TABLE IF EXISTS ${quoteId(table)};\n`
 
       if (row0['Create Table']) {
-        const autoInc = await getTableAutoIncrement(conn, db, table)
-        sql += `${formatNavicatDDL(table, ddlRaw, undefined, undefined, autoInc)}\n\n`
+        sql += `${formatNavicatDDL(ddlRaw)}\n\n`
       } else {
         const body = ddlRaw.trimEnd().endsWith(';') ? ddlRaw.trimEnd().slice(0, -1) : ddlRaw.trimEnd()
         sql += `${body};\n\n`
