@@ -880,13 +880,14 @@ export async function importCSV(connId: string, db: string, table: string, fileP
 
 export async function importExcel(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number; errors: number; errorReportPath?: string }> {
   await assertExcelFileSize(filePath)
-  const wb = XLSX.readFile(filePath, { sheetRows: MAX_EXCEL_IMPORT_ROWS + 2 })
+  const wb = XLSX.readFile(filePath, { dense: true, sheetRows: MAX_EXCEL_IMPORT_ROWS + 2 })
   const sheet = wb.Sheets[options?.sheetName || wb.SheetNames[0]]
   if (!sheet) return { imported: 0, errors: 0 }
   const rows = XLSX.utils.sheet_to_json<RowRecord>(sheet)
   if (rows.length > MAX_EXCEL_IMPORT_ROWS) {
-    throw new Error(`Excel 单工作表最多导入 ${MAX_EXCEL_IMPORT_ROWS.toLocaleString('en-US')} 行`)
+    throw new Error(`Excel 单工作表最多导入 ${MAX_EXCEL_IMPORT_ROWS.toLocaleString('en-US')} 行，请先另存为 CSV 再导入`)
   }
+  delete wb.Sheets[options?.sheetName || wb.SheetNames[0]]
   const conn = await connectionManager.getConnection(connId)
   try {
     await conn.query(`USE ${quoteId(db)}`)
@@ -898,15 +899,15 @@ export async function importExcel(connId: string, db: string, table: string, fil
     let imported = 0
     let errors = 0
     const failed: FailedImportRow[] = []
-    const mappedRows = rows.map((row) => mapImportRow(row, options?.columnMapping))
     const batchSize = getImportBatchSize(options)
-    for (let i = 0; i < mappedRows.length; i += batchSize) {
+    while (rows.length > 0) {
       throwIfAborted(options?.signal)
-      const result = await insertImportBatch(conn, table, mappedRows.slice(i, i + batchSize), options?.ignoreErrors === true)
+      const batch = rows.splice(0, batchSize).map((row) => mapImportRow(row, options?.columnMapping))
+      const result = await insertImportBatch(conn, table, batch, options?.ignoreErrors === true)
       imported += result.imported
       errors += result.errors
       failed.push(...result.failed)
-      options?.onProgress?.({ current: Math.min(i + batchSize, mappedRows.length), total: Math.max(mappedRows.length, 1), fail: errors, stage: 'executing' })
+      options?.onProgress?.({ current: imported + errors, total: Math.max(imported + errors + rows.length, 1), fail: errors, stage: 'executing' })
     }
     if (options?.atomic) await conn.commit()
     return { imported, errors, errorReportPath: await writeFailedRowsReport(filePath, failed) }
@@ -1092,26 +1093,26 @@ export async function exportToExcel(connId: string, db: string, sql: string, fil
   await mkdir(path.dirname(filePath), { recursive: true })
   const tmpPath = createTemporaryExportPath(filePath)
   const table = extractTableFromSelectSql(sql)
-  const rows: RowRecord[] = []
+  const rows: Record<string, unknown>[] = []
+  const appendExcelRow = (row: RowRecord) => {
+    if (rows.length >= MAX_EXCEL_EXPORT_ROWS) {
+      throw new Error(`Excel 最多导出 ${MAX_EXCEL_EXPORT_ROWS.toLocaleString('en-US')} 行，请改用 CSV 或 JSON 导出大数据`)
+    }
+    rows.push(normalizeRowForJson(row, Object.keys(row)))
+  }
 
   if (table) {
     await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (batchRows) => {
-      if (rows.length + batchRows.length > MAX_EXCEL_EXPORT_ROWS) {
-        throw new Error(`Excel 最多导出 ${MAX_EXCEL_EXPORT_ROWS.toLocaleString('en-US')} 行，请改用 CSV 或 JSON 导出大数据`)
-      }
-      rows.push(...batchRows)
+      for (const row of batchRows) appendExcelRow(row)
     }, undefined, options?.signal, options?.consistentSnapshot)
   } else {
     await streamQueryRows(connId, db, sql, async (row) => {
-      if (rows.length >= MAX_EXCEL_EXPORT_ROWS) {
-        throw new Error(`Excel 最多导出 ${MAX_EXCEL_EXPORT_ROWS.toLocaleString('en-US')} 行，请改用 CSV 或 JSON 导出大数据`)
-      }
-      rows.push(row)
+      appendExcelRow(row)
     }, options?.signal)
   }
 
   const wb = XLSX.utils.book_new()
-  const sheet = XLSX.utils.json_to_sheet(rows.map((row) => normalizeRowForJson(row, Object.keys(row))))
+  const sheet = XLSX.utils.json_to_sheet(rows)
   XLSX.utils.book_append_sheet(wb, sheet, (options?.sheetName || 'Sheet1').slice(0, 31))
   try {
     XLSX.writeFile(wb, tmpPath, { bookType: 'xlsx' })

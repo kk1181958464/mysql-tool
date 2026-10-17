@@ -46,7 +46,7 @@ export async function execute(connectionId: string, sql: string, database?: stri
     if (database) await conn.query(`USE ${quoteId(database)}`)
 
     const limitedSql = applyResultRowLimit(sql, { enabled: true })
-    const [rows, fields] = await conn.query(limitedSql.sql)
+    const [rows, fields] = await conn.query(limitedSql.sql, options?.params)
     const elapsed = Date.now() - start
 
     // 检查是否是多语句执行的结果（数组中包含数组）

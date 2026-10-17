@@ -23,6 +23,7 @@ import { useDatabaseStore } from '../stores/database.store'
 import { useTabStore } from '../stores/tab.store'
 import { useAppStore } from '../stores/app.store'
 import { api } from '../utils/ipc'
+import { quoteId } from '../pages/DataBrowser/table-pagination'
 
 interface TreeNode {
   key: string
@@ -485,7 +486,9 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         case 'edit':
           try {
             const result = await api.query.execute(activeConnectionId,
-              `SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '${dbName}'`
+              'SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+              undefined,
+              { params: [dbName] }
             )
             if (result.rows?.[0]) {
               setEditDb({
@@ -560,7 +563,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     const { dbName } = deleteConfirm
     setDeleting(true)
     try {
-      await api.query.execute(activeConnectionId, `DROP DATABASE \`${dbName}\``)
+      await api.query.execute(activeConnectionId, `DROP DATABASE ${quoteId(dbName)}`)
 
       const tabIdsToClose = mainTabs
         .filter((tab) =>
@@ -598,7 +601,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (!deleteTableConfirm || !activeConnectionId) return
     setDeleting(true)
     try {
-      await api.query.execute(activeConnectionId, `DROP TABLE \`${deleteTableConfirm.dbName}\`.\`${deleteTableConfirm.tableName}\``)
+      await api.query.execute(activeConnectionId, `DROP TABLE ${quoteId(deleteTableConfirm.dbName)}.${quoteId(deleteTableConfirm.tableName)}`)
       await loadTables(activeConnectionId, deleteTableConfirm.dbName)
       setDeleteTableConfirm(null)
     } catch (e: any) {
@@ -612,7 +615,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (!truncateConfirm || !activeConnectionId) return
     setDeleting(true)
     try {
-      await api.query.execute(activeConnectionId, `TRUNCATE TABLE \`${truncateConfirm.dbName}\`.\`${truncateConfirm.tableName}\``)
+      await api.query.execute(activeConnectionId, `TRUNCATE TABLE ${quoteId(truncateConfirm.dbName)}.${quoteId(truncateConfirm.tableName)}`)
       setTruncateConfirm(null)
     } catch (e: any) {
       showError(e.message || '清空失败')
@@ -625,7 +628,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (!renameTable || !activeConnectionId) return
     setSaving(true)
     try {
-      await api.query.execute(activeConnectionId, `RENAME TABLE \`${renameTable.dbName}\`.\`${renameTable.tableName}\` TO \`${renameTable.dbName}\`.\`${renameTable.newName}\``)
+      await api.query.execute(activeConnectionId, `RENAME TABLE ${quoteId(renameTable.dbName)}.${quoteId(renameTable.tableName)} TO ${quoteId(renameTable.dbName)}.${quoteId(renameTable.newName)}`)
       await loadTables(activeConnectionId, renameTable.dbName)
       // 更新已打开的标签页
       renameTableInTabs(activeConnectionId, renameTable.dbName, renameTable.tableName, renameTable.newName)
@@ -712,7 +715,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     let totalRows = 0
     while (true) {
       if (exportCancelledRef.current) break
-      const res = await api.query.execute(activeConnectionId!, `SELECT * FROM \`${dbName}\`.\`${tableName}\` LIMIT ${batchSize} OFFSET ${offset}`, dbName)
+      const res = await api.query.execute(activeConnectionId!, `SELECT * FROM ${quoteId(dbName)}.${quoteId(tableName)} LIMIT ${batchSize} OFFSET ${offset}`, dbName)
       if (!res.rows?.length) break
       totalRows += res.rows.length
       onRows?.(totalRows)
@@ -728,7 +731,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           return `'${String(v).replace(/'/g, "''")}'`
         }).join(', ') + ')'
       ).join(',\n')
-      sql += `\n\nINSERT INTO \`${tableName}\` (\`${cols.join('`, `')}\`) VALUES\n${values};`
+      sql += `\n\nINSERT INTO ${quoteId(tableName)} (${cols.map(quoteId).join(', ')}) VALUES\n${values};`
       if (res.rows.length < batchSize) break
       offset += batchSize
     }
@@ -823,7 +826,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     setSaving(true)
     try {
       await api.query.execute(activeConnectionId,
-        `ALTER DATABASE \`${editDb.dbName}\` CHARACTER SET ${editDb.charset} COLLATE ${editDb.collation}`
+        `ALTER DATABASE ${quoteId(editDb.dbName)} CHARACTER SET ${quoteId(editDb.charset)} COLLATE ${quoteId(editDb.collation)}`
       )
       setEditDb(null)
     } catch (e: any) {

@@ -87,7 +87,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_SETTING_KEY, String(normalized))
     } catch (error) {
-      console.warn('[app.store] save heartbeat setting failed', error)
+      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat setting failed', error)
     }
   },
   setHeartbeatTimeoutMs: async (timeoutMs) => {
@@ -97,7 +97,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_TIMEOUT_SETTING_KEY, String(normalized))
     } catch (error) {
-      console.warn('[app.store] save heartbeat timeout setting failed', error)
+      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat timeout setting failed', error)
     }
   },
   setHeartbeatMaxConcurrency: async (concurrency) => {
@@ -107,7 +107,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_CONCURRENCY_SETTING_KEY, String(normalized))
     } catch (error) {
-      console.warn('[app.store] save heartbeat concurrency setting failed', error)
+      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat concurrency setting failed', error)
     }
   },
   setHeartbeatAutoTuneEnabled: async (enabled) => {
@@ -117,7 +117,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_AUTOTUNE_SETTING_KEY, String(normalized))
     } catch (error) {
-      console.warn('[app.store] save heartbeat auto-tune setting failed', error)
+      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat auto-tune setting failed', error)
     }
   },
   setRowsPerPage: async (value) => {
@@ -127,7 +127,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(TABLE_ROWS_PER_PAGE_SETTING_KEY, String(normalized))
     } catch (error) {
-      console.warn('[app.store] save rows per page setting failed', error)
+      if (import.meta.env.DEV) console.warn('[app.store] save rows per page setting failed', error)
     }
   },
   setPaginationMode: async (mode) => {
@@ -137,7 +137,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(PAGINATION_MODE_SETTING_KEY, normalized)
     } catch (error) {
-      console.warn('[app.store] save pagination mode setting failed', error)
+      if (import.meta.env.DEV) console.warn('[app.store] save pagination mode setting failed', error)
     }
   },
 }))
@@ -157,7 +157,7 @@ void (async () => {
       }
     }
   } catch (error) {
-    console.warn('[app.store] load heartbeat setting failed', error)
+    if (import.meta.env.DEV) console.warn('[app.store] load heartbeat setting failed', error)
   }
 
   try {
@@ -174,7 +174,7 @@ void (async () => {
       }
     }
   } catch (error) {
-    console.warn('[app.store] load heartbeat timeout setting failed', error)
+    if (import.meta.env.DEV) console.warn('[app.store] load heartbeat timeout setting failed', error)
   }
 
   try {
@@ -191,7 +191,7 @@ void (async () => {
       }
     }
   } catch (error) {
-    console.warn('[app.store] load heartbeat concurrency setting failed', error)
+    if (import.meta.env.DEV) console.warn('[app.store] load heartbeat concurrency setting failed', error)
   }
 
   try {
@@ -208,7 +208,7 @@ void (async () => {
       }
     }
   } catch (error) {
-    console.warn('[app.store] load heartbeat auto-tune setting failed', error)
+    if (import.meta.env.DEV) console.warn('[app.store] load heartbeat auto-tune setting failed', error)
   }
 
   try {
@@ -225,7 +225,7 @@ void (async () => {
       }
     }
   } catch (error) {
-    console.warn('[app.store] load rows per page setting failed', error)
+    if (import.meta.env.DEV) console.warn('[app.store] load rows per page setting failed', error)
   }
 
   try {
@@ -243,7 +243,7 @@ void (async () => {
       await api.store.saveSettings(PAGINATION_MODE_SETTING_KEY, normalized)
     }
   } catch (error) {
-    console.warn('[app.store] load pagination mode setting failed', error)
+    if (import.meta.env.DEV) console.warn('[app.store] load pagination mode setting failed', error)
   }
 })()
 

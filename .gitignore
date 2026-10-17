@@ -7,3 +7,5 @@ Thumbs.db
 nul
 CLAUDE.md
 .claude/
+*.sql
+/*.png

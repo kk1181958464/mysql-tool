@@ -5,12 +5,27 @@ import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
 import type { ColumnDetail } from '../../../../shared/types/metadata'
 import { DataExport } from './DataExport'
-import { FilterModal, type FilterMode, type SimpleFilterCondition, type SimpleFilterGroup, type SimpleFilterNode } from './FilterModal'
+import { FilterModal, type FilterMode, type SimpleFilterGroup } from './FilterModal'
 import { useAppStore } from '../../stores/app.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
 import type { PaginationMode } from '../../../../shared/constants'
 import tableTransformWorker from '../../workers/table-transform.worker?worker'
+import { buildKeysetPredicate, compareDirection, escSQL, parseSort, quoteId } from './table-pagination'
+import {
+  buildSimpleFilterWhere,
+  cloneSimpleFilterGroup,
+  describeSimpleFilterNode,
+  getDefaultSimpleFilter,
+  getDefaultSimpleFilterGroup,
+  isDateLikeType,
+  moveNodeInGroup,
+  removeNodeFromTree,
+  updateConditionInTree,
+  updateGroupInTree,
+  type SimpleFilterField,
+} from './table-filter'
+import { parseClipboardGrid } from './table-clipboard'
 
 interface Props {
   tabId: string
@@ -23,13 +38,11 @@ interface Props {
 interface KeysetCursor {
   firstPk: unknown
   lastPk: unknown
+  firstSort?: unknown
+  lastSort?: unknown
 }
 
-type SimpleFilterOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'contains' | 'startsWith' | 'endsWith' | 'like' | 'notLike' | 'between' | 'notBetween' | 'IN' | 'NOT IN' | 'IS NULL' | 'IS NOT NULL'
-
 type EffectivePagination = 'keyset' | 'offset'
-
-type SimpleFilterField = keyof Omit<SimpleFilterCondition, 'id' | 'type'>
 
 const PAGINATION_MODE_LABEL: Record<PaginationMode, string> = {
   auto: '自动',
@@ -73,232 +86,11 @@ const fmtValue = (val: unknown, isDateOnly = false): string => {
   return s
 }
 
-const quoteSqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`
-
 const isNumericType = (type: string) => /int|decimal|float|double|numeric|real|bit|serial/i.test(type)
-const isDateLikeType = (type: string) => /date|time|year|timestamp|datetime/i.test(type)
 
 const isElementVisible = (el: HTMLElement | null): boolean => {
   if (!el) return false
   return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
-}
-
-const quoteSqlList = (value: string, options?: { treatAsNumeric?: boolean }): string => {
-  return value
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => {
-      if (options?.treatAsNumeric && /^-?\d+(\.\d+)?$/.test(item)) {
-        return item
-      }
-      return quoteSqlString(item)
-    })
-    .join(', ')
-}
-
-const buildConditionSql = (
-  filter: SimpleFilterCondition,
-  getColumnType: (columnName: string) => string,
-): string => {
-  const column = filter.column.trim()
-  const operator = filter.operator.trim() as SimpleFilterOperator
-  const value = filter.value.trim()
-  const secondValue = filter.secondValue?.trim() || ''
-  const columnType = getColumnType(column)
-  const treatListAsNumeric = isNumericType(columnType)
-  if (!column || !operator) return ''
-  if (operator === 'IS NULL' || operator === 'IS NOT NULL') {
-    return `\`${column}\` ${operator}`
-  }
-  if (operator === 'contains') {
-    if (!value) return ''
-    return `\`${column}\` LIKE ${quoteSqlString(`%${value}%`)}`
-  }
-  if (operator === 'startsWith') {
-    if (!value) return ''
-    return `\`${column}\` LIKE ${quoteSqlString(`${value}%`)}`
-  }
-  if (operator === 'endsWith') {
-    if (!value) return ''
-    return `\`${column}\` LIKE ${quoteSqlString(`%${value}`)}`
-  }
-  if (operator === 'like') {
-    if (!value) return ''
-    return `\`${column}\` LIKE ${quoteSqlString(value)}`
-  }
-  if (operator === 'notLike') {
-    if (!value) return ''
-    return `\`${column}\` NOT LIKE ${quoteSqlString(value)}`
-  }
-  if (operator === 'between') {
-    if (!value || !secondValue) return ''
-    return `\`${column}\` BETWEEN ${quoteSqlString(value)} AND ${quoteSqlString(secondValue)}`
-  }
-  if (operator === 'notBetween') {
-    if (!value || !secondValue) return ''
-    return `\`${column}\` NOT BETWEEN ${quoteSqlString(value)} AND ${quoteSqlString(secondValue)}`
-  }
-  if (operator === 'IN' || operator === 'NOT IN') {
-    const list = quoteSqlList(value, { treatAsNumeric: treatListAsNumeric })
-    if (!list) return ''
-    return `\`${column}\` ${operator} (${list})`
-  }
-  if (!value) return ''
-  return `\`${column}\` ${operator} ${quoteSqlString(value)}`
-}
-
-const buildSimpleFilterWhere = (
-  group: SimpleFilterGroup,
-  getColumnType: (columnName: string) => string,
-): string => {
-  const parts = group.children
-    .map((node) => {
-      if (node.type === 'group') {
-        return buildSimpleFilterWhere(node, getColumnType)
-      }
-      return buildConditionSql(node, getColumnType)
-    })
-    .filter(Boolean)
-
-  if (parts.length === 0) return ''
-  if (parts.length === 1) return parts[0]
-  return `(${parts.join(` ${group.join} `)})`
-}
-
-const createFilterId = () => `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-
-const getDefaultSimpleFilter = (): SimpleFilterCondition => ({
-  id: createFilterId(),
-  type: 'condition',
-  column: '',
-  operator: 'contains',
-  value: '',
-  secondValue: '',
-})
-
-const getDefaultSimpleFilterGroup = (): SimpleFilterGroup => ({
-  id: createFilterId(),
-  type: 'group',
-  join: 'AND',
-  children: [getDefaultSimpleFilter()],
-})
-
-const cloneSimpleFilterNode = (node: SimpleFilterNode): SimpleFilterNode => {
-  if (node.type === 'group') {
-    return {
-      ...node,
-      children: node.children.map((child) => cloneSimpleFilterNode(child)),
-    }
-  }
-  return { ...node }
-}
-
-const cloneSimpleFilterGroup = (group: SimpleFilterGroup): SimpleFilterGroup => ({
-  ...group,
-  children: group.children.map((child) => cloneSimpleFilterNode(child)),
-})
-
-const ensureGroupHasChildren = (group: SimpleFilterGroup): SimpleFilterGroup => {
-  if (group.children.length > 0) return group
-  return { ...group, children: [getDefaultSimpleFilter()] }
-}
-
-const updateGroupInTree = (
-  group: SimpleFilterGroup,
-  groupId: string,
-  updater: (target: SimpleFilterGroup) => SimpleFilterGroup,
-): SimpleFilterGroup => {
-  if (group.id === groupId) {
-    return ensureGroupHasChildren(updater(group))
-  }
-
-  return {
-    ...group,
-    children: group.children.map((child) => {
-      if (child.type !== 'group') return child
-      return updateGroupInTree(child, groupId, updater)
-    }),
-  }
-}
-
-const updateConditionInTree = (
-  group: SimpleFilterGroup,
-  conditionId: string,
-  updater: (target: SimpleFilterCondition) => SimpleFilterCondition,
-): SimpleFilterGroup => ({
-  ...group,
-  children: group.children.map((child) => {
-    if (child.type === 'group') {
-      return updateConditionInTree(child, conditionId, updater)
-    }
-    return child.id === conditionId ? updater(child) : child
-  }),
-})
-
-const removeNodeFromTree = (group: SimpleFilterGroup, nodeId: string, isRoot = true): SimpleFilterGroup => {
-  const nextChildren = group.children
-    .filter((child) => child.id !== nodeId)
-    .map((child) => {
-      if (child.type !== 'group') return child
-      return removeNodeFromTree(child, nodeId, false)
-    })
-
-  if (isRoot && nextChildren.length === 0) {
-    return { ...group, children: [getDefaultSimpleFilter()] }
-  }
-
-  return { ...group, children: nextChildren }
-}
-
-const moveNodeInGroup = (
-  group: SimpleFilterGroup,
-  groupId: string,
-  fromIndex: number,
-  toIndex: number,
-): SimpleFilterGroup => {
-  if (group.id === groupId) {
-    const nextChildren = [...group.children]
-    if (fromIndex < 0 || toIndex < 0 || fromIndex >= nextChildren.length || toIndex >= nextChildren.length || fromIndex === toIndex) {
-      return group
-    }
-    const [moved] = nextChildren.splice(fromIndex, 1)
-    nextChildren.splice(toIndex, 0, moved)
-    return { ...group, children: nextChildren }
-  }
-
-  return {
-    ...group,
-    children: group.children.map((child) => {
-      if (child.type !== 'group') return child
-      return moveNodeInGroup(child, groupId, fromIndex, toIndex)
-    }),
-  }
-}
-
-const describeSimpleFilterNode = (node: SimpleFilterNode): string => {
-  if (node.type === 'group') {
-    const parts = node.children.map((child) => describeSimpleFilterNode(child)).filter(Boolean)
-    if (parts.length === 0) return ''
-    if (parts.length === 1) return parts[0]
-    return `(${parts.join(` ${node.join} `)})`
-  }
-
-  const column = node.column?.trim() || '未选字段'
-  const operator = node.operator || '未选操作符'
-  const value = node.value?.trim() || ''
-  const secondValue = node.secondValue?.trim() || ''
-
-  if (operator === 'IS NULL' || operator === 'IS NOT NULL') {
-    return `${column} ${operator}`
-  }
-  if (operator === 'between' || operator === 'notBetween') {
-    return value && secondValue ? `${column} ${operator} ${value} ~ ${secondValue}` : `${column} ${operator}`
-  }
-  if (operator === 'IN' || operator === 'NOT IN') {
-    return value ? `${column} ${operator} [${value}]` : `${column} ${operator}`
-  }
-  return value ? `${column} ${operator} ${value}` : `${column} ${operator}`
 }
 
 const valIsDate = (val: unknown): boolean => {
@@ -307,19 +99,6 @@ const valIsDate = (val: unknown): boolean => {
   return false
 }
 // SQL 转义
-const escSQL = (v: unknown): string => {
-  if (v === null || v === undefined) return 'NULL'
-  if (typeof v === 'number') return String(v)
-  if (typeof v === 'object') {
-    try {
-      return quoteSqlString(JSON.stringify(v))
-    } catch {
-      return quoteSqlString(String(v))
-    }
-  }
-  return `'${String(v).replace(/'/g, "''")}'`
-}
-
 // 常量 style 提取到模块级，避免每次渲染创建新引用
 const cellStyle: React.CSSProperties = {
   cursor: 'text', display: 'block', minHeight: 20, padding: '1px 2px',
@@ -380,47 +159,6 @@ const parseCellKey = (cellKey: string): { rowKey: string; colName: string } | nu
   const colName = cellKey.slice(splitAt + 1)
   if (!rowKey || !colName) return null
   return { rowKey, colName }
-}
-
-const parseClipboardGrid = (text: string): string[][] => {
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-  const input = normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized
-  const rows: string[][] = []
-  let row: string[] = []
-  let cell = ''
-  let inQuotes = false
-
-  for (let i = 0; i < input.length; i += 1) {
-    const ch = input[i]
-    if (ch === '"') {
-      if (inQuotes && input[i + 1] === '"') {
-        cell += '"'
-        i += 1
-        continue
-      }
-      if (inQuotes || cell.length === 0) {
-        inQuotes = !inQuotes
-        continue
-      }
-    }
-    if (ch === '\t' && !inQuotes) {
-      row.push(cell)
-      cell = ''
-      continue
-    }
-    if (ch === '\n' && !inQuotes) {
-      row.push(cell)
-      rows.push(row)
-      row = []
-      cell = ''
-      continue
-    }
-    cell += ch
-  }
-
-  row.push(cell)
-  rows.push(row)
-  return rows
 }
 
 // 可编辑单元格 - Navicat 风格
@@ -602,6 +340,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const newRowCounter = useRef(0)
   const [exportOpen, setExportOpen] = useState(false)
   const [totalCount, setTotalCount] = useState(0)
+  const [countSource, setCountSource] = useState<'unknown' | 'estimate' | 'exact'>('unknown')
+  const [countLoading, setCountLoading] = useState(false)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const [saveErrorModalOpen, setSaveErrorModalOpen] = useState(false)
@@ -614,7 +354,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const clearUpdatedTimerRef = useRef<number | null>(null)
   const [cellContextMenu, setCellContextMenu] = useState<{ x: number; y: number; rowKey: string; colName: string; record: Record<string, unknown> } | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const countCacheRef = useRef<Map<string, { count: number; ts: number }>>(new Map())
+  const countCacheRef = useRef<Map<string, { count: number; ts: number; source: 'estimate' | 'exact' }>>(new Map())
+  const countRequestIdRef = useRef(0)
   const [cursor, setCursor] = useState<KeysetCursor | null>(null)
   const [hasNextPage, setHasNextPage] = useState(false)
   const [lastQueryMode, setLastQueryMode] = useState<EffectivePagination>('offset')
@@ -719,6 +460,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     newRowCounter.current = 0
     setExportOpen(false)
     setTotalCount(0)
+    setCountSource('unknown')
+    setCountLoading(false)
     setError('')
     setSuccessMessage('')
     setSaveErrorModalOpen(false)
@@ -763,6 +506,65 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     return () => window.clearTimeout(timer)
   }, [successMessage])
 
+  const applyCachedCount = useCallback((cached: { count: number; source: 'estimate' | 'exact' } | undefined, pageRows: number, pageValue: number) => {
+    if (cached?.source === 'exact' || (cached && effectiveWhere.trim())) {
+      setTotalCount(cached.count)
+      setCountSource(cached.source)
+      return
+    }
+    const minimumKnownRows = (pageValue - 1) * rowsPerPage + pageRows
+    setTotalCount((prev) => Math.max(cached?.count ?? 0, prev, minimumKnownRows))
+    setCountSource(cached ? 'estimate' : 'unknown')
+  }, [effectiveWhere, rowsPerPage])
+
+  const loadEstimatedCount = useCallback(async (requestId: number) => {
+    if (!connectionId || !database || !table || effectiveWhere.trim()) return
+    try {
+      const tables = await api.meta.tables(connectionId, database)
+      if (requestId !== fetchRequestIdRef.current) return
+      const matched = tables.find((item) => item.name === table)
+      if (!matched || matched.type === 'VIEW') return
+      const estimate = Number(matched.rows)
+      if (!Number.isFinite(estimate) || estimate < 0) return
+      const cache = countCacheRef.current
+      const cached = cache.get(countCacheKey)
+      if (cached?.source === 'exact') return
+      cache.set(countCacheKey, { count: estimate, ts: Date.now(), source: 'estimate' })
+      setTotalCount((prev) => Math.max(prev, estimate))
+      setCountSource('estimate')
+    } catch {
+      // 估算行数只用于页脚提示，失败时保留已加载的当前页。
+    }
+  }, [connectionId, database, table, effectiveWhere, countCacheKey])
+
+  const countRows = useCallback(async () => {
+    if (!connectionId || !database || !table || countLoading) return
+    const requestId = ++countRequestIdRef.current
+    const fetchId = fetchRequestIdRef.current
+    setCountLoading(true)
+    try {
+      let countSql = `SELECT COUNT(*) as cnt FROM ${quoteId(table)}`
+      if (effectiveWhere.trim()) countSql += ` WHERE ${effectiveWhere}`
+      const countRes = await api.query.execute(connectionId, countSql, database)
+      if (requestId !== countRequestIdRef.current || fetchId !== fetchRequestIdRef.current) return
+      const count = Number(countRes.rows[0]?.cnt ?? 0)
+      countCacheRef.current.set(countCacheKey, { count, ts: Date.now(), source: 'exact' })
+      setTotalCount(count)
+      setCountSource('exact')
+    } catch (countError) {
+      if (requestId !== countRequestIdRef.current) return
+      console.warn('[TableData] count query failed', {
+        connectionId,
+        database,
+        table,
+        error: countError instanceof Error ? countError.message : String(countError),
+      })
+      setError(countError instanceof Error ? countError.message : '统计行数失败')
+    } finally {
+      if (requestId === countRequestIdRef.current) setCountLoading(false)
+    }
+  }, [connectionId, database, table, effectiveWhere, countCacheKey, countLoading])
+
   const fetchData = useCallback(async (
     action: 'reset' | 'next' | 'prev' = 'reset',
     forceRefreshCount = false,
@@ -779,7 +581,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     try {
       const pkColumn = result?.columns.find((c) => c.primaryKey)?.name
       const activeOrderBy = explicitOrderBy ?? orderBy
-      const canUseKeyset = Boolean(pkColumn && !activeOrderBy)
+      const sort = parseSort(activeOrderBy)
+      const canUseKeyset = Boolean(pkColumn && (!activeOrderBy || sort))
       const wantsKeyset = paginationMode === 'cursor' || paginationMode === 'auto'
 
       let effectiveMode: EffectivePagination = wantsKeyset && canUseKeyset ? 'keyset' : 'offset'
@@ -787,8 +590,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       let fallbackHint = ''
 
       if (effectiveMode === 'offset') {
-        if (activeOrderBy) {
-          fallbackHint = '当前存在排序条件，已回退为偏移分页'
+        if (activeOrderBy && !sort) {
+          fallbackHint = '当前排序无法走游标，已回退为偏移分页'
         } else if (!pkColumn && !isInitialAutoProbe) {
           fallbackHint = '当前表缺少主键，已回退为偏移分页'
         }
@@ -796,17 +599,20 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       if (action === 'reset' && typeof fallbackPage === 'number' && fallbackPage > 1) {
         effectiveMode = 'offset'
+        fallbackHint = '跳转页码使用偏移分页'
       }
 
       const whereParts: string[] = []
       if (effectiveWhere.trim()) whereParts.push(`(${effectiveWhere})`)
 
-      let sql = `SELECT * FROM \`${table}\``
+      let sql = `SELECT * FROM ${quoteId(table)}`
 
       if (effectiveMode === 'keyset' && action !== 'reset' && cursor && pkColumn) {
-        const op = action === 'next' ? '>' : '<'
-        const anchor = action === 'next' ? cursor.lastPk : cursor.firstPk
-        whereParts.push(`\`${pkColumn}\` ${op} ${escSQL(anchor)}`)
+        const direction = sort?.direction ?? 'ASC'
+        const op = compareDirection(direction, action === 'prev' ? 'prev' : 'next')
+        const anchorPk = action === 'next' ? cursor.lastPk : cursor.firstPk
+        const anchorSort = action === 'next' ? cursor.lastSort : cursor.firstSort
+        whereParts.push(buildKeysetPredicate(sort, pkColumn, anchorSort, anchorPk, op))
       }
 
       if (whereParts.length > 0) {
@@ -814,7 +620,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
 
       if (effectiveMode === 'keyset' && pkColumn) {
-        sql += ` ORDER BY \`${pkColumn}\` ${action === 'prev' ? 'DESC' : 'ASC'}`
+        const direction = sort?.direction ?? 'ASC'
+        const queryDirection = action === 'prev' ? (direction === 'ASC' ? 'DESC' : 'ASC') : direction
+        const orderParts = sort && sort.column !== pkColumn
+          ? [`${quoteId(sort.column)} ${queryDirection}`, `${quoteId(pkColumn)} ${queryDirection}`]
+          : [`${quoteId(pkColumn)} ${queryDirection}`]
+        sql += ` ORDER BY ${orderParts.join(', ')}`
       } else if (activeOrderBy) {
         sql += ` ORDER BY ${activeOrderBy}`
       }
@@ -827,11 +638,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         sql += ` LIMIT ${rowsPerPage}`
       }
 
-      let countSql = `SELECT COUNT(*) as cnt FROM \`${table}\``
-      if (effectiveWhere.trim()) countSql += ` WHERE ${effectiveWhere}`
-
       const cache = countCacheRef.current
-      const cachedCount = !forceRefreshCount ? cache.get(countCacheKey) : undefined
+      if (forceRefreshCount) {
+        cache.delete(countCacheKey)
+        setCountSource('unknown')
+      }
+      const cachedCount = cache.get(countCacheKey)
 
       const res = await api.query.execute(connectionId, sql, database)
 
@@ -843,13 +655,15 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       const pkAfterQuery = res.columns.find((c) => c.primaryKey)?.name
       const rows = res.rows || []
-      const canUseKeysetAfterQuery = Boolean(wantsKeyset && !activeOrderBy && pkAfterQuery)
+      const canUseKeysetAfterQuery = Boolean(wantsKeyset && pkAfterQuery && (!activeOrderBy || sort) && !(action === 'reset' && typeof fallbackPage === 'number' && fallbackPage > 1))
       const resolvedMode: EffectivePagination = canUseKeysetAfterQuery ? 'keyset' : 'offset'
       let resolvedFallbackHint = fallbackHint
 
       if (resolvedMode === 'offset') {
-        if (activeOrderBy) {
-          resolvedFallbackHint = '当前存在排序条件，已回退为偏移分页'
+        if (action === 'reset' && typeof fallbackPage === 'number' && fallbackPage > 1) {
+          resolvedFallbackHint = '跳转页码使用偏移分页'
+        } else if (activeOrderBy && !sort) {
+          resolvedFallbackHint = '当前排序无法走游标，已回退为偏移分页'
         } else if (!pkAfterQuery && !isInitialAutoProbe) {
           resolvedFallbackHint = '当前表缺少主键，已回退为偏移分页'
         } else if (isInitialAutoProbe) {
@@ -860,9 +674,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
 
       if (resolvedMode === 'keyset' && pkAfterQuery && rows.length > 0) {
+        const sortColumn = sort?.column
         setCursor({
           firstPk: rows[0][pkAfterQuery],
-          lastPk: rows[rows.length - 1][pkAfterQuery]
+          lastPk: rows[rows.length - 1][pkAfterQuery],
+          firstSort: sortColumn ? rows[0][sortColumn] : undefined,
+          lastSort: sortColumn ? rows[rows.length - 1][sortColumn] : undefined,
         })
       } else {
         setCursor(null)
@@ -877,29 +694,10 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         setJumpPage(String(nextPage))
       }
       setResult(res)
-      if (cachedCount) {
-        setTotalCount(cachedCount.count)
-      } else {
-        setTotalCount((prev) => {
-          const minimumKnownRows = ((fallbackPage ?? page) - 1) * rowsPerPage + rows.length
-          return Math.max(prev, minimumKnownRows)
-        })
-        void api.query.execute(connectionId, countSql, database)
-          .then((countRes) => {
-            if (requestId !== fetchRequestIdRef.current) return
-            const count = Number(countRes.rows[0]?.cnt ?? 0)
-            cache.set(countCacheKey, { count, ts: Date.now() })
-            setTotalCount(count)
-          })
-          .catch((countError) => {
-            console.warn('[TableData] count query failed; keeping page data usable', {
-              connectionId,
-              database,
-              table,
-              error: countError instanceof Error ? countError.message : String(countError),
-            })
-            // COUNT(*) may be expensive or fail on unstable connections; keep page data usable.
-          })
+      const pageValue = fallbackPage ?? (action === 'reset' ? 1 : page)
+      applyCachedCount(cachedCount, rows.length, pageValue)
+      if (!cachedCount || cachedCount.source !== 'exact') {
+        void loadEstimatedCount(requestId)
       }
     } catch (e: any) {
       if (requestId !== fetchRequestIdRef.current) return
@@ -909,7 +707,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         setLoading(false)
       }
     }
-  }, [connectionId, database, table, rowsPerPage, effectiveWhere, orderBy, countCacheKey, paginationMode, page, cursor, result])
+  }, [connectionId, database, table, rowsPerPage, effectiveWhere, orderBy, countCacheKey, paginationMode, page, cursor, result, applyCachedCount, loadEstimatedCount])
 
   useEffect(() => {
     if (!connectionId || !database || !table) return
@@ -1425,8 +1223,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     if (!pk || changedRowKeys.length === 0 || !connectionId || !database || !table) return
     const uniqueKeys = Array.from(new Set(changedRowKeys.filter(Boolean)))
     if (uniqueKeys.length === 0) return
-    const whereClause = uniqueKeys.map((k) => `\`${pk.name}\` = ${escSQL(k)}`).join(' OR ')
-    const sql = `SELECT * FROM \`${table}\` WHERE ${whereClause}`
+    const whereClause = uniqueKeys.map((k) => `${quoteId(pk.name)} = ${escSQL(k)}`).join(' OR ')
+    const sql = `SELECT * FROM ${quoteId(table)} WHERE ${whereClause}`
     try {
       const res = await api.query.execute(connectionId, sql, database)
       if (!res.rows?.length) return
@@ -1707,14 +1505,14 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const generateInsertSQL = (record: Record<string, unknown>) => {
     const cols = result?.columns.map(c => c.name) || Object.keys(record).filter(k => k !== '_rowIndex')
     const vals = cols.map(c => escSQL(record[c]))
-    return `INSERT INTO \`${table}\` (\`${cols.join('`, `')}\`) VALUES (${vals.join(', ')});`
+    return `INSERT INTO ${quoteId(table)} (${cols.map(quoteId).join(', ')}) VALUES (${vals.join(', ')});`
   }
 
   const generateUpdateSQL = (record: Record<string, unknown>) => {
     const cols = result?.columns.map(c => c.name) || Object.keys(record).filter(k => k !== '_rowIndex')
-    const sets = cols.map(c => `\`${c}\` = ${escSQL(record[c])}`).join(', ')
-    const whereClause = pk ? `\`${pk.name}\` = ${escSQL(record[pk.name])}` : '1=1'
-    return `UPDATE \`${table}\` SET ${sets} WHERE ${whereClause};`
+    const sets = cols.map(c => `${quoteId(c)} = ${escSQL(record[c])}`).join(', ')
+    const whereClause = pk ? `${quoteId(pk.name)} = ${escSQL(record[pk.name])}` : '1=1'
+    return `UPDATE ${quoteId(table)} SET ${sets} WHERE ${whereClause};`
   }
 
   const handleCellContextMenu = (e: React.MouseEvent, rowKey: string, colName: string, record: Record<string, unknown>) => {
@@ -1823,9 +1621,9 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     if (!headerContextMenu) return
     const colName = headerContextMenu.colName
     const nextOrderBy = action === 'asc'
-      ? `\`${colName}\` ASC`
+      ? `${quoteId(colName)} ASC`
       : action === 'desc'
-        ? `\`${colName}\` DESC`
+        ? `${quoteId(colName)} DESC`
         : ''
 
     setOrderBy(nextOrderBy)
@@ -1840,7 +1638,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
     return filtered.map((col) => {
       const columnComment = columnDetailsByName.get(col.name)?.comment?.trim() || ''
-      const isSorted = orderBy.startsWith(`\`${col.name}\``)
+      const isSorted = orderBy.startsWith(`${quoteId(col.name)} `)
       const sortDirection = isSorted && /\bDESC$/i.test(orderBy) ? 'DESC' : isSorted ? 'ASC' : ''
       return {
       key: col.name,
@@ -2121,9 +1919,17 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       </div>
 
       <div style={{ padding: '8px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-        <span style={{ color: 'var(--text-muted)' }}>
-          共 {totalCount} 行
-          {isKeysetMode ? `，当前第 ${page} 页（游标翻页）` : `，共 ${totalPages} 页`}
+        <span style={{ color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span>
+            {countSource === 'estimate' ? '约 ' : '共 '}{totalCount.toLocaleString()} 行
+            {countSource !== 'exact' ? '（未精确统计）' : ''}
+            {isKeysetMode ? `，当前第 ${page} 页（游标翻页）` : countSource === 'exact' ? `，共 ${totalPages} 页` : ''}
+          </span>
+          {countSource !== 'exact' && (
+            <button className="ui-btn ui-btn-text ui-btn-small" disabled={loading || countLoading} onClick={() => { void countRows() }}>
+              {countLoading ? '统计中...' : '精确统计'}
+            </button>
+          )}
           {`，配置模式：${configuredModeLabel}，实际模式：${effectiveModeLabel}`}
           {(pendingPaginationHint || paginationFallbackHint) && <span style={{ color: 'var(--warning, #f59e0b)' }}>（{pendingPaginationHint || paginationFallbackHint}）</span>}
           {(hasUnsavedChanges || isSaving) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length + editingDirtyCells.size} 行 (Ctrl+S)</span>}
@@ -2146,12 +1952,12 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
           >
             上一页
           </button>
-          <span>{isKeysetMode ? page : `${page} / ${totalPages}`}</span>
+          <span>{isKeysetMode || countSource !== 'exact' ? page : `${page} / ${totalPages}`}</span>
           <button
             className="ui-btn ui-btn-default"
-            disabled={loading || (isKeysetMode ? !hasNextPage : page >= totalPages)}
+            disabled={loading || (isKeysetMode || countSource !== 'exact' ? !hasNextPage : page >= totalPages)}
             onClick={() => {
-              if (loading || (isKeysetMode ? !hasNextPage : page >= totalPages)) return
+              if (loading || (isKeysetMode || countSource !== 'exact' ? !hasNextPage : page >= totalPages)) return
               const nextPage = page + 1
               setPage(nextPage)
               fetchData(isKeysetMode ? 'next' : 'reset', false, nextPage)
@@ -2171,7 +1977,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
                   if (e.key === 'Enter') {
                     const n = Number(jumpPage)
                     if (!Number.isFinite(n) || n < 1) return
-                    const targetPage = Math.min(totalPages, n)
+                    const targetPage = countSource === 'exact' ? Math.min(totalPages, n) : n
                     setPage(targetPage)
                     setCursor(null)
                     fetchData('reset', false, targetPage)
@@ -2185,7 +1991,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
                 onClick={() => {
                   const n = Number(jumpPage)
                   if (!Number.isFinite(n) || n < 1) return
-                  const targetPage = Math.min(totalPages, n)
+                  const targetPage = countSource === 'exact' ? Math.min(totalPages, n) : n
                   setPage(targetPage)
                   setCursor(null)
                   fetchData('reset', false, targetPage)

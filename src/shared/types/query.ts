@@ -42,6 +42,7 @@ export interface QueryResult {
 
 export interface QueryExecuteOptions {
   executionId?: string
+  params?: unknown[]
 }
 
 export interface ColumnInfo {

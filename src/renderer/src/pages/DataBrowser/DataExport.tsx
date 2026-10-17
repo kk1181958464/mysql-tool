@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { Modal, Select, Switch, Input, Button, Space } from '../../components/ui'
 import { api } from '../../utils/ipc'
+import { quoteId } from './table-pagination'
 
 interface Props {
   open: boolean
@@ -37,7 +38,7 @@ export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, datab
     setError('')
     setSuccess('')
     try {
-      const sql = `SELECT * FROM \`${table}\`${form.where ? ` WHERE ${form.where}` : ''}${form.rowRange === 'custom' ? ` LIMIT ${form.limit} OFFSET ${form.offset}` : ''}`
+      const sql = `SELECT * FROM ${quoteId(table)}${form.where ? ` WHERE ${form.where}` : ''}${form.rowRange === 'custom' ? ` LIMIT ${form.limit} OFFSET ${form.offset}` : ''}`
       const filePath = await api.importExport.exportData(connectionId, database, sql, '', form.format, {
         includeHeaders: form.includeHeaders,
         delimiter: form.delimiter,

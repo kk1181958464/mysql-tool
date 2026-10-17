@@ -44,9 +44,26 @@ export function validateSql(value: unknown, script = false): string {
   return string(value, 'SQL', script ? MAX_SCRIPT_LENGTH : MAX_SQL_LENGTH)
 }
 
+const MAX_QUERY_PARAMS = 1024
+
 export function validateQueryOptions(value: unknown): QueryExecuteOptions {
   const input = optionsRecord(value)
-  return { executionId: optionalExecutionId(input.executionId) }
+  let params: unknown[] | undefined
+  if (input.params !== undefined) {
+    if (!Array.isArray(input.params) || input.params.length > MAX_QUERY_PARAMS) {
+      throw new Error(`查询参数必须是数组且不能超过 ${MAX_QUERY_PARAMS} 项`)
+    }
+    params = input.params.map((item, index) => {
+      if (item !== null && typeof item === 'object') {
+        throw new Error(`查询参数 ${index + 1} 只能是标量`)
+      }
+      if (typeof item === 'string' && item.length > 1024 * 1024) {
+        throw new Error(`查询参数 ${index + 1} 过长`)
+      }
+      return item
+    })
+  }
+  return { executionId: optionalExecutionId(input.executionId), params }
 }
 
 export function validateMultiOptions(value: unknown): ExecuteMultiOptions {

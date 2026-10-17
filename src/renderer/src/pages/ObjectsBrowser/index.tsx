@@ -9,6 +9,7 @@ import {
 import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
 import { api } from '../../utils/ipc'
+import { quoteId } from '../DataBrowser/table-pagination'
 import type { TableInfo } from '../../../../shared/types/metadata'
 import type { ImportProgressPayload } from '../../../../preload/types'
 
@@ -223,7 +224,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     setOperating(true)
     try {
       for (const name of validSelectedTableNames) {
-        await api.query.execute(connectionId, `DROP TABLE \`${database}\`.\`${name}\``)
+        await api.query.execute(connectionId, `DROP TABLE ${quoteId(database)}.${quoteId(name)}`)
       }
       setSelectedTables(new Set())
       setExportSql(null)
@@ -240,7 +241,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     setOperating(true)
     try {
       for (const tableName of batchTruncateTargets) {
-        await api.query.execute(connectionId, `TRUNCATE TABLE \`${database}\`.\`${tableName}\``)
+        await api.query.execute(connectionId, `TRUNCATE TABLE ${quoteId(database)}.${quoteId(tableName)}`)
       }
       setBatchTruncateTargets([])
     } catch (e: any) {
@@ -387,7 +388,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     if (!deleteConfirm) return
     setOperating(true)
     try {
-      await api.query.execute(connectionId, `DROP TABLE \`${database}\`.\`${deleteConfirm}\``)
+      await api.query.execute(connectionId, `DROP TABLE ${quoteId(database)}.${quoteId(deleteConfirm)}`)
       setExportSql(null)
       handleRefresh()
       setDeleteConfirm(null)
@@ -399,7 +400,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     if (!truncateConfirm) return
     setOperating(true)
     try {
-      await api.query.execute(connectionId, `TRUNCATE TABLE \`${database}\`.\`${truncateConfirm}\``)
+      await api.query.execute(connectionId, `TRUNCATE TABLE ${quoteId(database)}.${quoteId(truncateConfirm)}`)
       setTruncateConfirm(null)
     } catch (e: any) { showError(e.message || '清空失败') }
     setOperating(false)
@@ -409,7 +410,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     if (!renameModal || renameModal.newName === renameModal.tableName) return
     setOperating(true)
     try {
-      await api.query.execute(connectionId, `RENAME TABLE \`${database}\`.\`${renameModal.tableName}\` TO \`${database}\`.\`${renameModal.newName}\``)
+      await api.query.execute(connectionId, `RENAME TABLE ${quoteId(database)}.${quoteId(renameModal.tableName)} TO ${quoteId(database)}.${quoteId(renameModal.newName)}`)
       handleRefresh()
       setRenameModal(null)
     } catch (e: any) { showError(e.message || '重命名失败') }
@@ -456,9 +457,11 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         exportCancelledRef.current = false
         const firstTable = validExportTableNames[0] || exportSql.tableName
         const singleTable = validExportTableNames.length === 1 ? firstTable : null
-        const totalRows = singleTable
-          ? Number((await api.query.execute(connectionId, `SELECT COUNT(*) AS total FROM \`${database}\`.\`${singleTable}\``, database)).rows?.[0]?.total ?? 0)
-          : undefined
+        let totalRows: number | undefined
+        if (singleTable) {
+          const matched = (await api.meta.tables(connectionId, database)).find((item) => item.name === singleTable)
+          totalRows = matched && matched.type !== 'VIEW' ? Number(matched.rows ?? 0) : undefined
+        }
         setExportProgress({ current: firstTable, done: 0, total: validExportTableNames.length || 1, rows: 0, totalRows })
         await api.importExport.exportData(connectionId, database, '', filePath, 'sql', {
           tables: validExportTableNames,
