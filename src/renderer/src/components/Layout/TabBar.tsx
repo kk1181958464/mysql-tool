@@ -48,7 +48,7 @@ export default function TabBar() {
               database={activeTab.database}
             />
             {activeTab.error && (
-              <div style={{ padding: 8, color: 'var(--color-red)', fontSize: 12 }}>{activeTab.error}</div>
+              <div style={{ padding: 8, color: 'var(--error)', fontSize: 12 }}>{activeTab.error}</div>
             )}
           </div>
         )}

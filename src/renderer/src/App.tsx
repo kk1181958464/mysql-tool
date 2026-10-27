@@ -3,6 +3,7 @@ import AppLayout from './components/Layout/AppLayout'
 import { useAppStore } from './stores/app.store'
 import { reportPerfMetric } from './utils/perf'
 import { api } from './utils/ipc'
+import { ToastHost } from './components/ui'
 
 const FIRST_INTERACTION_METRIC = 'app.first_interaction_latency'
 const LONG_TASK_METRIC = 'app.longtask.duration'
@@ -117,5 +118,10 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [])
 
-  return <AppLayout />
+  return (
+    <>
+      <AppLayout />
+      <ToastHost />
+    </>
+  )
 }

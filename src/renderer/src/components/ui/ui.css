@@ -925,9 +925,9 @@
 .ui-alert-error { background: var(--error-bg); border: 1px solid color-mix(in srgb, var(--error) 45%, transparent); }
 .ui-alert { animation: rise-in var(--dur-base) var(--ease-out); }
 
-.ui-alert-content { flex: 1; }
-.ui-alert-message { font-weight: 500; color: var(--text-primary); }
-.ui-alert-description { margin-top: 4px; color: var(--text-secondary); font-size: 13px; }
+.ui-alert-content { flex: 1; min-width: 0; }
+.ui-alert-message { font-weight: 500; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+.ui-alert-description { margin-top: 4px; color: var(--text-secondary); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
 .ui-alert-close { background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 16px; }
 
 /* ===== Tooltip ===== */

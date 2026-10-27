@@ -5,6 +5,8 @@ import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
 import type { BackupRecord } from '../../../../shared/types/table-design'
+import { getErrorMessage } from '../../utils/error-info'
+import { ErrorNotice } from '../../components/ErrorNotice'
 
 interface Props { onBack: () => void }
 
@@ -38,7 +40,7 @@ const BackupWizard: React.FC<Props> = ({ onBack }) => {
         duration: Date.now() - startTime,
       })
     } catch (e: any) {
-      setResult({ success: false, message: e.message || String(e) })
+      setResult({ success: false, message: getErrorMessage(e, '备份失败') })
     } finally { setLoading(false) }
   }
 
@@ -93,8 +95,9 @@ const BackupWizard: React.FC<Props> = ({ onBack }) => {
                 <Button type="primary" size="large" loading={loading} onClick={execute}>开始备份</Button>
               </>
             ) : (
-              <Alert type={result.success ? 'success' : 'error'} message={result.success ? '备份完成' : '备份失败'}
-                description={result.success ? `文件: ${result.filePath}\n大小: ${formatBytes(result.size ?? 0)}\n耗时: ${((result.duration ?? 0) / 1000).toFixed(1)}s` : result.message} />
+              result.success
+                ? <Alert type="success" message="备份完成" description={`文件: ${result.filePath}\n大小: ${formatBytes(result.size ?? 0)}\n耗时: ${((result.duration ?? 0) / 1000).toFixed(1)}s`} />
+                : <ErrorNotice error={result.message} fallbackTitle="备份失败" />
             )}
           </div>
         )

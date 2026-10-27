@@ -26,6 +26,8 @@ import {
   type SimpleFilterField,
 } from './table-filter'
 import { parseClipboardGrid } from './table-clipboard'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   tabId: string
@@ -130,16 +132,6 @@ const editInputStyle: React.CSSProperties = {
 const placeholderStyle: React.CSSProperties = { color: 'var(--text-muted)' }
 const TABLEDATA_VIRTUAL_THRESHOLD = 400
 const TABLEDATA_WORKER_THRESHOLD = 2000
-
-// 保存错误尽量“人话化”
-const normalizeIpcErrorMessage = (raw: unknown): string => {
-  if (!raw) return ''
-  const msg = String((raw as any).message ?? raw)
-  return msg
-    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
-    .replace(/^Error:\s*/i, '')
-    .trim()
-}
 
 const toCellKey = (rowKey: string, colName: string) => JSON.stringify([rowKey, colName])
 const toCellDomId = (rowKey: string, colName: string) => encodeURIComponent(toCellKey(rowKey, colName))
@@ -560,7 +552,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         table,
         error: countError instanceof Error ? countError.message : String(countError),
       })
-      setError(countError instanceof Error ? countError.message : '统计行数失败')
+      setError(getErrorMessage(countError, '统计行数失败'))
     } finally {
       if (requestId === countRequestIdRef.current) setCountLoading(false)
     }
@@ -702,7 +694,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       }
     } catch (e: any) {
       if (requestId !== fetchRequestIdRef.current) return
-      setError(e.message || '查询失败')
+      setError(getErrorMessage(e, '查询失败'))
     } finally {
       if (showLoading && requestId === fetchRequestIdRef.current) {
         setLoading(false)
@@ -712,7 +704,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
   useEffect(() => {
     if (!connectionId || !database || !table) return
-    loadColumns(connectionId, database, table).catch(() => {})
+    loadColumns(connectionId, database, table).catch((e) => setError(getErrorMessage(e, '加载字段信息失败')))
   }, [connectionId, database, table, loadColumns])
 
   const lastRefreshVersionRef = useRef(refreshVersion)
@@ -1066,7 +1058,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       setSelectedRowKeys(new Set())
       setDeleteConfirmOpen(false)
     } catch (e: any) {
-      setError(e.message || '删除失败')
+      setError(getErrorMessage(e, '删除失败'))
     } finally {
       setDeleteBusy(false)
     }
@@ -1299,9 +1291,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       ].filter(Boolean)
       setSuccessMessage(savedParts.length ? `保存成功：${savedParts.join('，')}` : '保存成功')
     } catch (e: any) {
-      const cleaned = normalizeIpcErrorMessage(e)
-      setError(cleaned || '保存失败')
-      setSaveErrorText(cleaned || '保存失败')
+      setSaveErrorText(getErrorMessage(e, '保存失败'))
       setSaveErrorModalOpen(true)
     } finally {
       setIsSaving(false)
@@ -1791,7 +1781,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         {newRows.length === 0 && <Button size="small" style={{ height: 28, padding: '0 12px' }} onClick={() => setExportOpen(true)}>导出</Button>}
       </Space>
 
-      {error && <div style={{ color: 'var(--color-red)', marginBottom: 8 }}>{error}</div>}
+      {error && <ErrorNotice key={error} error={error} fallbackTitle="操作失败" onClose={() => setError('')} style={{ marginBottom: 8 }} />}
       <Toast open={!error && Boolean(successMessage)} message={successMessage} type="success" />
 
       {result && result.columns.length > 0 && (
@@ -1882,8 +1872,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         )}
         width={560}
       >
-        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.6 }}>
-          {saveErrorText}
+        <div>
+          {saveErrorText && <ErrorNotice error={saveErrorText} fallbackTitle="保存失败" />}
         </div>
       </Modal>
 

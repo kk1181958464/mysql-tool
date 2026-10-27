@@ -109,7 +109,7 @@ export function Alert({ type = 'info', message, description, closable, onClose, 
         <div className="ui-alert-message">{message}</div>
         {description && <div className="ui-alert-description">{description}</div>}
       </div>
-      {closable && <button className="ui-alert-close" onClick={onClose}>×</button>}
+      {(closable ?? Boolean(onClose)) && <button type="button" className="ui-alert-close" onClick={onClose}>×</button>}
     </div>
   )
 }

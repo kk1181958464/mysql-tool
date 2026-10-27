@@ -5,12 +5,15 @@ import type { EventInfo } from '../../../../shared/types/metadata'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 const UNITS = ['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'YEAR']
 
 const EventManager: React.FC = () => {
   const [events, setEvents] = useState<EventInfo[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [viewSql, setViewSql] = useState<string | null>(null)
   const [form, setForm] = useState({ name: '', type: 'RECURRING' as 'ONE TIME' | 'RECURRING', atDatetime: '', everyInterval: 1, everyUnit: 'DAY', starts: '', ends: '', body: '', enabled: true })
@@ -22,10 +25,11 @@ const EventManager: React.FC = () => {
   const load = useCallback(async () => {
     if (!connId || !db) return
     setLoading(true)
+    setLoadError(null)
     try {
       const res = await api.meta.events(connId, db)
       setEvents(Array.isArray(res) ? res : [])
-    } catch (e) { console.warn('[EventManager] 加载失败:', e) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])
@@ -45,7 +49,7 @@ const EventManager: React.FC = () => {
       await api.object.createEvent(connId, db, sql)
       setSuccess('事件创建成功'); setTimeout(() => setSuccess(null), 2000)
       setModalOpen(false); load()
-    } catch (e: any) { setError(e.message || '创建失败') }
+    } catch (e: any) { setError(getErrorMessage(e, '创建失败')) }
   }
 
   const toggleEvent = async (name: string, enable: boolean) => {
@@ -53,7 +57,7 @@ const EventManager: React.FC = () => {
     try {
       await api.query.execute(connId, `ALTER EVENT \`${name}\` ${enable ? 'ENABLE' : 'DISABLE'}`, db)
       load()
-    } catch (e: any) { setError(e.message || '操作失败') }
+    } catch (e: any) { setError(getErrorMessage(e, '操作失败')) }
   }
 
   const drop = async (name: string) => { await api.object.drop(connId!, db!, 'EVENT', name); load() }
@@ -77,7 +81,8 @@ const EventManager: React.FC = () => {
 
   return (
     <div>
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
+      {loadError && <ErrorNotice error={loadError} fallbackTitle="加载失败" onRetry={load} onClose={() => setLoadError(null)} style={{ marginBottom: 12 }} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
       <Toast open={Boolean(success)} message={success} type="success" />
       <div style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => {

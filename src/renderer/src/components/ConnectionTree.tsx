@@ -21,7 +21,9 @@ import {
 import { useConnectionStore } from '../stores/connection.store'
 import { useDatabaseStore } from '../stores/database.store'
 import { useTabStore } from '../stores/tab.store'
-import { useAppStore } from '../stores/app.store'
+import { useAppStore, OPEN_CONNECTION_MANAGER_EVENT } from '../stores/app.store'
+import { ErrorNotice } from './ErrorNotice'
+import { getErrorMessage } from '../utils/error-info'
 import { api } from '../utils/ipc'
 import { quoteId } from '../pages/DataBrowser/table-pagination'
 
@@ -35,6 +37,28 @@ interface TreeNode {
 
 interface Props {
   filterText?: string
+}
+
+function ConnectionErrorCard({ connectionId, message }: { connectionId: string; message: string }) {
+  const connect = useConnectionStore((s) => s.connect)
+  return (
+    <ErrorNotice
+      key={message}
+      error={message}
+      fallbackTitle="连接失败"
+      style={{ margin: '10px 12px' }}
+      onRetry={() => connect(connectionId)}
+      actions={(
+        <Button
+          size="small"
+          icon={<EditOutlined />}
+          onClick={() => window.dispatchEvent(new CustomEvent(OPEN_CONNECTION_MANAGER_EVENT, { detail: { connectionId } }))}
+        >
+          编辑连接
+        </Button>
+      )}
+    />
+  )
 }
 
 const TREE_SKELETON_WIDTHS = [62, 48, 74, 55, 40, 68]
@@ -78,8 +102,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const [dbRemarks, setDbRemarks] = useState<Record<string, string>>({})
   const [remarkEdit, setRemarkEdit] = useState<{ dbName: string; value: string } | null>(null)
   const [closeDbConfirm, setCloseDbConfirm] = useState<{ dbName: string; tabIdsToClose: string[]; dirtyCount: number } | null>(null)
-  const [noticeModal, setNoticeModal] = useState<{ title: string; message: string } | null>(null)
-  const showError = (message: string) => setNoticeModal({ title: '操作失败', message })
+  const [noticeModal, setNoticeModal] = useState<{ title: string; message: string; isError?: boolean } | null>(null)
+  const showError = (error: unknown, title = '操作失败') => setNoticeModal({ title, message: getErrorMessage(error, title), isError: true })
   const showInfo = (message: string) => setNoticeModal({ title: '提示', message })
 
   useEffect(() => {
@@ -254,7 +278,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           children.push(
             { key: `folder:${db.name}:procedures`, title: '存储过程', icon: <CodeOutlined style={{ color: 'var(--color-yellow)' }} />, children: [] },
             { key: `folder:${db.name}:functions`, title: '函数', icon: <CodeOutlined style={{ color: 'var(--color-peach)' }} />, children: [] },
-            { key: `folder:${db.name}:triggers`, title: '触发器', icon: <ThunderboltOutlined style={{ color: 'var(--color-red)' }} />, children: [] },
+            { key: `folder:${db.name}:triggers`, title: '触发器', icon: <ThunderboltOutlined style={{ color: 'var(--error)' }} />, children: [] },
             { key: `folder:${db.name}:events`, title: '事件', icon: <ClockCircleOutlined style={{ color: 'var(--text-muted)' }} />, children: [] },
           )
         }
@@ -500,7 +524,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
               })
             }
           } catch (e) {
-            setEditDb({ dbName, charset: 'utf8mb4', collation: 'utf8mb4_general_ci' })
+            showError(e, '读取数据库字符集失败')
           }
           break
         case 'editRemark': {
@@ -593,7 +617,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       await loadDatabases(activeConnectionId, true)
       setDeleteConfirm(null)
     } catch (e: any) {
-      showError(e.message || '删除失败')
+      showError(e, '删除失败')
     } finally {
       setDeleting(false)
     }
@@ -607,7 +631,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       await loadTables(activeConnectionId, deleteTableConfirm.dbName)
       setDeleteTableConfirm(null)
     } catch (e: any) {
-      showError(e.message || '删除失败')
+      showError(e, '删除失败')
     } finally {
       setDeleting(false)
     }
@@ -620,7 +644,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       await api.query.execute(activeConnectionId, `TRUNCATE TABLE ${quoteId(truncateConfirm.dbName)}.${quoteId(truncateConfirm.tableName)}`)
       setTruncateConfirm(null)
     } catch (e: any) {
-      showError(e.message || '清空失败')
+      showError(e, '清空失败')
     } finally {
       setDeleting(false)
     }
@@ -636,7 +660,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       renameTableInTabs(activeConnectionId, renameTable.dbName, renameTable.tableName, renameTable.newName)
       setRenameTable(null)
     } catch (e: any) {
-      showError(e.message || '重命名失败')
+      showError(e, '重命名失败')
     } finally {
       setSaving(false)
     }
@@ -657,7 +681,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       }
       setExportSql({ dbName, tableName, includeData, sql })
     } catch (e: any) {
-      showError(e.message || '导出失败')
+      showError(e, '导出失败')
     } finally {
       setPreviewLoading(false)
     }
@@ -701,7 +725,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       const sql = parts.join('\n')
       setExportSql({ dbName, tableName: dbName, includeData, sql, isDb: true })
     } catch (e: any) {
-      showError(e.message || '导出失败')
+      showError(e, '导出失败')
     } finally {
       setPreviewLoading(false)
     }
@@ -785,7 +809,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         setExportProgress(prev => prev ? { ...prev, cancelled: true } : null)
       }
     } catch (e: any) {
-      showError(e.message || '导出失败')
+      showError(e, '导出失败')
       setExportProgress(null)
       setExporting(false)
     }
@@ -832,7 +856,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       )
       setEditDb(null)
     } catch (e: any) {
-      showError(e.message || '修改失败')
+      showError(e, '修改失败')
     } finally {
       setSaving(false)
     }
@@ -901,13 +925,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     return <Empty description="选择一个连接开始浏览数据库" icon={<DatabaseOutlined />} />
   }
 
-  if (connectionError) {
-    return (
-      <div style={{ padding: 16, textAlign: 'center' }}>
-        <div style={{ color: 'var(--error)', marginBottom: 8 }}>连接失败</div>
-        <div style={{ color: 'var(--text-muted)', fontSize: 12, wordBreak: 'break-all' }}>{connectionError}</div>
-      </div>
-    )
+  if (connectionError && activeConnectionId) {
+    return <ConnectionErrorCard connectionId={activeConnectionId} message={connectionError} />
   }
 
   if (!isConnected || isLoading) {
@@ -1306,13 +1325,17 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       <Modal
         open={!!noticeModal}
         title={noticeModal?.title || '提示'}
-        width={420}
+        width={460}
         onClose={() => setNoticeModal(null)}
         footer={<Button variant="primary" onClick={() => setNoticeModal(null)}>确定</Button>}
       >
-        <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13 }}>
-          {noticeModal?.message}
-        </div>
+        {noticeModal?.isError ? (
+          <ErrorNotice error={noticeModal.message} fallbackTitle={noticeModal.title} />
+        ) : (
+          <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13, maxHeight: 320, overflow: 'auto' }}>
+            {noticeModal?.message}
+          </div>
+        )}
       </Modal>
     </>
   )

@@ -1,4 +1,5 @@
 import mysql from 'mysql2/promise'
+import { formatErrorMessage } from '../../shared/error-message'
 import type { ConnectionOptions, ResultSetHeader } from 'mysql2/promise'
 import * as fs from 'fs'
 import * as readline from 'readline'
@@ -333,7 +334,7 @@ async function executeStatement(conn: mysql.Connection, stmt: string, index: num
       insertId: 0,
       executionTime: Date.now() - startedAt,
       rowCount: 0,
-      error: error?.message || '执行失败',
+      error: formatErrorMessage(error, '执行失败'),
     }
   }
 }
@@ -825,8 +826,8 @@ export async function executeMultiStatementSql(
     return result
   } catch (error: any) {
     isSuccess = false
-    historyErrorMessage = error?.message || '执行失败'
-    throw new Error(error.message)
+    historyErrorMessage = formatErrorMessage(error, '执行失败')
+    throw new Error(historyErrorMessage)
   } finally {
     removeRunningScriptConnection(runningKey, conn)
     try {

@@ -1,9 +1,11 @@
 import React, { useState, useRef } from 'react'
-import { Button, Table, Select, Input, Switch, Alert, Card, Space } from '../../components/ui'
+import { Button, Table, Select, Input, Switch, Alert, Card, Space, toast } from '../../components/ui'
 import { ArrowLeftOutlined, UploadOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import { formatErrorSummary, getErrorMessage } from '../../utils/error-info'
+import { ErrorNotice } from '../../components/ErrorNotice'
 
 interface Props { onBack: () => void }
 
@@ -53,7 +55,7 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
           setColumnMapping(mapping)
         }
       } catch (e) {
-        console.warn('[ImportWizard] 预览文件失败:', e)
+        toast.error(formatErrorSummary(e, '预览文件失败'))
       }
     }
   }
@@ -106,7 +108,7 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
       setProgress(100)
       setProgressStage('完成')
     } catch (e: any) {
-      setResult({ success: false, imported: 0, errors: 1, message: e.message || String(e) })
+      setResult({ success: false, imported: 0, errors: 1, message: getErrorMessage(e, '导入失败') })
     } finally {
       taskIdRef.current = null
       unsubscribe()
@@ -195,8 +197,9 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
                 </Space>
               </>
             ) : (
-              <Alert type={result.success ? 'success' : 'error'} message={result.success ? '导入完成' : '导入失败'}
-                description={result.success ? `${fileType === 'sql' ? '执行' : '成功导入'} ${result.imported} 条/行，${result.errors} 个错误${result.errorReportPath ? `；失败行报告：${result.errorReportPath}` : ''}` : result.message} />
+              result.success
+                ? <Alert type="success" message="导入完成" description={`${fileType === 'sql' ? '执行' : '成功导入'} ${result.imported} 条/行，${result.errors} 个错误${result.errorReportPath ? `；失败行报告：${result.errorReportPath}` : ''}`} />
+                : <ErrorNotice error={result.message} fallbackTitle="导入失败" />
             )}
           </div>
         )

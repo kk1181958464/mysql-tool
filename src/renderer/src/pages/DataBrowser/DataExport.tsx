@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react'
 import { Modal, Select, Switch, Input, Button, Space } from '../../components/ui'
 import { api } from '../../utils/ipc'
 import { quoteId } from './table-pagination'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   open: boolean
@@ -48,7 +50,7 @@ export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, datab
         setSuccess(`导出完成: ${filePath}`)
       }
     } catch (e: any) {
-      setError(e.message || '导出失败')
+      setError(getErrorMessage(e, '导出失败'))
     } finally {
       setExporting(false)
     }
@@ -57,7 +59,7 @@ export const DataExport: React.FC<Props> = ({ open, onClose, connectionId, datab
   return (
     <Modal title="导出数据" open={open} onClose={onClose} footer={null} width={480}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {error && <div style={{ color: 'var(--color-red)' }}>{error}</div>}
+        {error && <ErrorNotice key={error} error={error} onClose={() => setError('')} />}
         {success && <div style={{ color: 'var(--success)', wordBreak: 'break-all' }}>{success}</div>}
         <div>
           <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>格式</label>

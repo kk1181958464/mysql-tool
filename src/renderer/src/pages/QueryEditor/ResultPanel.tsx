@@ -4,6 +4,8 @@ import { DownloadOutlined, CheckCircleOutlined, WarningOutlined, CloseCircleOutl
 import { useTabStore, QueryTab } from '../../stores/tab.store'
 import { api } from '../../utils/ipc'
 import { reportPerfMetric } from '../../utils/perf'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { describeError } from '../../utils/error-info'
 import type { QueryHistoryItem, QueryStatementResult } from '../../../../shared/types/query'
 import tableTransformWorker from '../../workers/table-transform.worker?worker'
 
@@ -130,6 +132,16 @@ const ExplainView: React.FC<{ rows: Record<string, unknown>[] }> = ({ rows }) =>
     })}
   </div>
 )
+
+function StatementError({ error }: { error: string }) {
+  const info = describeError(error, '执行失败')
+  return (
+    <div style={{ fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+      <span style={{ color: 'var(--error)', fontWeight: 600 }}>{info.title}{info.errno ? ` (${info.errno})` : ''}</span>
+      <span style={{ color: 'var(--text-secondary)' }}>：{info.title === '执行失败' ? info.hint : info.detail}</span>
+    </div>
+  )
+}
 
 export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const { tabs } = useTabStore()
@@ -544,7 +556,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                 <div>{getStatementMetricLabel(selectedStatement)}</div>
                 {selectedStatementKind === 'mutation' && selectedStatement.insertId > 0 && <div>插入ID: {selectedStatement.insertId}</div>}
                 <div>执行时间: {selectedStatement.executionTime}ms</div>
-                {selectedStatement.error && <div style={{ color: 'var(--error)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 8 }}>{selectedStatement.error}</div>}
+                {selectedStatement.error && <div style={{ marginTop: 12, textAlign: 'left' }}><ErrorNotice error={selectedStatement.error} fallbackTitle="执行失败" /></div>}
               </div>
               <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5 }}>
                 {statementResults.length > 1 && (
@@ -567,6 +579,10 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
             </div>
           </div>
         )
+      ) : error ? (
+        <div style={{ padding: 16, maxWidth: 720 }}>
+          <ErrorNotice error={error} fallbackTitle="执行失败" />
+        </div>
       ) : (
         <Empty description="无结果" />
       ),
@@ -576,7 +592,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       label: '消息',
       children: (
         <div style={{ padding: 12 }}>
-          {error && <div style={{ marginBottom: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}><Tag type="error">{error}</Tag></div>}
+          {error && <ErrorNotice error={error} fallbackTitle="执行失败" style={{ marginBottom: 12 }} />}
           {statementResults.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {statementResults.map((item, idx) => (
@@ -605,11 +621,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                   <div style={{ fontSize: 12, color: 'var(--text-primary)', marginBottom: item.error ? 6 : 0, wordBreak: 'break-word' }}>
                     {item.sql}
                   </div>
-                  {item.error && (
-                    <div style={{ fontSize: 12, color: 'var(--error)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {item.error}
-                    </div>
-                  )}
+                  {item.error && <StatementError error={item.error} />}
                 </div>
               ))}
             </div>

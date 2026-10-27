@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { api } from '../utils/ipc'
+import { toast } from '../components/ui/Toast'
+import { formatErrorSummary } from '../utils/error-info'
 import {
   HEARTBEAT_SETTING_KEY,
   HEARTBEAT_TIMEOUT_SETTING_KEY,
@@ -89,7 +91,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_SETTING_KEY, String(normalized))
     } catch (error) {
-      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat setting failed', error)
+      toast.error(formatErrorSummary(error, '设置保存失败'))
     }
   },
   setHeartbeatTimeoutMs: async (timeoutMs) => {
@@ -99,7 +101,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_TIMEOUT_SETTING_KEY, String(normalized))
     } catch (error) {
-      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat timeout setting failed', error)
+      toast.error(formatErrorSummary(error, '设置保存失败'))
     }
   },
   setHeartbeatMaxConcurrency: async (concurrency) => {
@@ -109,7 +111,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_CONCURRENCY_SETTING_KEY, String(normalized))
     } catch (error) {
-      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat concurrency setting failed', error)
+      toast.error(formatErrorSummary(error, '设置保存失败'))
     }
   },
   setHeartbeatAutoTuneEnabled: async (enabled) => {
@@ -119,7 +121,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(HEARTBEAT_AUTOTUNE_SETTING_KEY, String(normalized))
     } catch (error) {
-      if (import.meta.env.DEV) console.warn('[app.store] save heartbeat auto-tune setting failed', error)
+      toast.error(formatErrorSummary(error, '设置保存失败'))
     }
   },
   setRowsPerPage: async (value) => {
@@ -129,7 +131,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(TABLE_ROWS_PER_PAGE_SETTING_KEY, String(normalized))
     } catch (error) {
-      if (import.meta.env.DEV) console.warn('[app.store] save rows per page setting failed', error)
+      toast.error(formatErrorSummary(error, '设置保存失败'))
     }
   },
   setPaginationMode: async (mode) => {
@@ -139,7 +141,7 @@ export const useAppStore = create<AppState>((set) => ({
     try {
       await api.store.saveSettings(PAGINATION_MODE_SETTING_KEY, normalized)
     } catch (error) {
-      if (import.meta.env.DEV) console.warn('[app.store] save pagination mode setting failed', error)
+      toast.error(formatErrorSummary(error, '设置保存失败'))
     }
   },
 }))

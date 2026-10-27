@@ -4,6 +4,8 @@ import { SwapOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface DiffRow {
   key: string
@@ -85,7 +87,7 @@ const DataCompare: React.FC = () => {
       setDiffs(result)
       setSummary({ total: rowsA.length + rowsB.length, matching, different, onlyA, onlyB })
     } catch (e: any) {
-      setError(e.message || String(e))
+      setError(getErrorMessage(e, '对比失败'))
     } finally {
       setLoading(false)
     }
@@ -142,7 +144,7 @@ const DataCompare: React.FC = () => {
         </Row>
       </Card>
 
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} />}
 
       {diffs.length > 0 && (
         <>

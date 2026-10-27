@@ -5,6 +5,8 @@ import type { BackupRecord } from '../../../../shared/types/table-design'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props { onBack: () => void; records: BackupRecord[] }
 
@@ -44,8 +46,8 @@ const RestoreWizard: React.FC<Props> = ({ onBack, records }) => {
       setLogs((l) => [...l, '恢复完成'])
       setResult({ success: true })
     } catch (e: any) {
-      setLogs((l) => [...l, `错误: ${e.message || String(e)}`])
-      setResult({ success: false, message: e.message || String(e) })
+      setLogs((l) => [...l, '恢复失败'])
+      setResult({ success: false, message: getErrorMessage(e, '恢复失败') })
     } finally { setLoading(false) }
   }
 
@@ -112,7 +114,7 @@ const RestoreWizard: React.FC<Props> = ({ onBack, records }) => {
                 <Button type="primary" size="large" loading={loading} onClick={execute}>开始恢复</Button>
               </>
             ) : (
-              <Alert type={result.success ? 'success' : 'error'} message={result.success ? '恢复完成' : '恢复失败'} description={result.message} />
+              result.success ? <Alert type="success" message="恢复完成" description={result.message} /> : <ErrorNotice error={result.message} fallbackTitle="恢复失败" />
             )}
             {logs.length > 0 && (
               <pre style={{ marginTop: 12, maxHeight: 200, overflow: 'auto', background: 'var(--bg-hover)', padding: 8, borderRadius: 6, fontSize: 12 }}>{logs.join('\n')}</pre>

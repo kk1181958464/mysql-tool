@@ -4,6 +4,8 @@ import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props { onBack: () => void }
 
@@ -85,7 +87,7 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
       setProgressText('完成')
       setResult({ success: true, message: `Export completed: ${filePath}` })
     } catch (e: any) {
-      setResult({ success: false, message: e.message || String(e) })
+      setResult({ success: false, message: getErrorMessage(e, '导出失败') })
     } finally {
       taskIdRef.current = null
       unsubscribe()
@@ -185,7 +187,7 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
                 </Space>
               </>
             ) : (
-              <Alert type={result.success ? 'success' : 'error'} message={result.success ? '导出完成' : '导出失败'} description={result.message} />
+              result.success ? <Alert type="success" message="导出完成" description={result.message} /> : <ErrorNotice error={result.message} fallbackTitle="导出失败" />
             )}
           </div>
         )

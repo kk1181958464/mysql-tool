@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react'
 import { CloseOutlined, DownOutlined, PictureOutlined } from '@ant-design/icons'
 import { Tabs, Input, Button, Space, Select, Alert, Toast } from '../../components/ui'
 import { ConnAvatar } from '../../components/ConnAvatar'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 import { ICON_ACCEPT, fileToIconDataUrl } from '../../utils/icon-image'
 import { useConnectionStore } from '../../stores/connection.store'
 import { SSLConfig } from './SSLConfig'
@@ -93,6 +95,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
   const [form, setForm] = useState<Partial<ConnectionSavePayload>>(defaultValues)
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState('')
+  const [validationError, setValidationError] = useState('')
   const [success, setSuccess] = useState('')
   const [activeTab, setActiveTab] = useState('general')
   const { saveConnection, testConnection, connect } = useConnectionStore()
@@ -107,6 +110,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
       setForm({ ...defaultValues })
     }
     setError('')
+    setValidationError('')
     setSuccess('')
   }, [editing])
 
@@ -131,20 +135,21 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
       updateIcon(await fileToIconDataUrl(file))
       setError('')
     } catch (err: any) {
-      setError(err.message || '图片处理失败')
+      setError(getErrorMessage(err, '图片处理失败'))
     }
   }
 
   const iconIsImage = (form.icon || '').startsWith('data:image/')
 
   const validate = () => {
-    if (!form.name?.trim()) { setError('请输入连接名称'); return false }
-    if (!form.host?.trim()) { setError('请输入主机地址'); return false }
-    if (!form.port || form.port < 1 || form.port > 65535) { setError('端口范围 1-65535'); return false }
-    if (!Number.isInteger(form.poolMax) || form.poolMax! < 1 || form.poolMax! > 100) { setError('最大连接数范围 1-100'); return false }
-    if (!Number.isInteger(form.connectTimeout) || form.connectTimeout! < 1000 || form.connectTimeout! > 300000) { setError('连接超时范围 1000-300000 ms'); return false }
-    if (!Number.isInteger(form.idleTimeout) || form.idleTimeout! < 1000 || form.idleTimeout! > 3600000) { setError('空闲超时范围 1000-3600000 ms'); return false }
-    if (!/^(?:local|Z|[+-]\d{2}:\d{2})$/.test(form.timezone || '')) { setError('时区格式应为 local、Z 或 ±HH:MM'); return false }
+    if (!form.name?.trim()) { setValidationError('请输入连接名称'); return false }
+    if (!form.host?.trim()) { setValidationError('请输入主机地址'); return false }
+    if (!form.port || form.port < 1 || form.port > 65535) { setValidationError('端口范围 1-65535'); return false }
+    if (!Number.isInteger(form.poolMax) || form.poolMax! < 1 || form.poolMax! > 100) { setValidationError('最大连接数范围 1-100'); return false }
+    if (!Number.isInteger(form.connectTimeout) || form.connectTimeout! < 1000 || form.connectTimeout! > 300000) { setValidationError('连接超时范围 1000-300000 ms'); return false }
+    if (!Number.isInteger(form.idleTimeout) || form.idleTimeout! < 1000 || form.idleTimeout! > 3600000) { setValidationError('空闲超时范围 1000-3600000 ms'); return false }
+    if (!/^(?:local|Z|[+-]\d{2}:\d{2})$/.test(form.timezone || '')) { setValidationError('时区格式应为 local、Z 或 ±HH:MM'); return false }
+    setValidationError('')
     setError('')
     return true
   }
@@ -163,7 +168,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
         setError(status.error || '连接失败')
       }
     } catch (e: any) {
-      setError(e.message || '测试失败')
+      setError(getErrorMessage(e, '测试失败'))
     } finally {
       setTesting(false)
     }
@@ -175,7 +180,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
       await saveConnection(getPayload())
       onSaved()
     } catch (e: any) {
-      setError(e.message || '保存失败')
+      setError(getErrorMessage(e, '保存失败'))
     }
   }
 
@@ -188,7 +193,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
       onSaved()
       onClose()
     } catch (e: any) {
-      setError(e.message || '操作失败')
+      setError(getErrorMessage(e, '操作失败'))
     }
   }
 
@@ -294,7 +299,8 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
       />
       <div style={{ flexShrink: 0, paddingTop: 12, borderTop: '1px solid var(--border)', marginTop: 12 }}>
         <Toast open={Boolean(success)} message={success} type="success" />
-        {error && <Alert type="error" message={error} style={{ marginBottom: 8 }} />}
+        {validationError && <Alert type="warning" message={validationError} onClose={() => setValidationError('')} style={{ marginBottom: 8 }} />}
+        {!validationError && error && <ErrorNotice key={error} error={error} fallbackTitle="连接失败" onClose={() => setError('')} style={{ marginBottom: 8 }} />}
         <Space>
           <Button onClick={handleTest} disabled={testing}>{testing ? '测试中...' : '测试连接'}</Button>
           <Button onClick={handleSave}>保存</Button>

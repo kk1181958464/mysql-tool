@@ -5,6 +5,8 @@ import type { ProcedureInfo } from '../../../../shared/types/metadata'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 const PARAM_TYPES = ['VARCHAR(255)', 'INT', 'BIGINT', 'TEXT', 'DECIMAL(10,2)', 'DATE', 'DATETIME', 'BOOLEAN']
 interface ParamDef { name: string; type: string; direction: 'IN' | 'OUT' | 'INOUT' }
@@ -13,6 +15,7 @@ const ProcedureManager: React.FC = () => {
   const [procedures, setProcedures] = useState<ProcedureInfo[]>([])
   const [functions, setFunctions] = useState<ProcedureInfo[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [execModal, setExecModal] = useState(false)
   const [viewSql, setViewSql] = useState<string | null>(null)
@@ -29,11 +32,12 @@ const ProcedureManager: React.FC = () => {
   const load = useCallback(async () => {
     if (!connId || !db) return
     setLoading(true)
+    setLoadError(null)
     try {
       const [procs, funcs] = await Promise.all([api.meta.procedures(connId, db), api.meta.functions(connId, db)])
       setProcedures(Array.isArray(procs) ? procs : [])
       setFunctions(Array.isArray(funcs) ? funcs : [])
-    } catch (e) { console.warn('[ProcedureManager] 加载失败:', e) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])
@@ -53,7 +57,7 @@ const ProcedureManager: React.FC = () => {
       await api.object.createProcedure(connId, db, sql)
       setSuccess('保存成功'); setTimeout(() => setSuccess(null), 2000)
       setModalOpen(false); load()
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : '保存失败') }
+    } catch (e: unknown) { setError(getErrorMessage(e, '保存失败')) }
   }
 
   const openExec = (p: ProcedureInfo) => { setExecTarget(p); setExecParams({}); setExecResult(null); setExecModal(true) }
@@ -64,7 +68,7 @@ const ProcedureManager: React.FC = () => {
       const params = parseParamNames(execTarget.paramList).map((name) => execParams[name] || '')
       const res = await api.object.execRoutine(connId, db, execTarget.name, execTarget.type as 'PROCEDURE' | 'FUNCTION', params)
       setExecResult(res)
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : '执行失败') }
+    } catch (e: unknown) { setError(getErrorMessage(e, '执行失败')) }
   }
 
   const drop = async (name: string, type: 'PROCEDURE' | 'FUNCTION') => { await api.object.drop(connId!, db!, type, name); load() }
@@ -91,7 +95,8 @@ const ProcedureManager: React.FC = () => {
 
   return (
     <div>
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
+      {loadError && <ErrorNotice error={loadError} fallbackTitle="加载失败" onRetry={load} onClose={() => setLoadError(null)} style={{ marginBottom: 12 }} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
       <Toast open={Boolean(success)} message={success} type="success" />
       <div style={{ marginBottom: 12 }}><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建</Button></div>
       <Tabs

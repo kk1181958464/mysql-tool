@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { IPC } from '../shared/types/ipc-channels'
 import { registerAllIPC } from './ipc/index'
+import { installIpcErrorFormatting } from './utils/ipc-error'
 import * as connectionManager from './services/connection-manager'
 import * as localStore from './services/local-store'
 import * as backupService from './services/backup'
@@ -207,6 +208,7 @@ app.whenReady().then(() => {
   localStore.init()
   connectionManager.initializeHeartbeatInterval()
   backupService.startScheduleRunner()
+  installIpcErrorFormatting()
   registerAllIPC()
   initializeAppUpdater({
     beforeInstall: async () => {

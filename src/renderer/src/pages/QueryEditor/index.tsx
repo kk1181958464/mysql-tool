@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons'
 import Editor, { loader } from '@monaco-editor/react'
 import { defineMonacoThemes, getMonacoTheme } from '../../utils/monaco-theme'
+import { getErrorMessage } from '../../utils/error-info'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'
@@ -764,19 +765,15 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
       runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
       setQueryResult(tab.id, result)
       if ((result.failCount ?? 0) > 0) {
-        const failedItems = result.statementResults?.filter((item) => !item.success) ?? []
+        const firstFailed = result.statementResults?.find((item) => !item.success)
         const summary = `执行完成：${result.successCount ?? 0} 条成功，${result.failCount ?? 0} 条失败`
-        const detail = failedItems
-          .slice(0, 10)
-          .map((item) => `[${item.index}] ${item.error}`)
-          .join('\n')
-        setQueryError(tab.id, detail ? `${summary}\n${detail}` : summary)
+        setQueryError(tab.id, firstFailed?.error ? `${summary}。第 ${firstFailed.index} 条：${firstFailed.error}` : summary)
       }
     } catch (e: any) {
       if (executionIdRef.current !== executionId) return
       executionIdRef.current = null
       runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
-      setQueryError(tab.id, e.message || '执行失败')
+      setQueryError(tab.id, getErrorMessage(e, '执行失败'))
     }
   }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
 
@@ -789,7 +786,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
       await api.query.cancel(activeConnectionId, executionId)
       setQueryError(tab.id, '查询已取消')
     } catch (e: any) {
-      setQueryError(tab.id, e.message || '取消失败')
+      setQueryError(tab.id, getErrorMessage(e, '取消失败'))
     }
   }, [tab, activeConnectionId, setQueryError])
 
@@ -849,7 +846,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
       if (executionIdRef.current !== executionId) return
       executionIdRef.current = null
       runningQueryRef.current = { connectionId: activeConnectionId, isExecuting: false }
-      setQueryError(tab.id, e.message || '执行失败')
+      setQueryError(tab.id, getErrorMessage(e, '执行失败'))
     }
   }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
 

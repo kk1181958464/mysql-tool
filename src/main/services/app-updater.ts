@@ -46,8 +46,9 @@ function updateState(next: Partial<AppUpdateState>): AppUpdateState {
 }
 
 function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message
-  return String(error || '更新失败')
+  const raw = error instanceof Error && error.message ? error.message : String(error || '')
+  const firstLine = raw.split('\n').map((line) => line.trim()).find(Boolean) || '更新失败'
+  return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine
 }
 
 async function checkForUpdates(): Promise<AppUpdateState> {

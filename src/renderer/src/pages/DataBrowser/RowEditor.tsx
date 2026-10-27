@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react'
 import { Modal, Input, Checkbox } from '../../components/ui'
 import { api } from '../../utils/ipc'
 import type { ColumnInfo } from '../../../../shared/types/query'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   open: boolean
@@ -57,7 +59,7 @@ export const RowEditor: React.FC<Props> = ({ open, onClose, columns, row, onSave
       onSaved()
       onClose()
     } catch (e: any) {
-      setError(e.message || '操作失败')
+      setError(getErrorMessage(e, '操作失败'))
     }
   }
 
@@ -72,7 +74,7 @@ export const RowEditor: React.FC<Props> = ({ open, onClose, columns, row, onSave
 
   return (
     <Modal title={isEdit ? '编辑行' : '新增行'} open={open} onClose={onClose} onOk={handleSave} width={560}>
-      {error && <div style={{ color: 'var(--color-red)', marginBottom: 12 }}>{error}</div>}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError('')} style={{ marginBottom: 12 }} />}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 400, overflow: 'auto' }}>
         {columns.filter((c) => c.name !== '_rowIndex').map((col) => (
           <div key={col.name}>

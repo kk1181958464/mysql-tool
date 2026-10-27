@@ -5,6 +5,8 @@ import type { BackupSchedule as ScheduleType } from '../../../../shared/types/ta
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props { onBack: () => void }
 
@@ -17,6 +19,7 @@ const PRESETS: Record<string, string> = {
 const BackupSchedule: React.FC<Props> = ({ onBack }) => {
   const [schedules, setSchedules] = useState<ScheduleType[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState({ id: '', databaseName: '', cronExpression: '0 2 * * *', backupType: 'full', compress: true, retentionDays: 30, isActive: true })
   const [editMode, setEditMode] = useState(false)
@@ -29,10 +32,11 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
   const load = useCallback(async () => {
     if (!connId) return
     setLoading(true)
+    setLoadError(null)
     try {
       const res = await api.backup.schedule({ connectionId: connId, action: 'list' })
       setSchedules(Array.isArray(res) ? res : [])
-    } catch (e) { console.warn('[BackupSchedule] 加载失败:', e) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
   }, [connId])
 
   useEffect(() => { load() }, [load])
@@ -55,7 +59,7 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
       await api.backup.schedule({ connectionId: connId, action: editMode ? 'update' : 'create', ...form, backupType: form.backupType as 'full' | 'structure' | 'data' })
       setSuccess(editMode ? '更新成功' : '创建成功'); setTimeout(() => setSuccess(null), 2000)
       setModalOpen(false); load()
-    } catch (e: any) { setError(e.message || '操作失败') }
+    } catch (e: any) { setError(getErrorMessage(e, '操作失败')) }
   }
 
   const remove = async (id: string) => {
@@ -80,7 +84,7 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
         isActive: active,
       })
       load()
-    } catch (e: any) { setError(e.message || '操作失败') }
+    } catch (e: any) { setError(getErrorMessage(e, '操作失败')) }
   }
 
   const columns = [
@@ -101,7 +105,8 @@ const BackupSchedule: React.FC<Props> = ({ onBack }) => {
 
   return (
     <div style={{ padding: 16 }}>
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
+      {loadError && <ErrorNotice error={loadError} fallbackTitle="加载失败" onRetry={load} onClose={() => setLoadError(null)} style={{ marginBottom: 12 }} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
       <Toast open={Boolean(success)} message={success} type="success" />
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>

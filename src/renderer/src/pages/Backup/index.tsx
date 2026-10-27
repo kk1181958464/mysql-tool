@@ -7,6 +7,8 @@ import { api } from '../../utils/ipc'
 import BackupWizard from './BackupWizard'
 import RestoreWizard from './RestoreWizard'
 import BackupSchedule from './BackupSchedule'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 const formatBytes = (bytes: number): string => {
   if (bytes === 0) return '0 B'
@@ -19,15 +21,17 @@ const Backup: React.FC = () => {
   const [view, setView] = useState<'main' | 'backup' | 'restore' | 'schedule'>('main')
   const [records, setRecords] = useState<BackupRecord[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const connId = useConnectionStore((s) => s.activeConnectionId)
 
   const load = useCallback(async () => {
     if (!connId) return
     setLoading(true)
+    setLoadError(null)
     try {
       const res = await api.backup.list(connId)
       setRecords(Array.isArray(res) ? res : [])
-    } catch (e) { console.warn('[Backup] 加载失败:', e) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
   }, [connId])
 
   useEffect(() => { load() }, [load])
@@ -50,6 +54,7 @@ const Backup: React.FC = () => {
 
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
+      {loadError && <ErrorNotice error={loadError} fallbackTitle="加载失败" onRetry={load} onClose={() => setLoadError(null)} style={{ marginBottom: 12 }} />}
       <Space style={{ marginBottom: 16 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setView('backup')}>创建备份</Button>
         <Button icon={<RollbackOutlined />} onClick={() => setView('restore')}>恢复</Button>

@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import type { QueryResult } from '../../../shared/types/query'
 import type { ExplainResult } from '../../../shared/types/query'
 import { api } from '../utils/ipc'
+import { getErrorMessage } from '../utils/error-info'
 
 export function useQuery() {
   const [loading, setLoading] = useState(false)
@@ -13,7 +14,7 @@ export function useQuery() {
     try {
       return await api.query.execute(connectionId, sql, database)
     } catch (e: any) {
-      setError(e.message ?? String(e))
+      setError(getErrorMessage(e, '执行失败'))
       return null
     } finally {
       setLoading(false)
@@ -26,7 +27,7 @@ export function useQuery() {
     try {
       return await api.query.explain(connectionId, sql, database)
     } catch (e: any) {
-      setError(e.message ?? String(e))
+      setError(getErrorMessage(e, '执行失败'))
       return null
     } finally {
       setLoading(false)
@@ -37,7 +38,7 @@ export function useQuery() {
     try {
       return await api.query.format(sql)
     } catch (e: any) {
-      setError(e.message ?? String(e))
+      setError(getErrorMessage(e, '执行失败'))
       return null
     }
   }, [])

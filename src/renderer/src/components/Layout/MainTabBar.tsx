@@ -1,18 +1,20 @@
-import { useState, lazy, Suspense, useEffect, useCallback, useRef, useLayoutEffect } from 'react'
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react'
 import { CloseOutlined, CodeOutlined, TableOutlined, LayoutOutlined, DatabaseOutlined, DashboardOutlined, SwapOutlined, SaveOutlined, PlusOutlined, ApiOutlined } from '@ant-design/icons'
 import { useTabStore, Tab } from '../../stores/tab.store'
 import { isTabDirty, registerTabCloseGuard } from '../../stores/tab-close-guard'
 import { Modal, Button, Table } from '../../components/ui'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore, OPEN_CONNECTION_MANAGER_EVENT } from '../../stores/app.store'
+import { lazyPage } from '../../utils/lazy-page'
 
-const QueryEditor = lazy(() => import('../../pages/QueryEditor'))
-const DataBrowser = lazy(() => import('../../pages/DataBrowser'))
-const TableDesigner = lazy(() => import('../../pages/TableDesigner'))
-const ObjectsBrowser = lazy(() => import('../../pages/ObjectsBrowser').then((module) => ({ default: module.ObjectsBrowser })))
-const Performance = lazy(() => import('../../pages/Performance'))
-const ImportExport = lazy(() => import('../../pages/ImportExport'))
-const Backup = lazy(() => import('../../pages/Backup'))
+const QueryEditor = lazyPage(() => import('../../pages/QueryEditor'))
+const DataBrowser = lazyPage(() => import('../../pages/DataBrowser'))
+const TableDesigner = lazyPage(() => import('../../pages/TableDesigner'))
+const ObjectsBrowser = lazyPage(() => import('../../pages/ObjectsBrowser').then((module) => ({ default: module.ObjectsBrowser })))
+const Performance = lazyPage(() => import('../../pages/Performance'))
+const ImportExport = lazyPage(() => import('../../pages/ImportExport'))
+const Backup = lazyPage(() => import('../../pages/Backup'))
+const PAGES = [QueryEditor, DataBrowser, TableDesigner, ObjectsBrowser, Performance, ImportExport, Backup]
 const MAX_KEEP_ALIVE_BACKGROUND_TABS = 8
 const TAB_CLOSE_ANIMATION_MS = 200
 const MAX_ANIMATED_CLOSE_TABS = 6
@@ -101,6 +103,12 @@ export default function MainTabBar() {
   const lastUsedAtRef = useRef<Record<string, number>>({})
 
   const pendingResolveRef = useRef<((ok: boolean) => void) | null>(null)
+
+  useEffect(() => {
+    const preloadAll = () => { PAGES.forEach((page) => { page.preload().catch(() => {}) }) }
+    const id = window.requestIdleCallback ? window.requestIdleCallback(preloadAll, { timeout: 3000 }) : window.setTimeout(preloadAll, 1500)
+    return () => { window.cancelIdleCallback ? window.cancelIdleCallback(id) : window.clearTimeout(id) }
+  }, [])
 
   const requestCloseTabs = useCallback(async (targetTabs: Tab[]) => {
     if (targetTabs.length === 0) return true
@@ -337,46 +345,32 @@ export default function MainTabBar() {
     switch (tab.type) {
       case 'query':
         return (
-          <Suspense fallback={<PageLoading label="查询编辑器" />}>
-            <QueryEditor tabId={tab.id} />
-          </Suspense>
+          <QueryEditor tabId={tab.id} fallback={<PageLoading label="查询编辑器" />} />
         )
       case 'data':
         return (
-          <Suspense fallback={<PageLoading label="数据浏览" />}>
-            <DataBrowser tabId={tab.id} />
-          </Suspense>
+          <DataBrowser tabId={tab.id} fallback={<PageLoading label="数据浏览" />} />
         )
       case 'design':
         return (
-          <Suspense fallback={<PageLoading label="表设计" />}>
-            <TableDesigner tabId={tab.id} />
-          </Suspense>
+          <TableDesigner tabId={tab.id} fallback={<PageLoading label="表设计" />} />
         )
       case 'objects':
         if (!tab.connectionId || !tab.database) return <div style={{ padding: 20, color: 'var(--text-muted)' }}>无效的数据库连接</div>
         return (
-          <Suspense fallback={<PageLoading label="对象浏览" />}>
-            <ObjectsBrowser connectionId={tab.connectionId} database={tab.database} />
-          </Suspense>
+          <ObjectsBrowser connectionId={tab.connectionId} database={tab.database} fallback={<PageLoading label="对象浏览" />} />
         )
       case 'performance':
         return (
-          <Suspense fallback={<PageLoading label="性能工具" />}>
-            <Performance active={isActive} />
-          </Suspense>
+          <Performance active={isActive} fallback={<PageLoading label="性能工具" />} />
         )
       case 'import-export':
         return (
-          <Suspense fallback={<PageLoading label="导入导出" />}>
-            <ImportExport />
-          </Suspense>
+          <ImportExport fallback={<PageLoading label="导入导出" />} />
         )
       case 'backup':
         return (
-          <Suspense fallback={<PageLoading label="备份" />}>
-            <Backup />
-          </Suspense>
+          <Backup fallback={<PageLoading label="备份" />} />
         )
       default:
         return null

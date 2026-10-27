@@ -12,6 +12,8 @@ import {
 import { useConnectionStore } from '../../stores/connection.store'
 import type { ConnectionConfig } from '../../../../shared/types/connection'
 import { v4 as uuid } from 'uuid'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   onSelect: (conn: ConnectionConfig) => void
@@ -60,7 +62,7 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
         onClose()
       }
     } catch (e: any) {
-      setError(e.message || '操作失败')
+      setError(getErrorMessage(e, '操作失败'))
     }
   }
 
@@ -80,7 +82,7 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
         />
         <Button type="primary" onClick={onNew} style={{ width: '100%' }}><PlusOutlined /> 新建</Button>
       </div>
-      {error && <div style={{ color: 'var(--error)', fontSize: 12 }}>{error}</div>}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError('')} />}
       <div style={{ flex: 1, overflow: 'auto' }}>
         {Object.entries(grouped).map(([group, items]) => (
           <div key={group} style={{ marginBottom: 12 }}>

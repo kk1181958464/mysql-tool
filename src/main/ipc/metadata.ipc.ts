@@ -7,7 +7,7 @@ import { validateConnectionId, validateIdentifier } from '../utils/query-request
 function normalizeMetaError(err: any): Error {
   const msg = err?.message || String(err)
   if (isConnectionLostError(err)) {
-    return new Error(`连接已失效，请重试或重新连接。(${msg})`)
+    return new Error('连接已失效，请重试或重新连接')
   }
   return err instanceof Error ? err : new Error(msg)
 }

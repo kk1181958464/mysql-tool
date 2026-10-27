@@ -1,3 +1,4 @@
+import { formatErrorMessage } from '../../shared/error-message'
 import mysql from 'mysql2/promise'
 import type { ConnectionConfig, ConnectionStatus } from '../../shared/types/connection'
 import { createTunnel } from './ssh-tunnel'
@@ -440,7 +441,7 @@ export async function connect(config: ConnectionConfig): Promise<ConnectionStatu
       elapsedMs: Date.now() - startedAt,
       error: err.message,
     })
-    return { id: config.id, connected: false, error: err.message }
+    return { id: config.id, connected: false, error: formatErrorMessage(err, '连接失败') }
   }
 }
 
@@ -462,7 +463,7 @@ export async function disconnect(id: string): Promise<void> {
 
 export function getPool(id: string): mysql.Pool {
   const pool = pools.get(id)
-  if (!pool) throw new Error(`No active connection for id: ${id}`)
+  if (!pool) throw new Error('连接已断开，请重新连接后再试')
   return pool
 }
 
@@ -524,7 +525,7 @@ export async function testConnection(config: ConnectionConfig): Promise<Connecti
     const version = (rows as Record<string, string>[])[0]?.version || ''
     return { id: config.id, connected: true, serverVersion: version }
   } catch (err: any) {
-    return { id: config.id, connected: false, error: err.message }
+    return { id: config.id, connected: false, error: formatErrorMessage(err, '连接失败') }
   } finally {
     if (conn) {
       try { await conn.end() } catch { /* 测试连接已失效，忽略清理异常 */ }

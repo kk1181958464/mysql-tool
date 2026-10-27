@@ -4,6 +4,8 @@ import { ReloadOutlined, StopOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface ProcessItem {
   Id: number; User: string; Host: string; db: string | null
@@ -22,6 +24,7 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
   const [metrics, setMetrics] = useState({ connections: 0, queriesPerSec: 0, threads: 0, bufferPool: '' })
   const [autoRefresh, setAutoRefresh] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [varSearch, setVarSearch] = useState('')
   const [statusSearch, setStatusSearch] = useState('')
   const [killConfirmId, setKillConfirmId] = useState<number | null>(null)
@@ -33,6 +36,7 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
   const load = useCallback(async () => {
     if (!active || !connId) return
     setLoading(true)
+    setLoadError(null)
     try {
       const [procRes, varRes, statRes, innoRes] = await Promise.all([
         api.perf.processList(connId), api.perf.variables(connId), api.perf.status(connId), api.perf.innodbStatus(connId),
@@ -50,7 +54,7 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
         threads: parseInt(findStat('Threads_running')),
         bufferPool: `${(parseInt(findStat('Innodb_buffer_pool_pages_data')) / Math.max(1, parseInt(findStat('Innodb_buffer_pool_pages_total'))) * 100).toFixed(1)}%`,
       })
-    } catch (e) { console.warn('[ServerMonitor] 加载失败:', e) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
   }, [active, connId])
 
   useEffect(() => {
@@ -84,6 +88,7 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {loadError && <ErrorNotice error={loadError} fallbackTitle="加载失败" onRetry={load} onClose={() => setLoadError(null)} style={{ marginBottom: 12 }} />}
       <Row gutter={16}>
         <Col span={6}><Card size="small"><Statistic title="连接数" value={metrics.connections} /></Card></Col>
         <Col span={6}><Card size="small"><Statistic title="Queries" value={metrics.queriesPerSec} /></Card></Col>

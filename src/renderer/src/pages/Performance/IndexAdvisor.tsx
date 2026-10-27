@@ -5,6 +5,8 @@ import type { ExplainResult } from '../../../../shared/types/query'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 const ACCESS_TYPE_COLORS: Record<string, string> = {
   ALL: 'error', index: 'warning', range: 'warning', ref: 'success', eq_ref: 'primary', const: 'primary', system: 'primary',
@@ -51,14 +53,14 @@ const IndexAdvisor: React.FC = () => {
         }
       }
       setSuggestions(suggs)
-    } catch (e: any) { setError(e.message || String(e)) } finally { setLoading(false) }
+    } catch (e: any) { setError(getErrorMessage(e, '操作失败')) } finally { setLoading(false) }
   }
 
   const applyIndex = async (s: IndexSuggestion) => {
     if (!connId || !db) return
     setApplying(s.sql)
     try { await api.query.execute(connId, s.sql, db); setSuggestions((prev) => prev.filter((x) => x.sql !== s.sql)) }
-    catch (e: any) { setError(e.message || String(e)) } finally { setApplying(null) }
+    catch (e: any) { setError(getErrorMessage(e, '操作失败')) } finally { setApplying(null) }
   }
 
   const explainColumns = [
@@ -76,7 +78,7 @@ const IndexAdvisor: React.FC = () => {
         <textarea value={sql} onChange={(e) => setSql(e.target.value)} placeholder="粘贴慢查询 SQL..." className="ui-input" style={{ flex: 1, minHeight: 80, padding: 8, fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }} />
         <Button type="primary" onClick={analyze} disabled={loading}><BulbOutlined /> {loading ? '分析中...' : '分析'}</Button>
       </div>
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} />}
       {explainResults.length > 0 && <Card title="EXPLAIN 结果" size="small"><Table dataSource={explainResults} columns={explainColumns} rowKey={(r) => `${r.id}-${r.table}`} size="small" /></Card>}
       {suggestions.length > 0 && (
         <Card title={<span><BulbOutlined /> 索引建议</span>} size="small">

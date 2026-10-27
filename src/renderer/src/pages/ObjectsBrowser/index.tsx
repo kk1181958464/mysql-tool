@@ -12,6 +12,8 @@ import { api } from '../../utils/ipc'
 import { quoteId } from '../DataBrowser/table-pagination'
 import type { TableInfo } from '../../../../shared/types/metadata'
 import type { ImportProgressPayload } from '../../../../preload/types'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   connectionId: string
@@ -43,7 +45,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set())
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false)
   const [batchTruncateTargets, setBatchTruncateTargets] = useState<string[]>([])
-  const [noticeModal, setNoticeModal] = useState<{ title: string; message: string } | null>(null)
+  const [noticeModal, setNoticeModal] = useState<{ title: string; message: string; isError?: boolean } | null>(null)
   const lastClickedRef = useRef<string | null>(null)
   const latestStatusRequestKeyRef = useRef('')
   const [importing, setImporting] = useState(false)
@@ -60,7 +62,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const pendingImport = useRef<string | null>(null)
   const exportCancelledRef = useRef(false)
   const exportSessionActiveRef = useRef(false)
-  const showError = (message: string) => setNoticeModal({ title: '操作失败', message })
+  const showError = (error: unknown, title = '操作失败') => setNoticeModal({ title, message: getErrorMessage(error, title), isError: true })
   const showInfo = (message: string) => setNoticeModal({ title: '提示', message })
 
   const readFile = (file: File): Promise<string> => new Promise((resolve, reject) => {
@@ -98,7 +100,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         }
         handleRefresh()
       } catch (e: any) {
-        setImportMsg('导入失败：' + (e.message || e))
+        setImportMsg(`导入失败：${getErrorMessage(e, '导入失败')}`)
       } finally {
         pendingImport.current = null
         setImporting(false)
@@ -115,7 +117,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       const content = await api.dialog.readFile(filePath)
       await executeSqlContent(content)
     } catch (e: any) {
-      setImportMsg(e.message || '导入失败')
+      setImportMsg(`导入失败：${getErrorMessage(e, '导入失败')}`)
     }
   }
 
@@ -169,12 +171,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     } catch (e: any) {
       if (latestStatusRequestKeyRef.current !== requestKey) return
       console.error('loadTableStatus error:', e)
-      const rawMessage = e?.message || '加载失败'
-      const lower = String(rawMessage).toLowerCase()
-      const isConnLost = lower.includes('connection lost')
-        || lower.includes('server closed the connection')
-        || lower.includes('连接已失效')
-      setError(isConnLost ? '连接已失效，请点击刷新或重新连接后重试' : rawMessage)
+      setError(getErrorMessage(e, '加载表信息失败'))
     }
 
     if (latestStatusRequestKeyRef.current === requestKey) {
@@ -229,7 +226,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       setSelectedTables(new Set())
       setExportSql(null)
       handleRefresh()
-    } catch (e: any) { showError(e.message || '批量删除失败') }
+    } catch (e: any) { showError(e, '批量删除失败') }
     setOperating(false)
   }
 
@@ -245,7 +242,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       }
       setBatchTruncateTargets([])
     } catch (e: any) {
-      showError(e.message || '清空失败')
+      showError(e, '清空失败')
     } finally {
       setOperating(false)
     }
@@ -338,7 +335,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             parts.push('-- ----------------------------')
             parts.push(`DROP TABLE IF EXISTS \`${n}\`;`)
             parts.push(ddlSql ? (ddlSql.trimEnd().endsWith(';') ? ddlSql : ddlSql + ';') : '')
-          } catch (e: any) { showError(e.message || '导出失败'); return }
+          } catch (e: any) { showError(e, '导出失败'); return }
         }
         setExportSql({ tableName: names.length > 1 ? database : names[0], sql: parts.join('\n') })
         break
@@ -373,7 +370,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             out.push('-- ----------------------------')
             out.push('-- INSERT statements omitted in preview. Click "Download File" to export the full structure and data.')
             out.push('')
-          } catch (e: any) { showError(e.message || '导出失败'); setPreviewLoading(false); return }
+          } catch (e: any) { showError(e, '导出失败'); setPreviewLoading(false); return }
         }
 
         out.push('SET FOREIGN_KEY_CHECKS = 1;')
@@ -392,7 +389,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       setExportSql(null)
       handleRefresh()
       setDeleteConfirm(null)
-    } catch (e: any) { showError(e.message || '删除失败') }
+    } catch (e: any) { showError(e, '删除失败') }
     setOperating(false)
   }
 
@@ -402,7 +399,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     try {
       await api.query.execute(connectionId, `TRUNCATE TABLE ${quoteId(database)}.${quoteId(truncateConfirm)}`)
       setTruncateConfirm(null)
-    } catch (e: any) { showError(e.message || '清空失败') }
+    } catch (e: any) { showError(e, '清空失败') }
     setOperating(false)
   }
 
@@ -413,7 +410,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       await api.query.execute(connectionId, `RENAME TABLE ${quoteId(database)}.${quoteId(renameModal.tableName)} TO ${quoteId(database)}.${quoteId(renameModal.newName)}`)
       handleRefresh()
       setRenameModal(null)
-    } catch (e: any) { showError(e.message || '重命名失败') }
+    } catch (e: any) { showError(e, '重命名失败') }
     setOperating(false)
   }
 
@@ -430,7 +427,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
       }
       setExportSql({ tableName, sql, includeData, selectedNames: [tableName] })
-    } catch (e: any) { showError(e.message || '导出失败') }
+    } catch (e: any) { showError(e, '导出失败') }
     finally { setPreviewLoading(false) }
   }
 
@@ -481,7 +478,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       }
     } catch (e: any) {
       exportSessionActiveRef.current = false
-      showError(e.message || '导出失败')
+      showError(e, '导出失败')
       setExportProgress(null)
       setExporting(false)
       setExportModalOpen(false)
@@ -664,8 +661,16 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       {/* 统计信息 */}
       <div style={{ marginBottom: 8, fontSize: 12, color: 'var(--text-muted)' }}>
         共 {mergedTables.length} 个表
-        {error && <span style={{ color: 'var(--error)', marginLeft: 12 }}>{error}</span>}
       </div>
+      {error && (
+        <ErrorNotice
+          error={error}
+          fallbackTitle="加载表信息失败"
+          onRetry={() => loadTableStatus(true)}
+          onClose={() => setError('')}
+          style={{ marginBottom: 8 }}
+        />
+      )}
 
       {/* 内容区 */}
       <div
@@ -1014,11 +1019,11 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       <Modal
         open={!!importMsg}
         title="SQL 导入"
-        width={400}
+        width={480}
         onClose={() => setImportMsg(null)}
         footer={<Button variant="primary" onClick={() => setImportMsg(null)}>确定</Button>}
       >
-        <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13 }}>{importMsg}</div>
+        <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13, maxHeight: 360, overflow: 'auto', userSelect: 'text' }}>{importMsg}</div>
       </Modal>
 
       <Modal
@@ -1028,9 +1033,13 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         onClose={() => setNoticeModal(null)}
         footer={<Button variant="primary" onClick={() => setNoticeModal(null)}>确定</Button>}
       >
-        <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 13 }}>
-          {noticeModal?.message}
-        </div>
+        {noticeModal?.isError ? (
+          <ErrorNotice error={noticeModal.message} fallbackTitle={noticeModal.title} />
+        ) : (
+          <div style={{ padding: '8px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13, maxHeight: 320, overflow: 'auto' }}>
+            {noticeModal?.message}
+          </div>
+        )}
       </Modal>
     </div>
   )

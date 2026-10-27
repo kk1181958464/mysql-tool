@@ -9,6 +9,8 @@ import { StructureDiff } from './StructureDiff'
 import { useTabStore, DesignTab } from '../../stores/tab.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 import type { TableDesign, ColumnDesign, IndexDesign, ForeignKeyDesign } from '../../../../shared/types/table-design'
 
 const emptyDesign: TableDesign = {
@@ -94,7 +96,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       setDesign(d)
       setOriginal(JSON.parse(JSON.stringify(d)))
     } catch (e: any) {
-      setErrorMsg(e.message || '加载表结构失败')
+      setErrorMsg(getErrorMessage(e, '加载表结构失败'))
     }
   }
 
@@ -176,13 +178,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       setDesignDirty(tabId, false)
       setTimeout(() => setSuccessMsg(null), 3000)
     } catch (e: any) {
-      const msg = e.message || '操作失败'
-      // 转换常见错误为友好提示
-      if (msg.includes('Duplicate entry')) setErrorMsg('数据重复，请检查唯一约束')
-      else if (msg.includes('Duplicate column')) setErrorMsg('字段名重复，请检查')
-      else if (msg.includes('Table') && msg.includes('already exists')) setErrorMsg('表名已存在')
-      else if (msg.includes('syntax')) setErrorMsg('SQL语法错误，请检查字段定义')
-      else setErrorMsg(msg)
+      setErrorMsg(getErrorMessage(e, isEdit ? '修改表失败' : '创建表失败'))
     } finally {
       setIsSaving(false)
     }
@@ -313,14 +309,12 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       {/* 错误弹窗 */}
       <Modal
         open={!!errorMsg}
-        title="错误"
-        width={360}
+        title={isEdit ? '修改表失败' : '创建表失败'}
+        width={460}
         onClose={() => setErrorMsg(null)}
         footer={<Button variant="primary" onClick={() => setErrorMsg(null)}>确定</Button>}
       >
-        <div style={{ padding: '8px 0', color: 'var(--error)' }}>
-          {errorMsg}
-        </div>
+        {errorMsg && <ErrorNotice error={errorMsg} fallbackTitle={isEdit ? '修改表失败' : '创建表失败'} />}
       </Modal>
     </div>
   )

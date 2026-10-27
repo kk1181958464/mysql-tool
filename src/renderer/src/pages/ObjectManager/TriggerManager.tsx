@@ -6,10 +6,13 @@ import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 const TriggerManager: React.FC = () => {
   const [triggers, setTriggers] = useState<TriggerInfo[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [viewSql, setViewSql] = useState<string | null>(null)
   const [form, setForm] = useState({ name: '', table: '', timing: 'BEFORE', event: 'INSERT', body: '' })
@@ -22,10 +25,11 @@ const TriggerManager: React.FC = () => {
   const load = useCallback(async () => {
     if (!connId || !db) return
     setLoading(true)
+    setLoadError(null)
     try {
       const res = await api.meta.triggers(connId, db)
       setTriggers(Array.isArray(res) ? res : [])
-    } catch (e) { console.warn('[TriggerManager] 加载失败:', e) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])
@@ -38,7 +42,7 @@ const TriggerManager: React.FC = () => {
       await api.object.createTrigger(connId, db, sql)
       setSuccess('触发器创建成功'); setTimeout(() => setSuccess(null), 2000)
       setModalOpen(false); load()
-    } catch (e: any) { setError(e.message || '创建失败') }
+    } catch (e: any) { setError(getErrorMessage(e, '创建失败')) }
   }
 
   const drop = async (name: string) => { await api.object.drop(connId!, db!, 'TRIGGER', name); load() }
@@ -61,7 +65,8 @@ const TriggerManager: React.FC = () => {
 
   return (
     <div>
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
+      {loadError && <ErrorNotice error={loadError} fallbackTitle="加载失败" onRetry={load} onClose={() => setLoadError(null)} style={{ marginBottom: 12 }} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
       <Toast open={Boolean(success)} message={success} type="success" />
       <div style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { setForm({ name: '', table: '', timing: 'BEFORE', event: 'INSERT', body: '' }); setModalOpen(true) }}>新建触发器</Button>

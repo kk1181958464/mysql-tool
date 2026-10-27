@@ -5,10 +5,13 @@ import type { ViewInfo } from '../../../../shared/types/metadata'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 const ViewManager: React.FC = () => {
   const [views, setViews] = useState<ViewInfo[]>([])
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [viewSql, setViewSql] = useState<string | null>(null)
   const [form, setForm] = useState({ name: '', definition: '', algorithm: 'UNDEFINED', security: 'DEFINER' })
@@ -21,10 +24,11 @@ const ViewManager: React.FC = () => {
   const load = useCallback(async () => {
     if (!connId || !db) return
     setLoading(true)
+    setLoadError(null)
     try {
       const res = await api.meta.views(connId, db)
       setViews(Array.isArray(res) ? res : [])
-    } catch (e) { console.warn('[ViewManager] 加载失败:', e) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
   }, [connId, db])
 
   useEffect(() => { load() }, [load])
@@ -52,7 +56,7 @@ const ViewManager: React.FC = () => {
       setModalOpen(false)
       load()
     } catch (e: any) {
-      setError(e.message || '保存失败')
+      setError(getErrorMessage(e, '保存失败'))
     }
   }
 
@@ -78,7 +82,8 @@ const ViewManager: React.FC = () => {
 
   return (
     <div>
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
+      {loadError && <ErrorNotice error={loadError} fallbackTitle="加载失败" onRetry={load} onClose={() => setLoadError(null)} style={{ marginBottom: 12 }} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
       <Toast open={Boolean(success)} message={success} type="success" />
       <div style={{ marginBottom: 12 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建视图</Button>

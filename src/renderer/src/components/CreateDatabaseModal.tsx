@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { Modal, Input, Select, Button } from './ui'
 import { api } from '../utils/ipc'
 import { useDatabaseStore } from '../stores/database.store'
+import { ErrorNotice } from '../components/ErrorNotice'
+import { getErrorMessage } from '../utils/error-info'
 
 interface Props {
   open: boolean
@@ -86,7 +88,7 @@ export function CreateDatabaseModal({ open, connectionId, onClose }: Props) {
       await loadDatabases(connectionId, true)
       onClose()
     } catch (e: any) {
-      setError(e.message || '创建失败')
+      setError(getErrorMessage(e, '创建失败'))
     } finally {
       setLoading(false)
     }
@@ -108,7 +110,7 @@ export function CreateDatabaseModal({ open, connectionId, onClose }: Props) {
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {error && <div style={{ color: 'var(--error)', fontSize: 12 }}>{error}</div>}
+        {error && <ErrorNotice key={error} error={error} onClose={() => setError('')} />}
         <div>
           <label style={{ display: 'block', marginBottom: 4, fontSize: 13 }}>数据库名称</label>
           <Input

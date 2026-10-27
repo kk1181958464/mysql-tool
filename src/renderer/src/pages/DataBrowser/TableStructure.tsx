@@ -5,6 +5,8 @@ import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
 import { api } from '../../utils/ipc'
 import type { ColumnDetail, IndexInfo, ForeignKeyInfo } from '../../../../shared/types/metadata'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   connectionId: string
@@ -19,17 +21,23 @@ export const TableStructure: React.FC<Props> = ({ connectionId, database, table 
   const [foreignKeys, setForeignKeys] = useState<ForeignKeyInfo[]>([])
   const [ddl, setDdl] = useState('')
   const [activeKey, setActiveKey] = useState('columns')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
   const cacheKey = `${connectionId}:${database}:${table}`
   const cols: ColumnDetail[] = columnCache[cacheKey] || []
 
   useEffect(() => {
     if (!connectionId || !database || !table) return
-    loadColumns(connectionId, database, table)
-    api.meta.indexes(connectionId, database, table).then(setIndexes).catch(() => {})
-    api.meta.foreignKeys(connectionId, database, table).then(setForeignKeys).catch(() => {})
-    api.meta.tableDDL(connectionId, database, table).then(setDdl).catch(() => {})
-  }, [connectionId, database, table])
+    let cancelled = false
+    setLoadError(null)
+    const fail = (e: unknown) => { if (!cancelled) setLoadError(getErrorMessage(e, '加载表结构失败')) }
+    loadColumns(connectionId, database, table, reloadKey > 0).catch(fail)
+    api.meta.indexes(connectionId, database, table).then((v) => { if (!cancelled) setIndexes(v) }).catch(fail)
+    api.meta.foreignKeys(connectionId, database, table).then((v) => { if (!cancelled) setForeignKeys(v) }).catch(fail)
+    api.meta.tableDDL(connectionId, database, table).then((v) => { if (!cancelled) setDdl(v) }).catch(fail)
+    return () => { cancelled = true }
+  }, [connectionId, database, table, reloadKey])
 
   const columnsCols = [
     { key: 'name', title: '名称', dataIndex: 'name', width: 140 },
@@ -68,6 +76,15 @@ export const TableStructure: React.FC<Props> = ({ connectionId, database, table 
           <EditOutlined /> 在设计器中编辑
         </Button>
       </div>
+      {loadError && (
+        <ErrorNotice
+          error={loadError}
+          fallbackTitle="加载表结构失败"
+          onRetry={() => setReloadKey((k) => k + 1)}
+          onClose={() => setLoadError(null)}
+          style={{ marginBottom: 8 }}
+        />
+      )}
       <Tabs
         activeKey={activeKey}
         onChange={setActiveKey}
@@ -93,7 +110,7 @@ export const TableStructure: React.FC<Props> = ({ connectionId, database, table 
             label: 'DDL',
             children: activeKey === 'ddl' ? (
               <pre style={{ background: 'var(--bg-overlay)', padding: 12, borderRadius: 4, overflow: 'auto', fontSize: 12, fontFamily: 'monospace', flex: 1, margin: 0 }}>
-                {ddl || '加载中...'}
+                {ddl || (loadError ? '加载失败' : '加载中...')}
               </pre>
             ) : null,
           },

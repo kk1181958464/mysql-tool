@@ -128,15 +128,7 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
         logger.error('[ssh-tunnel] SSH error', { message: err?.message, debugTail })
 
         if (String(err?.message || '') === 'All configured authentication methods failed') {
-          const hint = config.sshPrivateKey
-            ? '（请确认：1) 选择的是私钥而非公钥；2) 私钥对应的公钥已写入服务器 ~/.ssh/authorized_keys；3) 服务器允许该用户使用 publickey 登录）'
-            : ''
-
-          const debugText = debugTail.length
-            ? `\n\nssh2 调试尾段（最后 ${debugTail.length} 行）:\n${debugTail.join('\n')}`
-            : '\n\nssh2 调试尾段：无（可能未触发 debug 回调）'
-
-          const wrapped = new Error(`SSH 认证失败: ${err.message}${hint}${debugText}`)
+          const wrapped = new Error(`SSH 认证失败：${config.sshPrivateKey ? '私钥' : '密码'}或用户名不正确 (${err.message})`)
           ;(wrapped as Error & { cause?: unknown }).cause = err
           reject(wrapped)
           return

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Modal, Button } from './ui'
+import { Modal, Button, toast } from './ui'
+import { formatErrorSummary } from '../utils/error-info'
 import { SunOutlined, MoonOutlined, LaptopOutlined, ExportOutlined, ImportOutlined } from '@ant-design/icons'
 import { useAppStore } from '../stores/app.store'
 import { useConnectionStore } from '../stores/connection.store'
@@ -47,7 +48,6 @@ export default function SettingsModal({ open, onClose }: Props) {
     paginationMode,
     setPaginationMode,
   } = useAppStore()
-  const [msg, setMsg] = useState('')
   const [rowsPerPageInput, setRowsPerPageInput] = useState(String(rowsPerPage))
 
   useEffect(() => {
@@ -61,16 +61,16 @@ export default function SettingsModal({ open, onClose }: Props) {
     setRowsPerPageInput(String(normalized))
 
     if (normalized !== Number(raw)) {
-      setMsg(`⚠ 每页行数已自动修正为 ${normalized}（允许范围 ${TABLE_ROWS_PER_PAGE_MIN}-${TABLE_ROWS_PER_PAGE_MAX}）`)
+      toast.warning(`每页行数已自动修正为 ${normalized}（允许范围 ${TABLE_ROWS_PER_PAGE_MIN}-${TABLE_ROWS_PER_PAGE_MAX}）`)
     }
 
     try {
       await setRowsPerPage(normalized)
       if (normalized === Number(raw)) {
-        setMsg('✓ 每页行数已保存')
+        toast.success('每页行数已保存')
       }
     } catch (e: any) {
-      setMsg('✗ ' + (e.message || '每页行数保存失败'))
+      toast.error(formatErrorSummary(e, '每页行数保存失败'))
     }
   }
 
@@ -93,9 +93,9 @@ export default function SettingsModal({ open, onClose }: Props) {
         paginationMode,
       }
       await api.dialog.writeFile(filePath, JSON.stringify(data, null, 2))
-      setMsg('✓ 导出成功')
+      toast.success('导出成功')
     } catch (e: any) {
-      setMsg('✗ ' + (e.message || '导出失败'))
+      toast.error(formatErrorSummary(e, '导出失败'))
     }
   }
 
@@ -124,9 +124,9 @@ export default function SettingsModal({ open, onClose }: Props) {
         await setPaginationMode(normalizePaginationMode(data.paginationMode))
       }
       await useConnectionStore.getState().loadConnections()
-      setMsg(`✓ 导入成功，共 ${data.connections?.length || 0} 个连接`)
+      toast.success(`导入成功，共 ${data.connections?.length || 0} 个连接`)
     } catch (e: any) {
-      setMsg('✗ ' + (e.message || '导入失败'))
+      toast.error(formatErrorSummary(e, '导入失败'))
     }
   }
 
@@ -241,7 +241,6 @@ export default function SettingsModal({ open, onClose }: Props) {
             </Button>
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>导出/导入连接信息、数据库备注、主题设置</div>
-          {msg && <div style={{ fontSize: 12, marginTop: 6, color: msg.startsWith('✓') ? 'var(--success)' : msg.startsWith('⚠') ? 'var(--warning, #f59e0b)' : 'var(--error)' }}>{msg}</div>}
         </div>
       </div>
     </Modal>

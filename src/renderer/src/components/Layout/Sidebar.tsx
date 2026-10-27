@@ -186,8 +186,9 @@ export default function Sidebar() {
   }
 
   useEffect(() => {
-    const open = () => {
-      setEditingConn(null)
+    const open = (event: Event) => {
+      const connId = (event as CustomEvent<{ connectionId?: string }>).detail?.connectionId
+      setEditingConn(connId ? useConnectionStore.getState().connections.find((c) => c.id === connId) ?? null : null)
       setShowConnManager(true)
     }
     window.addEventListener(OPEN_CONNECTION_MANAGER_EVENT, open)

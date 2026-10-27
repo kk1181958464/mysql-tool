@@ -5,6 +5,8 @@ import type { ExplainResult } from '../../../../shared/types/query'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 const ACCESS_TYPE_COLORS: Record<string, string> = {
   ALL: 'error', index: 'warning', range: 'warning', ref: 'success',
@@ -36,7 +38,7 @@ const ExplainView: React.FC = () => {
       }
       setWarnings(w)
     } catch (e: any) {
-      setError(e.message || String(e))
+      setError(getErrorMessage(e, '分析失败'))
     } finally {
       setLoading(false)
     }
@@ -71,7 +73,7 @@ const ExplainView: React.FC = () => {
         </Button>
       </div>
 
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} />}
 
       {warnings.length > 0 && (
         <Alert type="warning" message="性能警告" description={<ul style={{ margin: 0, paddingLeft: 20 }}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>} />

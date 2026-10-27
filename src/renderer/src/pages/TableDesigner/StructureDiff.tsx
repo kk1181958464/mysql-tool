@@ -4,6 +4,8 @@ import { useAppStore } from '../../stores/app.store'
 import { useConnectionStore } from '../../stores/connection.store'
 import { api } from '../../utils/ipc'
 import type { TableDesign, ColumnDesign } from '../../../../shared/types/table-design'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   open: boolean
@@ -69,7 +71,7 @@ export const StructureDiff: React.FC<Props> = ({ open, onClose, original, curren
       setSuccess('变更已应用')
       setTimeout(() => { setSuccess(null); onClose() }, 1500)
     } catch (e: any) {
-      setError(e.message || '应用失败')
+      setError(getErrorMessage(e, '应用失败'))
     }
   }
 
@@ -82,7 +84,7 @@ export const StructureDiff: React.FC<Props> = ({ open, onClose, original, curren
   return (
     <Modal title="结构差异" open={open} onClose={onClose} width={700}
       footer={<><Button onClick={onClose}>关闭</Button><Button type="primary" onClick={handleApply}>应用变更</Button></>}>
-      {error && <Alert type="error" message={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} style={{ marginBottom: 12 }} />}
       <Toast open={Boolean(success)} message={success} type="success" />
       <div style={{ marginBottom: 16 }}>
         {diff.added.length > 0 && (
