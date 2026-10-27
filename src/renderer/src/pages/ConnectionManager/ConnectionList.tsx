@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { ConnAvatar } from '../../components/ConnAvatar'
 import { Input, Button, Tag, Popconfirm, Tooltip } from '../../components/ui'
 import {
   PlusOutlined,
@@ -18,9 +19,10 @@ interface Props {
   onClose: () => void
   selectedId?: string | null
   previewColor?: string | null
+  previewIcon?: string | null
 }
 
-export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, selectedId, previewColor }) => {
+export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, selectedId, previewColor, previewIcon }) => {
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const {
@@ -86,7 +88,8 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
             {items.map((item) => {
               const connected = connectionStatuses[item.id]?.connected
               const isSelected = selectedId === item.id
-              const dotColor = isSelected && previewColor ? previewColor : (item.color || '#3b82f6')
+              const avatarColor = isSelected && previewColor ? previewColor : item.color
+              const avatarIcon = isSelected && previewIcon !== null && previewIcon !== undefined ? previewIcon : item.icon
               return (
                 <div
                   key={item.id}
@@ -98,25 +101,16 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
                     borderRadius: 6,
                     cursor: 'pointer',
                     marginBottom: 4,
-                    background: isSelected ? 'var(--bg-surface)' : 'transparent',
-                    border: isSelected ? '1px solid var(--accent)' : '1px solid transparent',
-                    gap: 8,
+                    background: isSelected ? 'var(--accent-bg)' : 'transparent',
+                    border: isSelected ? '1px solid color-mix(in srgb, var(--accent) 40%, transparent)' : '1px solid transparent',
+                    transition: 'background-color var(--transition), border-color var(--transition)',
+                    gap: 10,
                   }}
                 >
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
+                  <ConnAvatar conn={{ name: item.name, color: avatarColor, icon: avatarIcon }} status={connected ? 'connected' : 'idle'} size="small" />
                   <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                       <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>{item.name}</span>
-                      <span
-                        title={connected ? '已连接' : '未连接'}
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: '50%',
-                          flexShrink: 0,
-                          background: connected ? 'var(--success)' : 'var(--text-muted)',
-                        }}
-                      />
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.host}:{item.port}</div>
                   </div>

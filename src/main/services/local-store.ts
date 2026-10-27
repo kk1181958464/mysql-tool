@@ -22,6 +22,14 @@ export function init() {
   db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
   createTables()
+  migrateTables()
+}
+
+function migrateTables() {
+  const connectionColumns = new Set((db.prepare('PRAGMA table_info(connections)').all() as { name: string }[]).map((c) => c.name))
+  if (!connectionColumns.has('icon')) {
+    db.exec("ALTER TABLE connections ADD COLUMN icon TEXT DEFAULT ''")
+  }
 }
 
 function createTables() {
@@ -31,6 +39,7 @@ function createTables() {
       name TEXT NOT NULL,
       groupName TEXT DEFAULT '',
       color TEXT DEFAULT '',
+      icon TEXT DEFAULT '',
       host TEXT NOT NULL,
       port INTEGER DEFAULT 3306,
       user TEXT NOT NULL,
@@ -175,6 +184,7 @@ export function flushLocalStoreQueues(): void {
 function rowToConnection(row: any): ConnectionConfig {
   return {
     ...row,
+    icon: row.icon ?? '',
     password: decryptPassword(row.password),
     sshPassword: decryptPassword(row.sshPassword),
     sshPassphrase: decryptPassword(row.sshPassphrase),
@@ -194,9 +204,9 @@ export const connections = {
   save(conn: ConnectionSavePayload) {
     const now = new Date().toISOString()
     const stmt = db.prepare(`
-      INSERT INTO connections (id,name,groupName,color,host,port,user,password,databaseName,charset,timezone,poolMin,poolMax,connectTimeout,idleTimeout,sslEnabled,sslCa,sslCert,sslKey,sslMode,sshEnabled,sshHost,sshPort,sshUser,sshPassword,sshPrivateKey,sshPassphrase,sortOrder,createdAt,updatedAt)
-      VALUES (@id,@name,@groupName,@color,@host,@port,@user,@password,@databaseName,@charset,@timezone,@poolMin,@poolMax,@connectTimeout,@idleTimeout,@sslEnabled,@sslCa,@sslCert,@sslKey,@sslMode,@sshEnabled,@sshHost,@sshPort,@sshUser,@sshPassword,@sshPrivateKey,@sshPassphrase,@sortOrder,@createdAt,@updatedAt)
-      ON CONFLICT(id) DO UPDATE SET name=@name,groupName=@groupName,color=@color,host=@host,port=@port,user=@user,password=@password,databaseName=@databaseName,charset=@charset,timezone=@timezone,poolMin=@poolMin,poolMax=@poolMax,connectTimeout=@connectTimeout,idleTimeout=@idleTimeout,sslEnabled=@sslEnabled,sslCa=@sslCa,sslCert=@sslCert,sslKey=@sslKey,sslMode=@sslMode,sshEnabled=@sshEnabled,sshHost=@sshHost,sshPort=@sshPort,sshUser=@sshUser,sshPassword=@sshPassword,sshPrivateKey=@sshPrivateKey,sshPassphrase=@sshPassphrase,sortOrder=@sortOrder,updatedAt=@updatedAt
+      INSERT INTO connections (id,name,groupName,color,icon,host,port,user,password,databaseName,charset,timezone,poolMin,poolMax,connectTimeout,idleTimeout,sslEnabled,sslCa,sslCert,sslKey,sslMode,sshEnabled,sshHost,sshPort,sshUser,sshPassword,sshPrivateKey,sshPassphrase,sortOrder,createdAt,updatedAt)
+      VALUES (@id,@name,@groupName,@color,@icon,@host,@port,@user,@password,@databaseName,@charset,@timezone,@poolMin,@poolMax,@connectTimeout,@idleTimeout,@sslEnabled,@sslCa,@sslCert,@sslKey,@sslMode,@sshEnabled,@sshHost,@sshPort,@sshUser,@sshPassword,@sshPrivateKey,@sshPassphrase,@sortOrder,@createdAt,@updatedAt)
+      ON CONFLICT(id) DO UPDATE SET name=@name,groupName=@groupName,color=@color,icon=@icon,host=@host,port=@port,user=@user,password=@password,databaseName=@databaseName,charset=@charset,timezone=@timezone,poolMin=@poolMin,poolMax=@poolMax,connectTimeout=@connectTimeout,idleTimeout=@idleTimeout,sslEnabled=@sslEnabled,sslCa=@sslCa,sslCert=@sslCert,sslKey=@sslKey,sslMode=@sslMode,sshEnabled=@sshEnabled,sshHost=@sshHost,sshPort=@sshPort,sshUser=@sshUser,sshPassword=@sshPassword,sshPrivateKey=@sshPrivateKey,sshPassphrase=@sshPassphrase,sortOrder=@sortOrder,updatedAt=@updatedAt
     `)
     stmt.run({
       ...conn,

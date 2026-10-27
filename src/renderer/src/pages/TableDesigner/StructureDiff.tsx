@@ -88,19 +88,19 @@ export const StructureDiff: React.FC<Props> = ({ open, onClose, original, curren
         {diff.added.length > 0 && (
           <div style={{ marginBottom: 8 }}>
             <Tag type="success">新增列 ({diff.added.length})</Tag>
-            {diff.added.map((c) => renderCol(c, 'var(--success-bg, rgba(82,196,26,0.1))'))}
+            {diff.added.map((c) => renderCol(c, 'var(--success-bg)'))}
           </div>
         )}
         {diff.removed.length > 0 && (
           <div style={{ marginBottom: 8 }}>
             <Tag type="error">删除列 ({diff.removed.length})</Tag>
-            {diff.removed.map((c) => renderCol(c, 'var(--error-bg, rgba(255,77,79,0.1))'))}
+            {diff.removed.map((c) => renderCol(c, 'var(--error-bg)'))}
           </div>
         )}
         {diff.modified.length > 0 && (
           <div style={{ marginBottom: 8 }}>
             <Tag type="warning">修改列 ({diff.modified.length})</Tag>
-            {diff.modified.map((c) => renderCol(c, 'var(--warning-bg, rgba(250,173,20,0.1))'))}
+            {diff.modified.map((c) => renderCol(c, 'var(--warning-bg)'))}
           </div>
         )}
         {diff.added.length === 0 && diff.removed.length === 0 && diff.modified.length === 0 && (

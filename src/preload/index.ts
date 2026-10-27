@@ -118,6 +118,7 @@ const api: ElectronAPI = {
     hideToTray: () => ipcRenderer.send(IPC.WIN_HIDE_TO_TRAY),
     quit: () => ipcRenderer.send(IPC.WIN_QUIT),
     isMaximized: () => ipcRenderer.invoke(IPC.WIN_IS_MAXIMIZED),
+    setTheme: (theme: 'light' | 'dark') => ipcRenderer.send(IPC.WIN_SET_THEME, theme),
     onMaximized: (cb: (maximized: boolean) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, v: boolean) => cb(v)
       ipcRenderer.on('win:maximized', handler)

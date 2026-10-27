@@ -14,6 +14,7 @@ interface Props {
 export const ConnectionManager: React.FC<Props> = ({ open, onClose, initialEditing }) => {
   const [editing, setEditing] = useState<ConnectionConfig | null>(null)
   const [previewColor, setPreviewColor] = useState<string | null>(null)
+  const [previewIcon, setPreviewIcon] = useState<string | null>(null)
   const [formKey, setFormKey] = useState(0)
   const { loadConnections } = useConnectionStore()
 
@@ -23,6 +24,7 @@ export const ConnectionManager: React.FC<Props> = ({ open, onClose, initialEditi
       if (initialEditing) {
         setEditing(initialEditing)
         setPreviewColor(null)
+        setPreviewIcon(null)
         setFormKey((k) => k + 1)
       }
     }
@@ -31,6 +33,7 @@ export const ConnectionManager: React.FC<Props> = ({ open, onClose, initialEditi
   const handleNew = () => {
     setEditing(null)
     setPreviewColor(null)
+    setPreviewIcon(null)
     setFormKey((k) => k + 1) // 强制重新挂载表单
   }
 
@@ -48,11 +51,13 @@ export const ConnectionManager: React.FC<Props> = ({ open, onClose, initialEditi
             onSelect={(conn) => {
               setEditing(conn)
               setPreviewColor(null)
+              setPreviewIcon(null)
             }}
             onNew={handleNew}
             onClose={onClose}
             selectedId={editing?.id}
             previewColor={previewColor}
+            previewIcon={previewIcon}
           />
         </div>
         <div style={{ flex: 1, overflow: 'hidden', padding: 16, display: 'flex', flexDirection: 'column' }}>
@@ -62,10 +67,12 @@ export const ConnectionManager: React.FC<Props> = ({ open, onClose, initialEditi
             onSaved={() => {
               loadConnections()
               setPreviewColor(null)
+              setPreviewIcon(null)
               setEditing(null)
             }}
             onClose={onClose}
             onPreviewColor={(color) => setPreviewColor(color)}
+            onPreviewIcon={(icon) => setPreviewIcon(icon)}
           />
         </div>
       </div>

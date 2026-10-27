@@ -30,6 +30,22 @@ describe('validateConnectionConfig', () => {
   it('requires SSH endpoint fields when SSH is enabled', () => {
     expect(() => validateConnectionConfig({ ...validConfig(), sshEnabled: true })).toThrow('SSH 主机不能为空')
   })
+
+  it('defaults a missing icon to empty and accepts text or image icons', () => {
+    expect(validateConnectionConfig(validConfig()).icon).toBe('')
+    expect(validateConnectionConfig({ ...validConfig(), icon: '🚀' }).icon).toBe('🚀')
+    const image = 'data:image/png;base64,iVBORw0KGgo='
+    expect(validateConnectionConfig({ ...validConfig(), icon: image }).icon).toBe(image)
+  })
+
+  it.each([
+    ['svg image', 'data:image/svg+xml;base64,PHN2Zz4='],
+    ['non-base64 image', 'data:image/png,<svg>'],
+    ['oversized image', `data:image/png;base64,${'A'.repeat(300 * 1024)}`],
+    ['long text', '123456789'],
+  ])('rejects %s icon', (_label, icon) => {
+    expect(() => validateConnectionConfig({ ...validConfig(), icon })).toThrow()
+  })
 })
 
 describe('validateConnectionId', () => {

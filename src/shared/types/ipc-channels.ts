@@ -73,4 +73,5 @@ export const IPC = {
   WIN_HIDE_TO_TRAY: 'win:hideToTray',
   WIN_QUIT: 'win:quit',
   WIN_IS_MAXIMIZED: 'win:isMaximized',
+  WIN_SET_THEME: 'win:setTheme',
 } as const

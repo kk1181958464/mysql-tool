@@ -37,6 +37,8 @@ interface Props {
   filterText?: string
 }
 
+const TREE_SKELETON_WIDTHS = [62, 48, 74, 55, 40, 68]
+
 export default function ConnectionTree({ filterText = '' }: Props) {
   const activeConnectionId = useConnectionStore((s) => s.activeConnectionId)
   const connectionStatuses = useConnectionStore((s) => s.connectionStatuses)
@@ -910,9 +912,14 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   if (!isConnected || isLoading) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 100, color: 'var(--text-muted)', gap: 12 }}>
-        <div className="ui-spin-dot" />
-        <span style={{ fontSize: 12, animation: 'pulse-text 1.5s ease-in-out infinite' }}>{isConnected ? '加载中...' : '连接中...'}</span>
+      <div className="tree-skeleton" aria-busy="true">
+        <div className="tree-skeleton-label">{isConnected ? '正在加载数据库...' : '正在连接...'}</div>
+        {TREE_SKELETON_WIDTHS.map((width, index) => (
+          <div key={index} className="tree-skeleton-row" style={{ '--i': index } as React.CSSProperties}>
+            <span className="tree-skeleton-icon" />
+            <span className="ui-table-skeleton-line" style={{ width: `${width}%`, height: 10 }} />
+          </div>
+        ))}
       </div>
     )
   }
@@ -1262,9 +1269,9 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         {exportProgress && (
           <div style={{ padding: '8px 0' }}>
             {exportProgress.finished ? (
-              <div style={{ color: 'var(--color-green, #22c55e)' }}>✓ 所有数据已成功导出到文件</div>
+              <div style={{ color: 'var(--success)' }}>✓ 所有数据已成功导出到文件</div>
             ) : exportProgress.cancelled ? (
-              <div style={{ color: 'var(--color-red, #ef4444)' }}>导出已中断，目标文件中可能已包含部分导出数据</div>
+              <div style={{ color: 'var(--error)' }}>导出已中断，目标文件中可能已包含部分导出数据</div>
             ) : (
               <>
                 <div style={{ marginBottom: 12 }}>

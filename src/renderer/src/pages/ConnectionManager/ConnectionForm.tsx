@@ -1,5 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
+import { CloseOutlined, DownOutlined, PictureOutlined } from '@ant-design/icons'
 import { Tabs, Input, Button, Space, Select, Alert, Toast } from '../../components/ui'
+import { ConnAvatar } from '../../components/ConnAvatar'
+import { ICON_ACCEPT, fileToIconDataUrl } from '../../utils/icon-image'
 import { useConnectionStore } from '../../stores/connection.store'
 import { SSLConfig } from './SSLConfig'
 import { SSHConfig } from './SSHConfig'
@@ -12,6 +15,48 @@ interface Props {
   onSaved: () => void
   onClose: () => void
   onPreviewColor?: (color: string) => void
+  onPreviewIcon?: (icon: string) => void
+}
+
+function GroupInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const connections = useConnectionStore((s) => s.connections)
+  const [open, setOpen] = useState(false)
+  const groups = Array.from(new Set(connections.map((c) => c.groupName?.trim()).filter(Boolean))) as string[]
+  const keyword = value.trim().toLowerCase()
+  const exactMatch = groups.some((g) => g.toLowerCase() === keyword)
+  const options = keyword && !exactMatch ? groups.filter((g) => g.toLowerCase().includes(keyword)) : groups
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      <Input
+        value={value}
+        onChange={(e) => { onChange(e.target.value); setOpen(true) }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false) }}
+        placeholder={groups.length ? '选择或输入分组' : '留空为未分组'}
+        suffix={groups.length ? <DownOutlined style={{ fontSize: 10, transition: 'transform var(--dur-base) var(--ease-spring)', transform: open ? 'rotate(180deg)' : 'none' }} /> : undefined}
+      />
+      {open && (options.length > 0 || (keyword && !exactMatch)) && (
+        <div className="ui-select-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 20 }}>
+          {keyword && !exactMatch && (
+            <div className="ui-select-empty" style={{ padding: '6px 12px', textAlign: 'left', fontSize: 12 }}>
+              将创建新分组「{value.trim()}」
+            </div>
+          )}
+          {options.map((group) => (
+            <div
+              key={group}
+              className={`ui-select-option ${group === value.trim() ? 'selected' : ''}`}
+              onMouseDown={(e) => { e.preventDefault(); onChange(group); setOpen(false) }}
+            >
+              {group}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 const defaultValues: Partial<ConnectionSavePayload> = {
@@ -23,7 +68,8 @@ const defaultValues: Partial<ConnectionSavePayload> = {
   charset: 'utf8mb4',
   timezone: '+00:00',
   groupName: '',
-  color: '#3b82f6',
+  color: '#5b5bd6',
+  icon: '',
   poolMin: 1,
   poolMax: 10,
   connectTimeout: 10000,
@@ -43,15 +89,18 @@ const defaultValues: Partial<ConnectionSavePayload> = {
   sortOrder: 0,
 }
 
-export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onPreviewColor }) => {
+export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onPreviewColor, onPreviewIcon }) => {
   const [form, setForm] = useState<Partial<ConnectionSavePayload>>(defaultValues)
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [activeTab, setActiveTab] = useState('general')
   const { saveConnection, testConnection, connect } = useConnectionStore()
+  const connectionIdRef = useRef(editing?.id || uuid())
+  const iconFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    connectionIdRef.current = editing?.id || uuid()
     if (editing) {
       setForm({ ...defaultValues, ...editing })
     } else {
@@ -66,8 +115,27 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
   const getPayload = (): ConnectionSavePayload => ({
     ...defaultValues,
     ...form,
-    id: editing?.id || uuid(),
+    id: connectionIdRef.current,
   } as ConnectionSavePayload)
+
+  const updateIcon = (icon: string) => {
+    updateField('icon', icon)
+    onPreviewIcon?.(icon)
+  }
+
+  const handleIconFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    try {
+      updateIcon(await fileToIconDataUrl(file))
+      setError('')
+    } catch (err: any) {
+      setError(err.message || '图片处理失败')
+    }
+  }
+
+  const iconIsImage = (form.icon || '').startsWith('data:image/')
 
   const validate = () => {
     if (!form.name?.trim()) { setError('请输入连接名称'); return false }
@@ -124,13 +192,13 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
     }
   }
 
-  const COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
+  const COLORS = ['#5b5bd6', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
 
   const GeneralTab = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div>
         <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>分组</label>
-        <Input value={form.groupName || ''} onChange={(e) => updateField('groupName', e.target.value)} placeholder="默认分组" />
+        <GroupInput value={form.groupName || ''} onChange={(v) => updateField('groupName', v)} />
       </div>
       <div>
         <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}><span style={{ color: 'var(--error)' }}>*</span> 主机</label>
@@ -162,25 +230,54 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* 公共字段：名称和颜色 */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexShrink: 0 }}>
-        <div style={{ flex: 1 }}>
-          <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}><span style={{ color: 'var(--error)' }}>*</span> 连接名称</label>
-          <Input value={form.name || ''} onChange={(e) => updateField('name', e.target.value)} placeholder="My Connection" />
-        </div>
-        <div>
-          <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>颜色</label>
-          <div style={{ display: 'flex', gap: 4 }}>
-            {COLORS.map((c) => (
-              <button
-                key={c}
-                onClick={() => {
-                  updateField('color', c)
-                  onPreviewColor?.(c)
-                }}
-                style={{ width: 22, height: 22, borderRadius: 4, background: c, border: form.color === c ? '2px solid var(--text-primary)' : '2px solid transparent', cursor: 'pointer' }}
-              />
-            ))}
+      {/* 公共字段：图标、名称和颜色 */}
+      <div className="conn-form-head">
+        <button type="button" className="conn-form-avatar" title="上传图标" onClick={() => iconFileRef.current?.click()}>
+          <ConnAvatar conn={{ name: form.name || '', color: form.color || '', icon: form.icon || '' }} size="large" />
+          <span className="conn-form-avatar-overlay"><PictureOutlined /></span>
+          {form.icon ? (
+            <span
+              role="button"
+              className="conn-form-avatar-reset"
+              title="恢复默认图标"
+              onClick={(e) => { e.stopPropagation(); updateIcon('') }}
+            >
+              <CloseOutlined />
+            </span>
+          ) : null}
+        </button>
+        <input ref={iconFileRef} type="file" accept={ICON_ACCEPT} hidden onChange={handleIconFile} />
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div>
+            <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}><span style={{ color: 'var(--error)' }}>*</span> 连接名称</label>
+            <Input value={form.name || ''} onChange={(e) => updateField('name', e.target.value)} placeholder="My Connection" />
+          </div>
+          <div className="conn-form-meta">
+            <span className="conn-form-label">颜色</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`conn-color-swatch ${form.color === c ? 'active' : ''}`}
+                  onClick={() => {
+                    updateField('color', c)
+                    onPreviewColor?.(c)
+                  }}
+                  style={{ background: c }}
+                />
+              ))}
+            </div>
+            <span className="conn-form-label" style={{ marginLeft: 8 }}>图标</span>
+            <Input
+              size="small"
+              value={iconIsImage ? '' : form.icon || ''}
+              onChange={(e) => updateIcon(Array.from(e.target.value).slice(0, 2).join(''))}
+              placeholder={iconIsImage ? '图片' : '字/emoji'}
+              disabled={iconIsImage}
+              style={{ width: 72 }}
+            />
+            <Button size="small" icon={<PictureOutlined />} onClick={() => iconFileRef.current?.click()}>上传</Button>
           </div>
         </div>
       </div>

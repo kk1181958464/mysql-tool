@@ -14,6 +14,21 @@ function text(value: unknown, label: string, maxLength: number, required = false
   return value
 }
 
+const ICON_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/
+const MAX_ICON_IMAGE_LENGTH = 256 * 1024
+const MAX_ICON_TEXT_LENGTH = 8
+
+function icon(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw new Error('图标必须是字符串')
+  if (value.startsWith('data:')) {
+    if (value.length > MAX_ICON_IMAGE_LENGTH || !ICON_IMAGE_PATTERN.test(value)) throw new Error('图标图片格式无效或过大')
+    return value
+  }
+  if (value.length > MAX_ICON_TEXT_LENGTH) throw new Error(`图标文字不能超过 ${MAX_ICON_TEXT_LENGTH} 个字符`)
+  return value.trim()
+}
+
 function integer(value: unknown, label: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
     throw new Error(`${label}范围为 ${min}-${max}`)
@@ -44,6 +59,7 @@ export function validateConnectionConfig(value: unknown): ConnectionConfig {
     name: text(input.name, '连接名称', 128, true),
     groupName: text(input.groupName, '分组名称', 128),
     color: text(input.color, '颜色', 32),
+    icon: icon(input.icon),
     host: text(input.host, 'MySQL 主机', 255, true),
     port: integer(input.port, 'MySQL 端口', 1, 65535),
     user: text(input.user, 'MySQL 用户名', 128),

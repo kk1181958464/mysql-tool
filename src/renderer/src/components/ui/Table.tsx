@@ -34,6 +34,13 @@ interface TableProps<T> {
   virtual?: TableVirtualConfig
 }
 
+const SKELETON_ROWS = 12
+const SKELETON_FALLBACK_COLUMNS = 6
+const SKELETON_HEADER_WIDTHS = [56, 84, 64, 96, 72, 60]
+const SKELETON_CELL_WIDTHS = [72, 48, 86, 60, 38, 78, 54, 66]
+
+const isNarrowColumn = (col?: { width?: number | string }) => typeof col?.width === 'number' && col.width < 60
+
 export function Table<T extends Record<string, any>>({
   columns,
   dataSource,
@@ -223,6 +230,9 @@ export function Table<T extends Record<string, any>>({
     }
   }, [virtualEnabled, dataSource.length, viewportHeight, scrollTop, virtualOverscan, virtualRowHeight])
 
+  const showSkeletonHeader = loading && columns.length <= 1
+  const skeletonColumnCount = columns.length + (showSkeletonHeader ? SKELETON_FALLBACK_COLUMNS : 0)
+
   const renderRows = virtualEnabled
     ? dataSource.slice(virtualWindow.start, virtualWindow.end)
     : dataSource
@@ -285,15 +295,27 @@ export function Table<T extends Record<string, any>>({
                   )}
                 </th>
               ))}
+              {showSkeletonHeader && Array.from({ length: SKELETON_FALLBACK_COLUMNS }, (_, index) => (
+                <th key={`skeleton-${index}`}>
+                  <div className="ui-table-skeleton-line" style={{ width: `${SKELETON_HEADER_WIDTHS[index % SKELETON_HEADER_WIDTHS.length]}px`, height: 10 }} />
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr className="ui-table-loading-row" aria-hidden>
-                <td colSpan={columns.length}>
-                  <div className="ui-table-skeleton-line" />
-                </td>
-              </tr>
+              Array.from({ length: SKELETON_ROWS }, (_, rowIndex) => (
+                <tr key={`skeleton-${rowIndex}`} className="ui-table-loading-row" aria-hidden style={{ '--i': rowIndex } as React.CSSProperties}>
+                  {Array.from({ length: skeletonColumnCount }, (_, colIndex) => (
+                    <td key={colIndex}>
+                      {isNarrowColumn(columns[colIndex]) ? null : <div
+                        className="ui-table-skeleton-line"
+                        style={{ width: `${SKELETON_CELL_WIDTHS[(rowIndex * 3 + colIndex * 5) % SKELETON_CELL_WIDTHS.length]}%` }}
+                      />}
+                    </td>
+                  ))}
+                </tr>
+              ))
             ) : dataSource.length === 0 ? null : (
               <>
                 {virtualEnabled && virtualWindow.topSpacerHeight > 0 && (
@@ -337,14 +359,6 @@ export function Table<T extends Record<string, any>>({
               </div>
               <div className="ui-table-empty-text">暂无数据</div>
               <div className="ui-table-empty-hint">当前没有可显示的记录</div>
-            </div>
-          </div>
-        )}
-        {loading && (
-          <div className="ui-table-loading-overlay">
-            <div className="ui-table-loading-content">
-              <div className="ui-spin-dot" />
-              <div style={{ marginTop: 8 }}>加载中...</div>
             </div>
           </div>
         )}

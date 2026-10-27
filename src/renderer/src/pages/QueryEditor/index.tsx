@@ -9,6 +9,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons'
 import Editor, { loader } from '@monaco-editor/react'
+import { defineMonacoThemes, getMonacoTheme } from '../../utils/monaco-theme'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api'
 import 'monaco-editor/esm/vs/basic-languages/sql/sql.contribution'
@@ -868,7 +869,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
     <div className="query-editor">
       <div className="query-editor-toolbar">
         {!hasValidDatabase && (
-          <span style={{ color: 'var(--warning, #f59e0b)', fontSize: 12, marginRight: 8 }}>
+          <span style={{ color: 'var(--warning)', fontSize: 12, marginRight: 8 }}>
             {executeBlockedReason}
           </span>
         )}
@@ -937,7 +938,8 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
               height="100%"
               width="100%"
               language="sql"
-              theme={resolvedTheme === 'dark' ? 'vs-dark' : 'light'}
+              theme={getMonacoTheme(resolvedTheme)}
+              beforeMount={defineMonacoThemes}
               value={tab.content}
               onChange={(value) => updateQueryContent(tab.id, value || '')}
               onMount={handleEditorMount}

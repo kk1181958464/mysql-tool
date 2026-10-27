@@ -3,6 +3,7 @@ import Editor, { OnMount } from '@monaco-editor/react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import { useDatabaseStore } from '../stores/database.store'
 import { useAppStore } from '../stores/app.store'
+import { defineMonacoThemes, getMonacoTheme } from '../utils/monaco-theme'
 
 interface SqlEditorProps {
   value: string
@@ -125,7 +126,8 @@ export default function SqlEditor({ value, onChange, onExecute, connectionId, da
     <Editor
       height="100%"
       defaultLanguage="sql"
-      theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
+      theme={getMonacoTheme(resolvedTheme)}
+      beforeMount={defineMonacoThemes}
       value={value}
       onChange={(v) => onChange(v ?? '')}
       onMount={handleMount}

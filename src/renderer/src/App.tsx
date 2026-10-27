@@ -2,37 +2,47 @@ import { useEffect, useRef } from 'react'
 import AppLayout from './components/Layout/AppLayout'
 import { useAppStore } from './stores/app.store'
 import { reportPerfMetric } from './utils/perf'
+import { api } from './utils/ipc'
 
 const FIRST_INTERACTION_METRIC = 'app.first_interaction_latency'
 const LONG_TASK_METRIC = 'app.longtask.duration'
 const LONG_GAP_METRIC = 'app.longtask.fallback_gap'
 const PERF_METRICS_ENABLED = import.meta.env.DEV
+const THEME_TRANSITION_MS = 360
 
 export default function App() {
   const resolvedTheme = useAppStore((s) => s.resolvedTheme)
   const accentColor = useAppStore((s) => s.accentColor)
   const firstInteractionReportedRef = useRef(false)
+  const themeAppliedRef = useRef(false)
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', resolvedTheme)
+    const root = document.documentElement
+    const changed = root.getAttribute('data-theme') !== resolvedTheme
+    let timer: number | undefined
+    if (changed && themeAppliedRef.current) {
+      root.classList.add('theme-switching')
+      timer = window.setTimeout(() => root.classList.remove('theme-switching'), THEME_TRANSITION_MS)
+    }
+    root.setAttribute('data-theme', resolvedTheme)
+    themeAppliedRef.current = true
+    api.win.setTheme(resolvedTheme)
+    return () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+        root.classList.remove('theme-switching')
+      }
+    }
   }, [resolvedTheme])
 
   useEffect(() => {
     const el = document.documentElement.style
     if (accentColor) {
       el.setProperty('--accent', accentColor)
-      el.setProperty('--accent-hover', accentColor)
-      el.setProperty('--accent-bg', accentColor + '1a')
-      el.setProperty('--color-primary', accentColor)
-      el.setProperty('--color-primary-bg', accentColor + '1a')
     } else {
       el.removeProperty('--accent')
-      el.removeProperty('--accent-hover')
-      el.removeProperty('--accent-bg')
-      el.removeProperty('--color-primary')
-      el.removeProperty('--color-primary-bg')
     }
-  }, [accentColor, resolvedTheme])
+  }, [accentColor])
 
   useEffect(() => {
     if (!PERF_METRICS_ENABLED) return

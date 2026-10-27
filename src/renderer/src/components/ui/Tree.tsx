@@ -1,4 +1,4 @@
-import { useState, memo, useCallback } from 'react'
+import { useState, useEffect, memo, useCallback } from 'react'
 import './ui.css'
 
 interface TreeNode {
@@ -23,9 +23,13 @@ interface TreeProps {
   style?: React.CSSProperties
 }
 
+const TREE_COLLAPSE_MS = 220
+const TREE_STAGGER_LIMIT = 24
+
 interface TreeNodeItemProps {
   node: TreeNode
   level: number
+  index?: number
   isExpanded: boolean
   isSelected: boolean
   onToggle: (key: string) => void
@@ -39,6 +43,7 @@ interface TreeNodeItemProps {
 const TreeNodeItem = memo(function TreeNodeItem({
   node,
   level,
+  index = 0,
   isExpanded,
   isSelected,
   onToggle,
@@ -49,6 +54,23 @@ const TreeNodeItem = memo(function TreeNodeItem({
   selectedKeys,
 }: TreeNodeItemProps) {
   const hasChildren = node.children && node.children.length > 0
+  const [childrenMounted, setChildrenMounted] = useState(isExpanded)
+  const [closing, setClosing] = useState(false)
+
+  useEffect(() => {
+    if (isExpanded) {
+      setChildrenMounted(true)
+      setClosing(false)
+      return
+    }
+    if (!childrenMounted) return
+    setClosing(true)
+    const timer = window.setTimeout(() => {
+      setChildrenMounted(false)
+      setClosing(false)
+    }, TREE_COLLAPSE_MS)
+    return () => window.clearTimeout(timer)
+  }, [isExpanded])
 
   const handleClick = useCallback(() => {
     if (node.disabled) return
@@ -75,7 +97,10 @@ const TreeNodeItem = memo(function TreeNodeItem({
   }, [node, onContextMenu])
 
   return (
-    <div className="ui-tree-node">
+    <div
+      className="ui-tree-node"
+      style={index < TREE_STAGGER_LIMIT ? { '--i': index } as React.CSSProperties : { animation: 'none' }}
+    >
       <div
         className={`ui-tree-node-content ${isSelected ? 'selected' : ''} ${node.disabled ? 'disabled' : ''}`}
         style={{ paddingLeft: level * 16 + 8, userSelect: 'none' }}
@@ -91,13 +116,15 @@ const TreeNodeItem = memo(function TreeNodeItem({
         {node.icon && <span className="ui-tree-icon">{node.icon}</span>}
         <span className="ui-tree-title">{node.title}</span>
       </div>
-      {hasChildren && isExpanded && (
-        <div className="ui-tree-children">
-          {node.children!.map((child) => (
+      {hasChildren && (isExpanded || childrenMounted) && (
+        <div className={`ui-tree-children ${closing && !isExpanded ? 'closing' : ''}`}>
+          <div className="ui-tree-children-inner">
+          {node.children!.map((child, childIndex) => (
             <TreeNodeItem
               key={child.key}
               node={child}
               level={level + 1}
+              index={childIndex}
               isExpanded={expandedKeys.includes(child.key)}
               isSelected={selectedKeys.includes(child.key)}
               onToggle={onToggle}
@@ -108,6 +135,7 @@ const TreeNodeItem = memo(function TreeNodeItem({
               selectedKeys={selectedKeys}
             />
           ))}
+          </div>
         </div>
       )}
     </div>

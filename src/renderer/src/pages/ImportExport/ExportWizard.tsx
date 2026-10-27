@@ -198,7 +198,7 @@ const ExportWizard: React.FC<Props> = ({ onBack }) => {
       <div style={{ display: 'flex', marginBottom: 24 }}>
         {stepTitles.map((t, i) => (
           <div key={i} style={{ flex: 1, textAlign: 'center' }}>
-            <div style={{ width: 28, height: 28, borderRadius: '50%', background: i <= step ? 'var(--accent)' : 'var(--bg-hover)', color: i <= step ? '#fff' : 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>{i + 1}</div>
+            <div style={{ width: 28, height: 28, borderRadius: '50%', background: i <= step ? 'var(--accent-solid)' : 'var(--bg-hover)', color: i <= step ? 'var(--accent-fg)' : 'var(--text-muted)', transition: 'background-color var(--dur-base) ease, color var(--dur-base) ease', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>{i + 1}</div>
             <div style={{ fontSize: 12, marginTop: 4, color: i <= step ? 'var(--text-primary)' : 'var(--text-muted)' }}>{t}</div>
           </div>
         ))}

@@ -607,7 +607,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       onDrop={handleDrop}
     >
       {dragOver && (
-        <div style={{ position: 'absolute', inset: 0, background: 'rgba(59,130,246,0.1)', border: '2px dashed var(--accent)', borderRadius: 8, zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: 'var(--accent)', pointerEvents: 'none' }}>
+        <div style={{ position: 'absolute', inset: 0, background: 'var(--accent-bg)', border: '2px dashed var(--accent)', animation: 'fade-in var(--dur-fast) ease', borderRadius: 8, zIndex: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: 'var(--accent)', pointerEvents: 'none' }}>
           拖放 .sql 文件到此处导入
         </div>
       )}
@@ -634,8 +634,9 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             onClick={() => { setViewMode('table'); setStoredViewMode('table') }}
             style={{
               padding: '4px 8px',
-              background: viewMode === 'table' ? 'var(--accent)' : 'transparent',
-              color: viewMode === 'table' ? '#fff' : 'var(--text-secondary)',
+              background: viewMode === 'table' ? 'var(--accent-solid)' : 'transparent',
+              color: viewMode === 'table' ? 'var(--accent-fg)' : 'var(--text-secondary)',
+              transition: 'background-color var(--transition), color var(--transition)',
               border: 'none',
               cursor: 'pointer',
               borderRadius: '3px 0 0 3px',
@@ -647,8 +648,9 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             onClick={() => { setViewMode('card'); setStoredViewMode('card') }}
             style={{
               padding: '4px 8px',
-              background: viewMode === 'card' ? 'var(--accent)' : 'transparent',
-              color: viewMode === 'card' ? '#fff' : 'var(--text-secondary)',
+              background: viewMode === 'card' ? 'var(--accent-solid)' : 'transparent',
+              color: viewMode === 'card' ? 'var(--accent-fg)' : 'var(--text-secondary)',
+              transition: 'background-color var(--transition), color var(--transition)',
               border: 'none',
               cursor: 'pointer',
               borderRadius: '0 3px 3px 0',
@@ -715,16 +717,27 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
               onClick: (e) => handleRowClick(record.name, e),
               onDoubleClick: () => { window.getSelection()?.removeAllRanges(); handleOpen(record.name) },
               onContextMenu: (e) => handleContextMenu(e, record.name),
-              style: selectedTables.has(record.name) ? { background: 'rgba(59,130,246,0.35)' } : undefined,
+              style: selectedTables.has(record.name) ? { background: 'color-mix(in srgb, var(--accent) 24%, transparent)' } : undefined,
             })}
           />
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-            {mergedTables.map(t => (
+            {loading && Array.from({ length: Math.min(Math.max(mergedTables.length, 6), 12) }, (_, i) => (
+              <div key={`skeleton-${i}`} className="skeleton-card" aria-hidden style={{ '--i': i } as React.CSSProperties}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                  <span className="tree-skeleton-icon" />
+                  <span className="ui-table-skeleton-line" style={{ width: `${[52, 68, 44, 60][i % 4]}%` }} />
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 12px' }}>
+                  {[70, 55, 62, 48].map((w, j) => <span key={j} className="ui-table-skeleton-line" style={{ width: `${w}%` }} />)}
+                </div>
+              </div>
+            ))}
+            {!loading && mergedTables.map(t => (
               <div
                 key={t.name}
                 style={{
-                  background: selectedTables.has(t.name) ? 'rgba(59,130,246,0.25)' : 'var(--bg-surface)',
+                  background: selectedTables.has(t.name) ? 'color-mix(in srgb, var(--accent) 18%, var(--bg-surface))' : 'var(--bg-surface)',
                   border: `1px solid ${selectedTables.has(t.name) ? 'var(--accent)' : 'var(--border)'}`,
                   borderRadius: 8,
                   padding: 16,
@@ -922,9 +935,9 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         {exportProgress && (
           <div style={{ padding: '8px 0' }}>
             {exportProgress.finished ? (
-              <div style={{ color: 'var(--color-green, #22c55e)' }}>✓ 所有数据已成功导出到文件</div>
+              <div style={{ color: 'var(--success)' }}>✓ 所有数据已成功导出到文件</div>
             ) : exportProgress.cancelled ? (
-              <div style={{ color: 'var(--color-red, #ef4444)' }}>导出已中断，目标文件中可能已包含部分导出数据</div>
+              <div style={{ color: 'var(--error)' }}>导出已中断，目标文件中可能已包含部分导出数据</div>
             ) : (
               <>
                 <div style={{ marginBottom: 12 }}>
@@ -961,13 +974,13 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         <div style={{
           display: importing ? 'flex' : 'none',
           position: 'fixed', inset: 0, zIndex: 99999,
-          background: 'rgba(0,0,0,0.45)',
+          background: 'var(--scrim)',
           alignItems: 'center', justifyContent: 'center',
         }}>
           <div style={{
-            background: 'var(--bg-elevated, #1e1e1e)', borderRadius: 8, padding: '32px 40px',
-            textAlign: 'center', fontSize: 13, color: 'var(--text)', minWidth: 300,
-            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            background: 'var(--bg-elevated)', borderRadius: 8, padding: '32px 40px',
+            textAlign: 'center', fontSize: 13, color: 'var(--text-primary)', minWidth: 300,
+            boxShadow: 'var(--shadow-lg)', animation: 'modal-in var(--dur-slow) var(--ease-spring)',
           }}>
             <div style={{ marginBottom: 16, fontSize: 14, fontWeight: 500 }}>SQL 导入中...</div>
             <div style={{ marginBottom: 8 }}>

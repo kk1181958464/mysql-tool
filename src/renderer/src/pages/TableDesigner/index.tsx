@@ -285,7 +285,8 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
         <div style={{
           position: 'fixed',
           inset: 0,
-          background: 'rgba(0, 0, 0, 0.12)',
+          background: 'color-mix(in srgb, var(--scrim) 30%, transparent)',
+          animation: 'fade-in var(--dur-base) ease',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -297,7 +298,8 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
             border: '1px solid var(--border)',
             borderRadius: 10,
             padding: '14px 20px',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+            boxShadow: 'var(--shadow)',
+            animation: 'menu-pop var(--dur-base) var(--ease-spring)',
             color: 'var(--text-primary)',
             fontSize: 13,
           }}>

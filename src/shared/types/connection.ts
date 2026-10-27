@@ -3,6 +3,7 @@ export interface ConnectionConfig {
   name: string
   groupName: string
   color: string
+  icon: string
   host: string
   port: number
   user: string

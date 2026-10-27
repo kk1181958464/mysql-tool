@@ -111,11 +111,12 @@ const cellStyleSelected: React.CSSProperties = {
 }
 const cellStyleUpdated: React.CSSProperties = {
   ...cellStyle,
-  background: 'rgba(250, 204, 21, 0.18)',
+  background: 'color-mix(in srgb, var(--warning) 18%, transparent)',
+  animation: 'cell-flash 900ms var(--ease-out)',
 }
 const cellStyleSelectedUpdated: React.CSSProperties = {
   ...cellStyleSelected,
-  boxShadow: 'inset 2px 0 0 var(--accent), inset 0 0 0 1px rgba(250, 204, 21, 0.8)',
+  boxShadow: 'inset 2px 0 0 var(--accent), inset 0 0 0 1px color-mix(in srgb, var(--warning) 80%, transparent)',
 }
 const nullStyle: React.CSSProperties = { color: 'var(--text-muted)', fontStyle: 'italic' }
 const editingCellStyle: React.CSSProperties = {
@@ -1799,7 +1800,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
             type="button"
             aria-expanded={isColumnPickerExpanded}
             onClick={() => setIsColumnPickerExpanded((expanded) => !expanded)}
-            style={{ width: '100%', height: 32, padding: '0 10px', border: 0, background: 'transparent', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left' }}
+            style={{ width: '100%', height: 32, padding: '0 10px', border: 0, background: 'transparent', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left' }}
           >
             <span style={{ width: 0, height: 0, borderTop: '4px solid transparent', borderBottom: '4px solid transparent', borderLeft: '6px solid currentColor', transform: isColumnPickerExpanded ? 'rotate(90deg)' : undefined, transition: 'transform 0.15s ease' }} />
             <span style={{ fontSize: 12 }}>字段筛选</span>
@@ -1899,11 +1900,11 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
             const isNew = !!record._newKey
             let style: React.CSSProperties | undefined
             if (isSelected && isNew) {
-              style = { background: 'rgba(114, 104, 232, 0.15)' }
+              style = { background: 'color-mix(in srgb, var(--accent) 16%, var(--success-bg))' }
             } else if (isSelected) {
-              style = { background: 'rgba(114, 104, 232, 0.12)' }
+              style = { background: 'color-mix(in srgb, var(--accent) 13%, transparent)' }
             } else if (isNew) {
-              style = { background: 'rgba(34,197,94,0.12)' }
+              style = { background: 'var(--success-bg)', animation: 'row-insert var(--dur-slow) var(--ease-out)' }
             }
             return { style }
           }}
@@ -1931,7 +1932,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
             </button>
           )}
           {`，配置模式：${configuredModeLabel}，实际模式：${effectiveModeLabel}`}
-          {(pendingPaginationHint || paginationFallbackHint) && <span style={{ color: 'var(--warning, #f59e0b)' }}>（{pendingPaginationHint || paginationFallbackHint}）</span>}
+          {(pendingPaginationHint || paginationFallbackHint) && <span style={{ color: 'var(--warning)' }}>（{pendingPaginationHint || paginationFallbackHint}）</span>}
           {(hasUnsavedChanges || isSaving) && <span style={{ color: 'var(--accent)' }}>| 未保存: {pendingChanges.size + newRows.length + editingDirtyCells.size} 行 (Ctrl+S)</span>}
         </span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

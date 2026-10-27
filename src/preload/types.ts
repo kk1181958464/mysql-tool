@@ -144,6 +144,7 @@ export interface ElectronAPI {
     hideToTray(): void
     quit(): void
     isMaximized(): Promise<boolean>
+    setTheme(theme: 'light' | 'dark'): void
     onMaximized(cb: (maximized: boolean) => void): () => void
   }
 }

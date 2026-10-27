@@ -1,8 +1,10 @@
 import { useState, lazy, Suspense, useEffect, useCallback, useRef, useLayoutEffect } from 'react'
-import { CloseOutlined, CodeOutlined, TableOutlined, LayoutOutlined, DatabaseOutlined, DashboardOutlined, SwapOutlined, SaveOutlined } from '@ant-design/icons'
+import { CloseOutlined, CodeOutlined, TableOutlined, LayoutOutlined, DatabaseOutlined, DashboardOutlined, SwapOutlined, SaveOutlined, PlusOutlined, ApiOutlined } from '@ant-design/icons'
 import { useTabStore, Tab } from '../../stores/tab.store'
 import { isTabDirty, registerTabCloseGuard } from '../../stores/tab-close-guard'
-import { Modal, Button } from '../../components/ui'
+import { Modal, Button, Table } from '../../components/ui'
+import { useConnectionStore } from '../../stores/connection.store'
+import { useAppStore, OPEN_CONNECTION_MANAGER_EVENT } from '../../stores/app.store'
 
 const QueryEditor = lazy(() => import('../../pages/QueryEditor'))
 const DataBrowser = lazy(() => import('../../pages/DataBrowser'))
@@ -12,10 +14,60 @@ const Performance = lazy(() => import('../../pages/Performance'))
 const ImportExport = lazy(() => import('../../pages/ImportExport'))
 const Backup = lazy(() => import('../../pages/Backup'))
 const MAX_KEEP_ALIVE_BACKGROUND_TABS = 8
+const TAB_CLOSE_ANIMATION_MS = 200
+const MAX_ANIMATED_CLOSE_TABS = 6
 
 const PageLoading = ({ label }: { label: string }) => (
-  <div style={{ padding: 20, color: 'var(--text-muted)' }}>{label}加载中...</div>
+  <div className="page-skeleton" aria-busy="true" aria-label={`${label}加载中`}>
+    <div className="page-skeleton-toolbar">
+      {[88, 64, 64, 120].map((w, i) => <span key={i} className="ui-table-skeleton-line" style={{ width: w }} />)}
+    </div>
+    <Table loading columns={[]} dataSource={[]} size="small" style={{ flex: 1, minHeight: 0 }} />
+  </div>
 )
+
+function Welcome() {
+  const activeConnectionId = useConnectionStore((s) => s.activeConnectionId)
+  const selectedDatabase = useAppStore((s) => s.selectedDatabase)
+  const addQueryTab = useTabStore((s) => s.addQueryTab)
+
+  return (
+    <div className="welcome">
+      <div className="welcome-inner">
+        <svg className="welcome-art" viewBox="0 0 132 108" fill="none" aria-hidden="true">
+          <ellipse cx="66" cy="100" rx="38" ry="5" fill="currentColor" opacity="0.08" />
+          <g className="welcome-float">
+            <path d="M34 22c0-7 14.3-12 32-12s32 5 32 12v52c0 7-14.3 12-32 12s-32-5-32-12V22Z" fill="currentColor" opacity="0.1" />
+            <ellipse cx="66" cy="22" rx="32" ry="12" fill="currentColor" opacity="0.22" />
+            <path d="M34 39c0 7 14.3 12 32 12s32-5 32-12M34 56c0 7 14.3 12 32 12s32-5 32-12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" opacity="0.45" />
+            <path d="M34 22v52c0 7 14.3 12 32 12s32-5 32-12V22" stroke="currentColor" strokeWidth="2" opacity="0.6" />
+            <ellipse cx="66" cy="22" rx="32" ry="12" stroke="currentColor" strokeWidth="2" opacity="0.6" />
+            <circle cx="104" cy="74" r="13" fill="var(--bg-base)" stroke="currentColor" strokeWidth="2" />
+            <path d="M99 74h10M104 69v10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </g>
+        </svg>
+        <div className="welcome-title">{activeConnectionId ? '准备就绪' : '欢迎使用 kMysql'}</div>
+        <div className="welcome-desc">
+          {activeConnectionId ? '在左侧数据库树中打开表，或新建一个查询开始工作' : '先添加一个 MySQL 连接，开始浏览和管理你的数据'}
+        </div>
+        <div className="welcome-actions">
+          {activeConnectionId ? (
+            <Button variant="primary" icon={<PlusOutlined />} onClick={() => addQueryTab(activeConnectionId, selectedDatabase || undefined)}>
+              新建查询
+            </Button>
+          ) : null}
+          <Button
+            variant={activeConnectionId ? 'default' : 'primary'}
+            icon={<ApiOutlined />}
+            onClick={() => window.dispatchEvent(new Event(OPEN_CONNECTION_MANAGER_EVENT))}
+          >
+            {activeConnectionId ? '管理连接' : '新建连接'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const isAlwaysKeptAlive = (tab: Tab) => {
   if (tab.type === 'query') return true
@@ -40,6 +92,9 @@ export default function MainTabBar() {
   const { tabs, activeTabId, setActiveTab, removeTabsByIds } = useTabStore()
   const [confirmCloseIds, setConfirmCloseIds] = useState<string[] | null>(null)
   const [mountedTabIds, setMountedTabIds] = useState<Set<string>>(() => new Set())
+  const [closingTabIds, setClosingTabIds] = useState<Set<string>>(() => new Set())
+  const tabBarRef = useRef<HTMLDivElement | null>(null)
+  const indicatorRef = useRef<HTMLDivElement | null>(null)
 
   const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null)
   const tabContextMenuRef = useRef<HTMLDivElement | null>(null)
@@ -123,8 +178,45 @@ export default function MainTabBar() {
     if (targetTabs.length === 0) return
     const ok = await requestCloseTabs(targetTabs)
     if (!ok) return
-    removeTabsByIds(targetTabs.map((tab) => tab.id))
+    const ids = targetTabs.map((tab) => tab.id)
+    if (ids.length > MAX_ANIMATED_CLOSE_TABS) {
+      removeTabsByIds(ids)
+      return
+    }
+    setClosingTabIds((prev) => new Set([...prev, ...ids]))
+    window.setTimeout(() => {
+      removeTabsByIds(ids)
+      setClosingTabIds((prev) => {
+        const next = new Set(prev)
+        ids.forEach((id) => next.delete(id))
+        return next
+      })
+    }, TAB_CLOSE_ANIMATION_MS)
   }, [removeTabsByIds, requestCloseTabs])
+
+  useLayoutEffect(() => {
+    const bar = tabBarRef.current
+    const indicator = indicatorRef.current
+    if (!bar || !indicator) return
+    const activeEl = bar.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeTabId || '')}"]`)
+
+    const place = () => {
+      if (!activeEl || closingTabIds.has(activeTabId || '')) {
+        indicator.style.opacity = '0'
+        return
+      }
+      indicator.style.opacity = '1'
+      indicator.style.width = `${activeEl.offsetWidth}px`
+      indicator.style.transform = `translateX(${activeEl.offsetLeft}px)`
+    }
+
+    place()
+    activeEl?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+    if (!activeEl) return
+    const observer = new ResizeObserver(place)
+    observer.observe(activeEl)
+    return () => observer.disconnect()
+  }, [activeTabId, tabs, closingTabIds])
 
   const getClosableTabs = useCallback((inputTabs: Tab[]) => {
     // objects tab / 固定 tab 永不可关闭
@@ -292,24 +384,18 @@ export default function MainTabBar() {
   }
 
   if (tabs.length === 0) {
-    return (
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', position: 'relative' }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>📋</div>
-          <div>点击左侧数据库树打开表，或点击"新建查询"开始</div>
-        </div>
-      </div>
-    )
+    return <Welcome />
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* 标签栏 */}
-      <div className="main-tab-bar">
+      <div className="main-tab-bar" ref={tabBarRef}>
         {tabs.map((tab) => (
           <div
             key={tab.id}
-            className={`main-tab ${tab.id === activeTabId ? 'active' : ''}`}
+            data-tab-id={tab.id}
+            className={`main-tab ${tab.id === activeTabId ? 'active' : ''} ${closingTabIds.has(tab.id) ? 'closing' : ''}`}
             onClick={() => setActiveTab(tab.id)}
             onContextMenu={(e) => handleTabContextMenu(e, tab)}
           >
@@ -331,6 +417,7 @@ export default function MainTabBar() {
             )}
           </div>
         ))}
+        <div className="main-tab-indicator" ref={indicatorRef} />
       </div>
       {/* 标签内容 — 缓存所有 tab，非活跃 display:none */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>

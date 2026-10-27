@@ -12,16 +12,24 @@ import {
   DownOutlined,
   LoadingOutlined,
   FolderAddOutlined,
+  ApiOutlined,
+  CheckOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import logoImg from '../../assets/logo-sidebar.png'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, OPEN_CONNECTION_MANAGER_EVENT } from '../../stores/app.store'
 import { useConnection } from '../../hooks/useConnection'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import ConnectionTree from '../ConnectionTree'
+import { ConnAvatar, type ConnState } from '../ConnAvatar'
 import ConnectionManager from '../../pages/ConnectionManager'
 import { CreateDatabaseModal } from '../CreateDatabaseModal'
 import type { ConnectionConfig } from '../../../../shared/types/connection'
+
+function formatConnHost(conn: ConnectionConfig): string {
+  return `${conn.user ? conn.user + '@' : ''}${conn.host}${conn.port && conn.port !== 3306 ? ':' + conn.port : ''}`
+}
 
 export default function Sidebar() {
   const { toggleSidebar } = useAppStore()
@@ -39,6 +47,66 @@ export default function Sidebar() {
   const [deleteConnConfirm, setDeleteConnConfirm] = useState<ConnectionConfig | null>(null)
   const [deletingConn, setDeletingConn] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const [connFilter, setConnFilter] = useState('')
+  const [highlightIndex, setHighlightIndex] = useState(0)
+  const connListRef = useRef<HTMLDivElement>(null)
+  const scrollHighlightRef = useRef(false)
+
+  useLayoutEffect(() => {
+    if (!scrollHighlightRef.current) return
+    scrollHighlightRef.current = false
+    connListRef.current?.querySelector('.conn-option.highlight')?.scrollIntoView({ block: 'nearest' })
+  }, [highlightIndex])
+
+  const getConnState = (id: string): ConnState =>
+    connectingIds.has(id) ? 'connecting' : connectionStatuses[id]?.connected ? 'connected' : 'idle'
+
+  const keyword = connFilter.trim().toLowerCase()
+  const matchedConnections = keyword
+    ? connections.filter((c) => [c.name, c.host, c.user, c.groupName].some((v) => v?.toLowerCase().includes(keyword)))
+    : connections
+  const idleConnections = matchedConnections.filter((c) => getConnState(c.id) === 'idle')
+  const hasNamedGroups = idleConnections.some((c) => c.groupName?.trim())
+  const idleGroups = new Map<string, ConnectionConfig[]>()
+  for (const conn of idleConnections) {
+    const label = conn.groupName?.trim() || (hasNamedGroups ? '未分组' : keyword ? '其他匹配' : '其他连接')
+    idleGroups.set(label, [...(idleGroups.get(label) ?? []), conn])
+  }
+  const connGroups = [
+    { label: '已连接', items: matchedConnections.filter((c) => getConnState(c.id) !== 'idle') },
+    ...Array.from(idleGroups, ([label, items]) => ({ label, items }))
+      .sort((a, b) => Number(a.label === '未分组') - Number(b.label === '未分组')),
+  ].filter((g) => g.items.length > 0)
+  const filteredConnections = connGroups.flatMap((g) => g.items)
+
+  useEffect(() => {
+    if (!dropdownOpen) return
+    setConnFilter('')
+    const activeIndex = filteredConnections.findIndex((c) => c.id === activeConnection?.id)
+    scrollHighlightRef.current = true
+    setHighlightIndex(Math.max(0, activeIndex))
+  }, [dropdownOpen])
+
+  const openConnManager = () => {
+    setDropdownOpen(false)
+    setEditingConn(null)
+    setShowConnManager(true)
+  }
+
+  const handleDropdownKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setDropdownOpen(false)
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const count = filteredConnections.length
+      if (!count) return
+      scrollHighlightRef.current = true
+      setHighlightIndex((i) => (i + (e.key === 'ArrowDown' ? 1 : count - 1)) % count)
+    } else if (e.key === 'Enter') {
+      const conn = filteredConnections[highlightIndex]
+      if (conn) void handleSelect(conn)
+    }
+  }
 
   // 点击外部或滚动时关闭下拉框和右键菜单
   useEffect(() => {
@@ -117,6 +185,15 @@ export default function Sidebar() {
     setContextMenu({ x: e.clientX, y: e.clientY, conn })
   }
 
+  useEffect(() => {
+    const open = () => {
+      setEditingConn(null)
+      setShowConnManager(true)
+    }
+    window.addEventListener(OPEN_CONNECTION_MANAGER_EVENT, open)
+    return () => window.removeEventListener(OPEN_CONNECTION_MANAGER_EVENT, open)
+  }, [])
+
   const handleMenuAction = async (action: string) => {
     if (!contextMenu) return
     const conn = contextMenu.conn
@@ -182,70 +259,94 @@ export default function Sidebar() {
 
       {/* Connection Selector */}
       <div className="sidebar-connection" ref={dropdownRef}>
-        <div
-          className="conn-selector"
+        <button
+          type="button"
+          className={`conn-selector ${dropdownOpen ? 'open' : ''}`}
           onClick={() => setDropdownOpen(!dropdownOpen)}
+          onContextMenu={(e) => activeConnection && handleContextMenu(e, activeConnection)}
         >
           {activeConnection ? (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: activeConnection.color || '#82aaff', flexShrink: 0 }} />
-              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeConnection.name}</span>
-              <span
-                title={connectingIds.has(activeConnection.id) ? '连接中' : connectionStatuses[activeConnection.id]?.connected ? '已连接' : '未连接'}
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  flexShrink: 0,
-                  background: connectingIds.has(activeConnection.id)
-                    ? 'var(--warning)'
-                    : connectionStatuses[activeConnection.id]?.connected
-                      ? 'var(--success)'
-                      : 'var(--text-muted)',
-                }}
-              />
-            </span>
+            <>
+              <ConnAvatar conn={activeConnection} status={getConnState(activeConnection.id)} />
+              <span className="conn-text">
+                <span className="conn-name">{activeConnection.name}</span>
+                <span className="conn-host">{formatConnHost(activeConnection)}</span>
+              </span>
+            </>
           ) : (
-            <span style={{ color: 'var(--text-muted)' }}>选择连接...</span>
+            <>
+              <span className="conn-avatar conn-avatar-empty"><ApiOutlined /></span>
+              <span className="conn-text">
+                <span className="conn-name conn-placeholder">选择连接</span>
+                <span className="conn-host">{connections.length ? `共 ${connections.length} 个连接` : '还没有连接'}</span>
+              </span>
+            </>
           )}
-          <DownOutlined style={{ fontSize: 10, color: 'var(--text-muted)' }} />
-        </div>
+          <DownOutlined className="conn-chevron" />
+        </button>
         {dropdownOpen && (
-          <div className="conn-dropdown">
-            {connections.length === 0 ? (
-              <div style={{ padding: '8px 12px', color: 'var(--text-muted)', fontSize: 12 }}>暂无连接</div>
-            ) : (
-              connections.map((conn) => {
-                const isConnected = connectionStatuses[conn.id]?.connected
-                const isConnecting = connectingIds.has(conn.id)
-                const isActive = activeConnection?.id === conn.id
-                return (
-                  <div
-                    key={conn.id}
-                    className={`conn-option ${isActive ? 'active' : ''}`}
-                    onClick={() => handleSelect(conn)}
-                    onContextMenu={(e) => handleContextMenu(e, conn)}
-                  >
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: conn.color || '#82aaff', flexShrink: 0 }} />
-                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{conn.name}</span>
-                    <span
-                      title={isConnecting ? '连接中' : isConnected ? '已连接' : '未连接'}
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: '50%',
-                        flexShrink: 0,
-                        background: isConnecting
-                          ? 'var(--warning)'
-                          : isConnected
-                            ? 'var(--success)'
-                            : 'var(--text-muted)',
-                      }}
-                    />
-                  </div>
-                )
-              })
+          <div className="conn-dropdown" onKeyDown={handleDropdownKeyDown}>
+            {connections.length > 0 && (
+              <div className="conn-search">
+                <SearchOutlined />
+                <input
+                  autoFocus
+                  value={connFilter}
+                  onChange={(e) => { setConnFilter(e.target.value); setHighlightIndex(0) }}
+                  placeholder="搜索连接名 / 主机"
+                />
+              </div>
             )}
+            <div className="conn-list" ref={connListRef}>
+              {connections.length === 0 ? (
+                <div className="conn-empty">暂无连接，先新建一个吧</div>
+              ) : filteredConnections.length === 0 ? (
+                <div className="conn-empty">没有匹配的连接</div>
+              ) : (
+                connGroups.map((group, groupIndex) => (
+                  <div key={`${groupIndex}-${group.label}`}>
+                    <div className="conn-group-label">{group.label}<span>{group.items.length}</span></div>
+                    {group.items.map((conn) => {
+                      const index = filteredConnections.indexOf(conn)
+                      const isActive = activeConnection?.id === conn.id
+                      return (
+                        <div
+                          key={conn.id}
+                          className={`conn-option ${isActive ? 'active' : ''} ${index === highlightIndex ? 'highlight' : ''}`}
+                          style={{ '--i': index } as React.CSSProperties}
+                          onClick={() => handleSelect(conn)}
+                          onMouseMove={() => {
+                            if (index === highlightIndex) return
+                            scrollHighlightRef.current = false
+                            setHighlightIndex(index)
+                          }}
+                          onContextMenu={(e) => handleContextMenu(e, conn)}
+                        >
+                          <ConnAvatar conn={conn} status={getConnState(conn.id)} size="small" />
+                          <span className="conn-text">
+                            <span className="conn-name">{conn.name}</span>
+                            <span className="conn-host">
+                              {formatConnHost(conn)}
+                              {conn.sshEnabled && <span className="conn-tag">SSH</span>}
+                              {conn.sslEnabled && <span className="conn-tag">SSL</span>}
+                            </span>
+                          </span>
+                          {isActive && <CheckOutlined className="conn-check" />}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="conn-footer">
+              <button type="button" onClick={openConnManager}>
+                <PlusOutlined /> 新建连接
+              </button>
+              <button type="button" onClick={openConnManager}>
+                <SettingOutlined /> 管理
+              </button>
+            </div>
           </div>
         )}
       </div>

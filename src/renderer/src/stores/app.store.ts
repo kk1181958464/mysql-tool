@@ -16,6 +16,8 @@ import {
   type PaginationMode,
 } from '../../../shared/constants'
 
+export const OPEN_CONNECTION_MANAGER_EVENT = 'app:open-connection-manager'
+
 type ThemeMode = 'light' | 'dark' | 'system'
 type ResolvedTheme = 'light' | 'dark'
 

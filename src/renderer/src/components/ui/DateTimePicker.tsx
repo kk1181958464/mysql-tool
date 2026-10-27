@@ -80,7 +80,7 @@ export function DateTimePicker({ value, dateOnly, anchorRect, onConfirm, onCance
   const S: Record<string, React.CSSProperties> = {
     panel: {
       position: 'fixed', zIndex: DATETIME_PICKER_Z_INDEX, background: 'var(--bg-surface)', border: '1px solid var(--border)',
-      borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.3)', padding: 8, width: DATETIME_PICKER_WIDTH, userSelect: 'none',
+      borderRadius: 8, boxShadow: 'var(--shadow)', animation: 'menu-in var(--dur-base) var(--ease-out)', padding: 8, width: DATETIME_PICKER_WIDTH, userSelect: 'none',
       left: (() => {
         if (!anchorRect) return 0
         const anchorRight = anchorRect.right ?? anchorRect.left
@@ -103,7 +103,7 @@ export function DateTimePicker({ value, dateOnly, anchorRect, onConfirm, onCance
       fontSize: 12, padding: '4px 0', borderRadius: 4, cursor: 'pointer', border: 'none', background: 'transparent',
       color: 'var(--text-primary)',
     },
-    daySelected: { background: 'var(--accent)', color: '#fff' },
+    daySelected: { background: 'var(--accent-solid)', color: 'var(--accent-fg)' },
     dayEmpty: { visibility: 'hidden' as const },
     timeRow: { display: 'flex', gap: 4, alignItems: 'center', justifyContent: 'center', margin: '6px 0' },
     timeInput: {
@@ -117,7 +117,7 @@ export function DateTimePicker({ value, dateOnly, anchorRect, onConfirm, onCance
     },
     btnPrimary: {
       padding: '3px 12px', borderRadius: 4, fontSize: 12, cursor: 'pointer', border: '1px solid var(--accent)',
-      background: 'var(--accent)', color: '#fff',
+      background: 'var(--accent-solid)', color: 'var(--accent-fg)',
     },
   }
 

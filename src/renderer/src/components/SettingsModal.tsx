@@ -14,7 +14,8 @@ import {
 } from '../../../shared/constants'
 
 const ACCENT_COLORS = [
-  { label: '蓝色', value: '' },
+  { label: '靛蓝', value: '' },
+  { label: '蓝色', value: '#3b82f6' },
   { label: '紫色', value: '#8b5cf6' },
   { label: '绿色', value: '#22c55e' },
   { label: '橙色', value: '#f97316' },
@@ -156,7 +157,7 @@ export default function SettingsModal({ open, onClose }: Props) {
             {ACCENT_COLORS.map((c) => (
               <button key={c.label} onClick={() => setAccentColor(c.value)} title={c.label} style={{
                 width: 32, height: 32, borderRadius: '50%', border: `2px solid ${(accentColor || '') === c.value ? 'var(--text-primary)' : 'var(--border)'}`,
-                background: c.value || '#3b82f6', cursor: 'pointer', transition: 'all 0.15s',
+                background: c.value || '#5b5bd6', cursor: 'pointer', transition: 'transform var(--dur-base) var(--ease-spring), border-color var(--transition)',
               }} />
             ))}
           </div>

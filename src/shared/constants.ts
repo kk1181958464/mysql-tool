@@ -1,4 +1,7 @@
 export const APP_NAME = 'kMysql'
+
+export const WINDOW_BACKGROUND = { light: '#f7f7fa', dark: '#111116' } as const
+export const WINDOW_THEME_SETTING_KEY = 'ui.windowTheme'
 export const DEFAULT_PORT = 3306
 export const DEFAULT_SSH_PORT = 22
 export const DEFAULT_CHARSET = 'utf8mb4'

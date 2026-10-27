@@ -441,7 +441,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
                 padding: '8px 10px',
                 border: '1px solid var(--warning)',
                 borderRadius: 6,
-                background: 'rgba(245, 158, 11, 0.08)',
+                background: 'var(--warning-bg)',
                 color: 'var(--text-secondary)',
                 fontSize: 12,
                 display: 'flex',

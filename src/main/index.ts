@@ -10,7 +10,7 @@ import * as logger from './utils/logger'
 import * as queryExecutor from './services/query-executor'
 import { cancelMultiStatementSql } from './services/sql-script-executor'
 import { initializeAppUpdater, scheduleStartupUpdateCheck } from './services/app-updater'
-import { APP_NAME } from '../shared/constants'
+import { APP_NAME, WINDOW_BACKGROUND, WINDOW_THEME_SETTING_KEY } from '../shared/constants'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -123,14 +123,23 @@ function createTray() {
   }
 }
 
+function getStartupWindowTheme(): 'light' | 'dark' {
+  try {
+    const saved = localStore.settings.get(WINDOW_THEME_SETTING_KEY)
+    if (saved === 'light' || saved === 'dark') return saved
+  } catch (error) {
+    logger.warn('Failed to read window theme', error)
+  }
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+}
+
 function createWindow() {
-  const isDark = nativeTheme.shouldUseDarkColors
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
-    backgroundColor: isDark ? '#171c28' : '#f5f7fa',
+    backgroundColor: WINDOW_BACKGROUND[getStartupWindowTheme()],
     icon: getAppIconPath(),
     frame: false,
     transparent: false,
@@ -219,6 +228,11 @@ app.whenReady().then(() => {
     app.quit()
   })
   ipcMain.handle(IPC.WIN_IS_MAXIMIZED, () => mainWindow?.isMaximized() ?? false)
+  ipcMain.on(IPC.WIN_SET_THEME, (_event, theme: unknown) => {
+    if (theme !== 'light' && theme !== 'dark') return
+    mainWindow?.setBackgroundColor(WINDOW_BACKGROUND[theme])
+    localStore.settings.set(WINDOW_THEME_SETTING_KEY, theme)
+  })
 
   createWindow()
   createTray()
