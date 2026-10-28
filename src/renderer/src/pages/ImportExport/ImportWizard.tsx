@@ -6,6 +6,7 @@ import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
 import { formatErrorSummary, getErrorMessage } from '../../utils/error-info'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { useWizardConnection } from '../../hooks/useWizardConnection'
 
 interface Props { onBack: () => void }
 
@@ -26,26 +27,28 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
   const [progressErrors, setProgressErrors] = useState(0)
   const [result, setResult] = useState<{ success: boolean; imported: number; errors: number; message?: string; errorReportPath?: string } | null>(null)
   const [loading, setLoading] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const taskIdRef = useRef<string | null>(null)
 
-  const connId = useConnectionStore((s) => s.activeConnectionId)
+  const { connId, connectionName, switched } = useWizardConnection()
   const databases = useDatabaseStore((s) => connId ? s.databases[connId] ?? [] : [])
   const tables = useDatabaseStore((s) => connId && targetDb ? s.tables[`${connId}:${targetDb}`] ?? [] : [])
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const ext = file.name.split('.').pop()?.toLowerCase()
-    const fullName = file.name.toLowerCase()
-    if (ext === 'csv') setFileType('csv')
+  const handleFileSelect = async () => {
+    const pickedPath = await api.dialog.openFile({
+      filters: [{ name: '数据文件', extensions: ['csv', 'tsv', 'xlsx', 'xls', 'sql', 'gz'] }],
+    })
+    if (!pickedPath) return
+    const fileName = pickedPath.split(/[\\/]/).pop() || pickedPath
+    const ext = fileName.split('.').pop()?.toLowerCase()
+    const fullName = fileName.toLowerCase()
+    if (ext === 'csv' || ext === 'tsv') setFileType('csv')
     else if (ext === 'xlsx' || ext === 'xls') setFileType('excel')
     else if (ext === 'sql' || fullName.endsWith('.sql.gz')) setFileType('sql')
-    setFilePath((file as any).path || file.name)
+    setFilePath(pickedPath)
 
     if (connId && ext !== 'sql' && !fullName.endsWith('.sql.gz')) {
       try {
-        const preview = await api.importExport.preview((file as any).path || file.name)
+        const preview = await api.importExport.preview(pickedPath)
         if (preview) {
           setPreviewData({ columns: preview.columns || [], rows: (preview.rows || []).slice(0, 100) })
           setSheetNames(preview.sheetNames || [])
@@ -123,8 +126,7 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
       case 0:
         return (
           <div style={{ padding: 24, textAlign: 'center' }}>
-            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.sql,.sql.gz" onChange={handleFileSelect} style={{ display: 'none' }} />
-            <Button icon={<UploadOutlined />} size="large" onClick={() => fileInputRef.current?.click()}>选择文件</Button>
+            <Button icon={<UploadOutlined />} size="large" onClick={handleFileSelect}>选择文件</Button>
             {filePath && <p style={{ marginTop: 12 }}>已选择: {filePath} ({fileType.toUpperCase()})</p>}
           </div>
         )
@@ -208,6 +210,11 @@ const ImportWizard: React.FC<Props> = ({ onBack }) => {
 
   return (
     <div style={{ padding: 16 }}>
+      <div className={`wizard-target ${switched ? 'switched' : ''}`} title={switched ? '侧栏已切换到其他连接，本向导仍作用于该连接' : undefined}>
+        <span className="wizard-target-dot" />
+        目标连接 <strong>{connectionName || '未选择'}</strong>
+        {switched && <span>· 侧栏已切换，本向导仍作用于该连接</span>}
+      </div>
       <Button icon={<ArrowLeftOutlined />} onClick={onBack} style={{ marginBottom: 16 }}>返回</Button>
       <div style={{ display: 'flex', marginBottom: 24 }}>
         {stepTitles.map((t, i) => (

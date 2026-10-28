@@ -6,6 +6,9 @@ const ENGINES = new Set(['InnoDB', 'MyISAM', 'MEMORY', 'CSV', 'ARCHIVE'])
 const INDEX_TYPES = new Set(['INDEX', 'UNIQUE', 'FULLTEXT', 'SPATIAL'])
 const INDEX_METHODS = new Set(['BTREE', 'HASH'])
 const FK_ACTIONS = new Set(['RESTRICT', 'CASCADE', 'SET NULL', 'NO ACTION', 'SET DEFAULT'])
+const QUOTED_VALUE = "'(?:[^'\\\\]|\\\\.|'')*'"
+const LIST_VALUES = new RegExp(`^\\s*${QUOTED_VALUE}(?:\\s*,\\s*${QUOTED_VALUE})*\\s*$`)
+const COLUMN_TYPE_PATTERN = /^[A-Za-z]+(?:\s*\([\s\S]*\))?(?:\s+(?:unsigned|signed|zerofill))*$/i
 
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label}必须是对象`)
@@ -32,12 +35,24 @@ function column(value: unknown): ColumnDesign {
   const v = object(value, '字段')
   const defaultValue = text(v.defaultValue, '默认值', 1024)
   if (/;|--|#|\/\*/.test(defaultValue)) throw new Error('默认值包含不允许的 SQL 分隔符或注释')
-  const length = text(v.length, '字段长度', 32)
+  const type = enumValue<string>(v.type, COLUMN_TYPES, '字段类型')
+  const isList = type === 'ENUM' || type === 'SET'
+  const length = text(v.length, '字段长度', isList ? 65535 : 32)
   const decimals = text(v.decimals, '小数位数', 8)
-  if (length && !/^\d+$/.test(length)) throw new Error('字段长度必须是整数')
+  if (isList) {
+    if (!LIST_VALUES.test(length)) throw new Error('ENUM/SET 取值格式应为 \'a\',\'b\'')
+  } else if (length && !/^\d+$/.test(length)) {
+    throw new Error('字段长度必须是整数')
+  }
   if (decimals && !/^\d+$/.test(decimals)) throw new Error('小数位数必须是整数')
+  const columnType = v.columnType === undefined || v.columnType === '' ? undefined : text(v.columnType, '原字段类型', 65535)
+  if (columnType && !COLUMN_TYPE_PATTERN.test(columnType)) throw new Error('原字段类型格式无效')
+  const collation = v.collation === undefined || v.collation === null || v.collation === '' ? undefined : text(v.collation, '字段排序规则', 64)
+  if (collation && !/^[A-Za-z0-9_]+$/.test(collation)) throw new Error('字段排序规则格式无效')
+  const originalName = v.originalName === undefined || v.originalName === '' ? undefined : validateIdentifier(v.originalName, '原字段名')
   return {
-    name: validateIdentifier(v.name, '字段名'), type: enumValue(v.type, COLUMN_TYPES, '字段类型'), length, decimals,
+    originalName, columnType, collation,
+    name: validateIdentifier(v.name, '字段名'), type, length, decimals,
     nullable: bool(v.nullable, '可空选项'), defaultValue, autoIncrement: bool(v.autoIncrement, '自增选项'),
     primaryKey: bool(v.primaryKey, '主键选项'), unique: bool(v.unique, '唯一选项'), comment: text(v.comment, '字段注释', 1024),
     unsigned: bool(v.unsigned, '无符号选项'), zerofill: bool(v.zerofill, '零填充选项'),
@@ -83,18 +98,23 @@ export function validateTableDesign(value: unknown): TableDesign {
 export function validateTableDiff(value: unknown, design: TableDesign): TableDiff {
   const v = object(value, '表结构差异')
   const names = new Set(design.columns.map((c) => c.name))
-  const ids = (key: string) => list(v[key] ?? [], key, 512).map((name) => validateIdentifier(name, key))
+  const ids = (key: string, label: string) => list(v[key] ?? [], label, 512).map((name) => validateIdentifier(name, label))
   const requestedOptions = object(v.changeOptions ?? {}, '表选项')
   const changeOptions: TableDiff['changeOptions'] = {}
   if (requestedOptions.engine !== undefined) changeOptions.engine = design.engine
   if (requestedOptions.charset !== undefined) changeOptions.charset = design.charset
   if (requestedOptions.collation !== undefined) changeOptions.collation = design.collation
   if (requestedOptions.comment !== undefined) changeOptions.comment = design.comment
+  let primaryKey: TableDiff['primaryKey']
+  if (v.primaryKey !== undefined) {
+    const pk = object(v.primaryKey, '主键变更')
+    primaryKey = { dropExisting: bool(pk.dropExisting, '删除原主键'), columns: design.columns.filter((c) => c.primaryKey).map((c) => c.name) }
+  }
   return {
     addColumns: list(v.addColumns ?? [], '新增字段', 512).map(column),
-    modifyColumns: list(v.modifyColumns ?? [], '修改字段', 512).map((item) => { const m = object(item, '修改字段'); return { old: validateIdentifier(m.old, '原字段名'), new: column(m.new) } }),
-    dropColumns: ids('删除字段'), addIndexes: list(v.addIndexes ?? [], '新增索引', 128).map((i) => index(i, names)), dropIndexes: ids('删除索引'),
-    addForeignKeys: list(v.addForeignKeys ?? [], '新增外键', 128).map((f) => foreignKey(f, names)), dropForeignKeys: ids('删除外键'),
-    changeOptions,
+    modifyColumns: list(v.modifyColumns ?? [], '修改字段', 512).map((item) => { const m = object(item, '修改字段'); return { old: validateIdentifier(m.old, '原字段名'), new: column(m.new), moved: m.moved === true } }),
+    dropColumns: ids('dropColumns', '删除字段'), addIndexes: list(v.addIndexes ?? [], '新增索引', 128).map((i) => index(i, names)), dropIndexes: ids('dropIndexes', '删除索引'),
+    addForeignKeys: list(v.addForeignKeys ?? [], '新增外键', 128).map((f) => foreignKey(f, names)), dropForeignKeys: ids('dropForeignKeys', '删除外键'),
+    changeOptions, primaryKey,
   }
 }

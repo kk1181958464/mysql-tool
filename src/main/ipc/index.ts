@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, dialog, type WebContents } from 'electron'
+import { BrowserWindow, ipcMain, dialog } from 'electron'
 import { writeFile, readFile, stat } from 'fs/promises'
 import * as path from 'path'
 import { IPC } from '../../shared/types/ipc-channels'
@@ -20,14 +20,13 @@ import {
   HEARTBEAT_AUTOTUNE_SETTING_KEY,
 } from '../../shared/constants'
 import * as logger from '../utils/logger'
+import { consumeFileAccess, grantFileAccess } from '../utils/file-access'
 import { validateConnectionId } from '../utils/query-request'
 import { validateHistoryItem, validateHistoryPage, validateOptionalFilter, validateSettingKey, validateSettingValue, validateSnippet } from '../utils/store-request'
 import { validateFileContent, validateOpenDialogOptions, validateSaveDialogOptions } from '../utils/dialog-request'
 
-type FileAccess = 'read' | 'write'
 type DroppableObjectType = 'VIEW' | 'PROCEDURE' | 'FUNCTION' | 'TRIGGER' | 'EVENT'
 
-const fileAccessGrants = new WeakMap<WebContents, Record<FileAccess, Set<string>>>()
 const DROPPABLE_OBJECT_TYPES = new Set<DroppableObjectType>(['VIEW', 'PROCEDURE', 'FUNCTION', 'TRIGGER', 'EVENT'])
 const MAX_SQL_LENGTH = 2 * 1024 * 1024
 const MAX_ROUTINE_PARAMS = 1024
@@ -86,36 +85,6 @@ function requireRoutineParams(value: unknown): string[] {
     }
     return item
   })
-}
-
-function normalizeGrantedPath(filePath: string): string {
-  const normalized = path.resolve(filePath)
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
-}
-
-function getFileAccessGrants(sender: WebContents): Record<FileAccess, Set<string>> {
-  let grants = fileAccessGrants.get(sender)
-  if (!grants) {
-    grants = { read: new Set(), write: new Set() }
-    fileAccessGrants.set(sender, grants)
-  }
-  return grants
-}
-
-function grantFileAccess(sender: WebContents, access: FileAccess, filePath: string): void {
-  getFileAccessGrants(sender)[access].add(normalizeGrantedPath(filePath))
-}
-
-function consumeFileAccess(sender: WebContents, access: FileAccess, filePath: string): void {
-  if (typeof filePath !== 'string' || !filePath.trim()) {
-    throw new Error('文件路径无效')
-  }
-
-  const normalized = normalizeGrantedPath(filePath)
-  const grants = getFileAccessGrants(sender)[access]
-  if (!grants.delete(normalized)) {
-    throw new Error('文件路径未经系统对话框授权')
-  }
 }
 
 export function registerAllIPC() {

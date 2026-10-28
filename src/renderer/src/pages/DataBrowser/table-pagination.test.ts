@@ -25,4 +25,13 @@ describe('sorted keyset pagination', () => {
       '(`name` IS NOT NULL OR (`name` IS NULL AND `id` > 4))'
     )
   })
+
+  it('does not repeat or skip null rows when paging toward smaller values', () => {
+    expect(buildKeysetPredicate({ column: 'name', direction: 'DESC' }, 'id', null, 4, '<')).toBe(
+      '(`name` IS NULL AND `id` < 4)'
+    )
+    expect(buildKeysetPredicate({ column: 'name', direction: 'DESC' }, 'id', 'bob', 9, '<')).toBe(
+      "((`name` < 'bob') OR (`name` = 'bob' AND `id` < 9) OR `name` IS NULL)"
+    )
+  })
 })

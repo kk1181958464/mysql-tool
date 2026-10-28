@@ -43,7 +43,8 @@ export async function execute(connectionId: string, sql: string, database?: stri
   runningQueries.set(runningKey, conn)
 
   try {
-    if (database) await conn.query(`USE ${quoteId(database)}`)
+    const effectiveDatabase = database || connectionManager.getConnectionConfig(connectionId)?.databaseName
+    if (effectiveDatabase) await conn.query(`USE ${quoteId(effectiveDatabase)}`)
 
     const limitedSql = applyResultRowLimit(sql, { enabled: true })
     const [rows, fields] = await conn.query(limitedSql.sql, options?.params)
@@ -192,7 +193,8 @@ export async function explain(connectionId: string, sql: string, database?: stri
   const runningKey = getRunningQueryKey(connectionId, options?.executionId)
   runningQueries.set(runningKey, conn)
   try {
-    if (database) await conn.query(`USE ${quoteId(database)}`)
+    const effectiveDatabase = database || connectionManager.getConnectionConfig(connectionId)?.databaseName
+    if (effectiveDatabase) await conn.query(`USE ${quoteId(effectiveDatabase)}`)
     const [rows] = await conn.query(`EXPLAIN ${sql}`)
     return (rows as DbRow[]).map(r => ({
       id: r.id,
@@ -214,11 +216,29 @@ export async function explain(connectionId: string, sql: string, database?: stri
   }
 }
 
+function killAndDestroy(connectionId: string, conn: mysql.PoolConnection): void {
+  const threadId = (conn as unknown as { threadId?: number }).threadId
+  const destroy = () => {
+    try { conn.destroy() } catch { /* ignore destroy errors */ }
+  }
+  if (!threadId) {
+    destroy()
+    return
+  }
+  let pool: mysql.Pool | null = null
+  try { pool = connectionManager.getPool(connectionId) } catch { pool = null }
+  if (!pool) {
+    destroy()
+    return
+  }
+  pool.query(`KILL QUERY ${Number(threadId)}`).catch(() => {}).finally(destroy)
+}
+
 export async function cancel(connectionId: string, executionId?: string): Promise<void> {
   const runningKey = getRunningQueryKey(connectionId, executionId)
   const conn = runningQueries.get(runningKey)
   if (conn) {
-    conn.destroy()
+    killAndDestroy(connectionId, conn)
     runningQueries.delete(runningKey)
     logger.info(`Query cancelled for ${runningKey}`)
     if (executionId) return
@@ -228,7 +248,7 @@ export async function cancel(connectionId: string, executionId?: string): Promis
 
   for (const [key, runningConn] of runningQueries.entries()) {
     if (key !== connectionId && !key.startsWith(`${connectionId}:`)) continue
-    runningConn.destroy()
+    killAndDestroy(connectionId, runningConn)
     runningQueries.delete(key)
   }
 }

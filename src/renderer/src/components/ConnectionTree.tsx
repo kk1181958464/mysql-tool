@@ -98,6 +98,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [exportProgress, setExportProgress] = useState<{ current: string; done: number; total: number; rows: number; totalRows?: number; finished?: boolean; cancelled?: boolean } | null>(null)
   const exportCancelledRef = useRef(false)
+  const exportTaskIdRef = useRef<string | null>(null)
   const exportSessionActiveRef = useRef(false)
   const [dbRemarks, setDbRemarks] = useState<Record<string, string>>({})
   const [remarkEdit, setRemarkEdit] = useState<{ dbName: string; value: string } | null>(null)
@@ -627,8 +628,13 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     if (!deleteTableConfirm || !activeConnectionId) return
     setDeleting(true)
     try {
-      await api.query.execute(activeConnectionId, `DROP TABLE ${quoteId(deleteTableConfirm.dbName)}.${quoteId(deleteTableConfirm.tableName)}`)
-      await loadTables(activeConnectionId, deleteTableConfirm.dbName)
+      const { dbName, tableName } = deleteTableConfirm
+      await api.query.execute(activeConnectionId, `DROP TABLE ${quoteId(dbName)}.${quoteId(tableName)}`)
+      removeTabsByIds(mainTabs
+        .filter((tab) => tab.connectionId === activeConnectionId && tab.database === dbName
+          && (tab.type === 'data' || tab.type === 'design') && (tab as { table?: string | null }).table === tableName)
+        .map((tab) => tab.id))
+      await loadTables(activeConnectionId, dbName, true)
       setDeleteTableConfirm(null)
     } catch (e: any) {
       showError(e, '删除失败')
@@ -642,6 +648,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     setDeleting(true)
     try {
       await api.query.execute(activeConnectionId, `TRUNCATE TABLE ${quoteId(truncateConfirm.dbName)}.${quoteId(truncateConfirm.tableName)}`)
+      await loadTables(activeConnectionId, truncateConfirm.dbName, true)
       setTruncateConfirm(null)
     } catch (e: any) {
       showError(e, '清空失败')
@@ -655,7 +662,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     setSaving(true)
     try {
       await api.query.execute(activeConnectionId, `RENAME TABLE ${quoteId(renameTable.dbName)}.${quoteId(renameTable.tableName)} TO ${quoteId(renameTable.dbName)}.${quoteId(renameTable.newName)}`)
-      await loadTables(activeConnectionId, renameTable.dbName)
+      await loadTables(activeConnectionId, renameTable.dbName, true)
       // 更新已打开的标签页
       renameTableInTabs(activeConnectionId, renameTable.dbName, renameTable.tableName, renameTable.newName)
       setRenameTable(null)
@@ -675,9 +682,9 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       let sql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
       if (!sql.trimEnd().endsWith(';')) sql += ';'
       // 导出默认带 DROP，导入再补齐（双重保证）
-      sql = `DROP TABLE IF EXISTS \`${tableName}\`;\n${sql}`
+      sql = `DROP TABLE IF EXISTS ${quoteId(tableName)};\n${sql}`
       if (includeData) {
-        sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
+        sql += `\n\n-- ----------------------------\n-- Records of ${quoteId(tableName)}\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
       }
       setExportSql({ dbName, tableName, includeData, sql })
     } catch (e: any) {
@@ -797,7 +804,10 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       }
 
       // 注意：此处 sql 参数仅用于 CSV/JSON；format=sql 时由 options.tables 驱动
+      const taskId = crypto.randomUUID()
+      exportTaskIdRef.current = taskId
       await api.importExport.exportData(activeConnectionId, dbName, '', filePath, 'sql', {
+        taskId,
         tables,
         dropTable: true,
         createTable: true,
@@ -1281,7 +1291,13 @@ export default function ConnectionTree({ filterText = '' }: Props) {
           ) : exportProgress?.cancelled ? (
             <Button variant="default" onClick={() => { exportSessionActiveRef.current = false; setExportModalOpen(false); setExportProgress(null); setExporting(false) }}>关闭</Button>
           ) : (
-            <Button variant="danger" onClick={() => { exportCancelledRef.current = true; exportSessionActiveRef.current = false; setExportProgress(prev => prev ? { ...prev, cancelled: true } : prev); setExporting(false) }}>取消</Button>
+            <Button variant="danger" onClick={() => {
+              exportCancelledRef.current = true
+              exportSessionActiveRef.current = false
+              if (exportTaskIdRef.current) void api.importExport.cancel(exportTaskIdRef.current).catch(() => {})
+              setExportProgress(prev => ({ ...(prev ?? { current: '', done: 0, total: 0, rows: 0 }), cancelled: true }))
+              setExporting(false)
+            }}>取消</Button>
           )
         }
       >

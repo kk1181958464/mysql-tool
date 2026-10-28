@@ -7,6 +7,7 @@ import { api } from '../../utils/ipc'
 import type { BackupRecord } from '../../../../shared/types/table-design'
 import { getErrorMessage } from '../../utils/error-info'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { useWizardConnection } from '../../hooks/useWizardConnection'
 
 interface Props { onBack: () => void }
 
@@ -20,7 +21,7 @@ const BackupWizard: React.FC<Props> = ({ onBack }) => {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<{ success: boolean; filePath?: string; size?: number; duration?: number; message?: string } | null>(null)
 
-  const connId = useConnectionStore((s) => s.activeConnectionId)
+  const { connId, connectionName, switched } = useWizardConnection()
   const databases = useDatabaseStore((s) => connId ? s.databases[connId] ?? [] : [])
 
   const execute = async () => {
@@ -106,6 +107,11 @@ const BackupWizard: React.FC<Props> = ({ onBack }) => {
 
   return (
     <div style={{ padding: 16 }}>
+      <div className={`wizard-target ${switched ? 'switched' : ''}`} title={switched ? '侧栏已切换到其他连接，本向导仍作用于该连接' : undefined}>
+        <span className="wizard-target-dot" />
+        目标连接 <strong>{connectionName || '未选择'}</strong>
+        {switched && <span>· 侧栏已切换，本向导仍作用于该连接</span>}
+      </div>
       <Button icon={<ArrowLeftOutlined />} onClick={onBack} style={{ marginBottom: 16 }}>返回</Button>
       <div style={{ display: 'flex', marginBottom: 24 }}>
         {stepTitles.map((t, i) => (

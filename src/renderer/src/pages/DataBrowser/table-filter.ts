@@ -5,7 +5,13 @@ type SimpleFilterOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'contains' | 
 
 export type SimpleFilterField = keyof Omit<SimpleFilterCondition, 'id' | 'type'>
 
-const quoteSqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`
+const quoteSqlString = (value: string): string => `'${value
+  .replace(/\\/g, '\\\\')
+  .replace(/'/g, "\\'")
+  .replace(/\u0000/g, '\\0')
+  .replace(/\n/g, '\\n')
+  .replace(/\r/g, '\\r')
+  .replace(/\u001a/g, '\\Z')}'`
 
 const isNumericType = (type: string) => /int|decimal|float|double|numeric|real|bit|serial/i.test(type)
 

@@ -318,6 +318,7 @@ export function Row({ gutter = 0, align, justify, children, className = '', styl
       className={`ui-row ${className}`}
       style={{
         gap: `${vGap}px ${hGap}px`,
+        ['--row-gap' as string]: `${hGap}px`,
         alignItems: align === 'top' ? 'flex-start' : align === 'bottom' ? 'flex-end' : align === 'middle' ? 'center' : undefined,
         justifyContent: justify === 'start' ? 'flex-start' : justify === 'end' ? 'flex-end' : justify,
         ...style,
@@ -335,9 +336,12 @@ interface ColProps {
   style?: React.CSSProperties
 }
 
+// Each column gives up its share of the row gaps so a full row of spans fits on one line.
+const colWidth = (span: number) => `calc(${(span / 24) * 100}% - var(--row-gap, 0px) * ${1 - span / 24})`
+
 export function Col({ span = 24, children, className = '', style }: ColProps) {
   return (
-    <div className={`ui-col ${className}`} style={{ flex: `0 0 ${(span / 24) * 100}%`, maxWidth: `${(span / 24) * 100}%`, ...style }}>
+    <div className={`ui-col ${className}`} style={{ flex: `0 0 ${colWidth(span)}`, maxWidth: colWidth(span), minWidth: 0, ...style }}>
       {children}
     </div>
   )

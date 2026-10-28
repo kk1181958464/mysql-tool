@@ -8,6 +8,7 @@ import { ErrorNotice } from '../../components/ErrorNotice'
 import { describeError } from '../../utils/error-info'
 import type { QueryHistoryItem, QueryStatementResult } from '../../../../shared/types/query'
 import tableTransformWorker from '../../workers/table-transform.worker?worker'
+import { mysqlTypeName } from '../../utils/mysql-type-name'
 
 interface Props {
   tabId: string
@@ -143,8 +144,11 @@ function StatementError({ error }: { error: string }) {
   )
 }
 
+const EMPTY_ROWS: Record<string, unknown>[] = []
+const EMPTY_COLUMNS: QueryStatementResult['columns'] = []
+
 export const ResultPanel: React.FC<Props> = ({ tabId }) => {
-  const { tabs } = useTabStore()
+  const tabFromStore = useTabStore((s) => s.tabs.find((t) => t.id === tabId))
   const [runningElapsedMs, setRunningElapsedMs] = useState(0)
   const [historyRows, setHistoryRows] = useState<QueryHistoryItem[]>([])
   const [historyPage, setHistoryPage] = useState(1)
@@ -154,12 +158,12 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
   const [activeKey, setActiveKey] = useState('results')
   const [activeStatementIndex, setActiveStatementIndex] = useState(0)
   const [activeResultSetIndex, setActiveResultSetIndex] = useState(0)
-  const [transformedRows, setTransformedRows] = useState<Array<Record<string, unknown>>>([])
+  const [transformedRows, setTransformedRows] = useState<Array<Record<string, unknown>>>(EMPTY_ROWS)
   const [exportingFormat, setExportingFormat] = useState<string | null>(null)
   const [exportMessage, setExportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const transformJobIdRef = useRef(0)
 
-  const tab = tabs.find((t) => t.id === tabId) as QueryTab | undefined
+  const tab = tabFromStore as QueryTab | undefined
   const tabConnectionId = tab?.connectionId ?? null
   const result = tab?.result
   const error = tab?.error
@@ -185,8 +189,8 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
       : []
   const selectedStatement = statementResults[activeStatementIndex] || statementResults[0] || null
   const selectedResultSet = selectedStatement?.resultSets?.[activeResultSetIndex]
-  const displayedColumns = selectedResultSet?.columns || selectedStatement?.columns || []
-  const displayedRows = selectedResultSet?.rows || selectedStatement?.rows || []
+  const displayedColumns = selectedResultSet?.columns || selectedStatement?.columns || EMPTY_COLUMNS
+  const displayedRows = selectedResultSet?.rows || selectedStatement?.rows || EMPTY_ROWS
   const hasMultipleStatements = statementResults.length > 1
   const aggregateExecutionTime = statementResults.reduce((sum, item) => sum + item.executionTime, 0)
   const aggregateSuccessCount = statementResults.filter((item) => item.success).length
@@ -266,7 +270,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
 
   const resultColumns = displayedColumns.map((col) => ({
     key: col.name,
-    title: <span>{col.name} <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{col.type}</span></span>,
+    title: <span className="result-col-title">{col.name}{mysqlTypeName(col.type) && <span className="result-col-type">{mysqlTypeName(col.type)}</span>}</span>,
     dataIndex: col.name,
     width: 150,
     ellipsis: true,
@@ -281,10 +285,8 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
 
   useEffect(() => {
     const rows = displayedRows
-    if (!rows || rows.length === 0) {
-      setTransformedRows([])
-      return
-    }
+    setTransformedRows((prev) => (prev.length ? EMPTY_ROWS : prev))
+    if (!rows || rows.length === 0) return
 
     if (rows.length < RESULT_WORKER_THRESHOLD) {
       setTransformedRows(rows)
@@ -348,7 +350,7 @@ export const ResultPanel: React.FC<Props> = ({ tabId }) => {
     setExportingFormat(format)
     setExportMessage(null)
     try {
-      const filePath = await api.importExport.exportData(tabConnectionId, '', selectedStatement.sql, '', format)
+      const filePath = await api.importExport.exportData(tabConnectionId, tab?.database || '', selectedStatement.sql, '', format)
       if (filePath) {
         setExportMessage({ type: 'success', text: `导出完成: ${filePath}` })
       }

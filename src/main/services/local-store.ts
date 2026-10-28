@@ -30,6 +30,10 @@ function migrateTables() {
   if (!connectionColumns.has('icon')) {
     db.exec("ALTER TABLE connections ADD COLUMN icon TEXT DEFAULT ''")
   }
+  const backupColumns = new Set((db.prepare('PRAGMA table_info(backup_records)').all() as { name: string }[]).map((c) => c.name))
+  if (!backupColumns.has('scheduleId')) {
+    db.exec("ALTER TABLE backup_records ADD COLUMN scheduleId TEXT DEFAULT ''")
+  }
 }
 
 function createTables() {
@@ -181,13 +185,22 @@ export function flushLocalStoreQueues(): void {
   flushPendingHistory()
 }
 
+function safeDecrypt(value: string, id: string): string {
+  try {
+    return decryptPassword(value)
+  } catch (err) {
+    logger.warn(`[local-store] 无法解密连接 ${id} 的已保存密码，需要重新输入：${(err as Error).message}`)
+    return ''
+  }
+}
+
 function rowToConnection(row: any): ConnectionConfig {
   return {
     ...row,
     icon: row.icon ?? '',
-    password: decryptPassword(row.password),
-    sshPassword: decryptPassword(row.sshPassword),
-    sshPassphrase: decryptPassword(row.sshPassphrase),
+    password: safeDecrypt(row.password, row.id),
+    sshPassword: safeDecrypt(row.sshPassword, row.id),
+    sshPassphrase: safeDecrypt(row.sshPassphrase, row.id),
     sslEnabled: intToBool(row.sslEnabled),
     sshEnabled: intToBool(row.sshEnabled),
   }
@@ -220,7 +233,10 @@ export const connections = {
     })
   },
   delete(id: string) {
-    db.prepare('DELETE FROM connections WHERE id = ?').run(id)
+    db.transaction(() => {
+      db.prepare('DELETE FROM connections WHERE id = ?').run(id)
+      db.prepare('DELETE FROM query_history WHERE connectionId = ?').run(id)
+    })()
   },
 }
 
@@ -266,11 +282,11 @@ export const backupRecords = {
   getByConnection(connectionId: string): BackupRecord[] {
     return db.prepare('SELECT * FROM backup_records WHERE connectionId = ? ORDER BY createdAt DESC')
       .all(connectionId)
-      .map((r: any) => ({ ...r, isCompressed: intToBool(r.isCompressed), isEncrypted: intToBool(r.isEncrypted) }))
+      .map((r: any) => ({ ...r, scheduleId: r.scheduleId || undefined, isCompressed: intToBool(r.isCompressed), isEncrypted: intToBool(r.isEncrypted) }))
   },
   save(r: BackupRecord) {
-    db.prepare(`INSERT INTO backup_records (id,connectionId,databaseName,backupType,filePath,fileSize,isCompressed,isEncrypted,status,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET fileSize=?,status=?`)
-      .run(r.id, r.connectionId, r.databaseName, r.backupType, r.filePath, r.fileSize, boolToInt(r.isCompressed), boolToInt(r.isEncrypted), r.status, r.createdAt, r.fileSize, r.status)
+    db.prepare(`INSERT INTO backup_records (id,connectionId,databaseName,backupType,filePath,fileSize,isCompressed,isEncrypted,status,createdAt,scheduleId) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET fileSize=?,status=?`)
+      .run(r.id, r.connectionId, r.databaseName, r.backupType, r.filePath, r.fileSize, boolToInt(r.isCompressed), boolToInt(r.isEncrypted), r.status, r.createdAt, r.scheduleId || '', r.fileSize, r.status)
   },
   delete(id: string) {
     db.prepare('DELETE FROM backup_records WHERE id = ?').run(id)

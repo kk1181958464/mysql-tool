@@ -386,38 +386,33 @@ export default function Sidebar() {
       <div className="sidebar-search">
         <Input
           size="small"
-          placeholder="搜索库名或备注..."
+          placeholder="搜索库名或备注"
           prefix={<SearchOutlined style={{ color: 'var(--text-muted)', fontSize: 11 }} />}
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           allowClear
         />
         {activeConnection && connectionStatuses[activeConnection.id]?.connected && (
-          <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-            <button
-              className="nav-btn"
-              style={{ flex: 1, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12 }}
-              onClick={() => { setCreateDbConnId(activeConnection.id); setShowCreateDb(true) }}
-            >
-              <FolderAddOutlined style={{ fontSize: 12 }} />
-              <span>新建数据库</span>
-            </button>
-            <Tooltip title="刷新数据库列表" placement="left">
+          <>
+            <Tooltip title="新建数据库" placement="bottom">
+              <button className="nav-btn sidebar-tool-btn" onClick={() => { setCreateDbConnId(activeConnection.id); setShowCreateDb(true) }}>
+                <FolderAddOutlined />
+              </button>
+            </Tooltip>
+            <Tooltip title="刷新数据库列表" placement="bottom">
               <button
-                className="nav-btn"
-                style={{ width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                className="nav-btn sidebar-tool-btn"
                 onClick={async () => {
                   await useDatabaseStore.getState().loadDatabases(activeConnection.id, true)
                 }}
               >
-                <ReloadOutlined style={{ fontSize: 12 }} />
+                <ReloadOutlined />
               </button>
             </Tooltip>
-          </div>
+          </>
         )}
       </div>
 
-      {/* Database Object Tree */}
       <div className="sidebar-tree">
         <ConnectionTree filterText={debouncedSearch} />
       </div>

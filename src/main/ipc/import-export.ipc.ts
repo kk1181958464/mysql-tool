@@ -4,6 +4,7 @@ import * as importExport from '../services/import-export'
 import * as path from 'path'
 import { validateConnectionId, validateDatabase, validateIdentifier, validateSql } from '../utils/query-request'
 import { validateExportOptions, validateFilePathString, validateImportOptions, validateTableList } from '../utils/import-export-request'
+import { grantFileAccess, hasFileAccess, requireFileAccess } from '../utils/file-access'
 
 type ImportOptions = {
   // 预留导入选项
@@ -56,18 +57,21 @@ function normalizeExportFormat(format: string): 'csv' | 'json' | 'sql' | 'xlsx' 
 
 async function resolveExportFilePath(sender: Electron.WebContents, filePath: string, format: 'csv' | 'json' | 'sql' | 'xlsx'): Promise<string | null> {
   const config = EXPORT_FORMATS[format]
-  if (filePath?.trim()) {
-    const parsed = path.parse(filePath)
-    return parsed.ext ? filePath : path.join(parsed.dir, `${parsed.name || `export_${Date.now()}`}.${config.ext}`)
-  }
+  if (filePath?.trim() && hasFileAccess(sender, 'write', filePath)) return filePath
 
+  const suggested = filePath?.trim() ? path.basename(filePath) : ''
+  const defaultName = suggested
+    ? (path.extname(suggested) ? suggested : `${suggested}.${config.ext}`)
+    : `export_${Date.now()}.${config.ext}`
   const win = BrowserWindow.fromWebContents(sender) || undefined
   const result = await (dialog.showSaveDialog as any)(win, {
     title: '导出数据',
-    defaultPath: `export_${Date.now()}.${config.ext}`,
+    defaultPath: defaultName,
     filters: config.filters,
   })
-  return result.canceled || !result.filePath ? null : result.filePath
+  if (result.canceled || !result.filePath) return null
+  grantFileAccess(sender, 'write', result.filePath)
+  return result.filePath
 }
 
 function validateFilePath(filePath: unknown, allowedExts: Set<string>): string {
@@ -88,6 +92,7 @@ function validateFilePath(filePath: unknown, allowedExts: Set<string>): string {
 export function registerImportExportIPC() {
   ipcMain.handle(IPC.IMPORT_FILE, async (e, connId: string, db: string, table: string, filePath: string, options?: ImportOptions) => {
     filePath = validateFilePath(filePath, IMPORT_EXTS)
+    requireFileAccess(e.sender, 'read', filePath)
     const validConnId = validateConnectionId(connId)
     const validDb = validateIdentifier(db, '数据库名')
     const validOptions = validateImportOptions(options)
@@ -106,8 +111,9 @@ export function registerImportExportIPC() {
     try { return await importExport.importExcel(validConnId, validDb, validateIdentifier(table, '表名'), filePath, importOptions) } finally { task.finish() }
   })
 
-  ipcMain.handle(IPC.IMPORT_PREVIEW, async (_e, filePath: string, options?: { sheetName?: string; delimiter?: string; quote?: string; columns?: boolean }) => {
+  ipcMain.handle(IPC.IMPORT_PREVIEW, async (e, filePath: string, options?: { sheetName?: string; delimiter?: string; quote?: string; columns?: boolean }) => {
     filePath = validateFilePath(filePath, IMPORT_EXTS)
+    requireFileAccess(e.sender, 'read', filePath)
     const lower = filePath.toLowerCase()
     if (lower.endsWith('.sql') || lower.endsWith('.sql.gz')) {
       return { columns: [], rows: [], totalRows: 0 }
@@ -154,8 +160,9 @@ export function registerImportExportIPC() {
     runningTasks.get(taskKey(e.sender.id, validTaskId))?.abort()
   })
 
-  ipcMain.handle(IPC.EXPORT_STRUCTURE, async (_e, connId: string, db: string, tables: string[], filePath: string) => {
+  ipcMain.handle(IPC.EXPORT_STRUCTURE, async (e, connId: string, db: string, tables: string[], filePath: string) => {
     filePath = validateFilePath(filePath, EXPORT_EXTS)
+    requireFileAccess(e.sender, 'write', filePath)
     return importExport.exportStructure(validateConnectionId(connId), validateIdentifier(db, '数据库名'), validateTableList(tables), filePath)
   })
 }

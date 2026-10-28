@@ -6,7 +6,13 @@ describe('table filter helpers', () => {
   it('quotes column names when building a simple filter', () => {
     const group = getDefaultSimpleFilterGroup()
     group.children = [{ id: '1', type: 'condition', column: 'na`me', operator: '=', value: "a'b", secondValue: '' }]
-    expect(buildSimpleFilterWhere(group, () => 'varchar')).toBe("`na``me` = 'a''b'")
+    expect(buildSimpleFilterWhere(group, () => 'varchar')).toBe("`na``me` = 'a\\'b'")
+  })
+
+  it('escapes backslashes so values cannot break out of the string literal', () => {
+    const group = getDefaultSimpleFilterGroup()
+    group.children = [{ id: '1', type: 'condition', column: 'c', operator: '=', value: "\\' OR 1=1 -- ", secondValue: '' }]
+    expect(buildSimpleFilterWhere(group, () => 'varchar')).toBe("`c` = '\\\\\\' OR 1=1 --'")
   })
 })
 

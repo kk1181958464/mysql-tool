@@ -72,8 +72,8 @@ function Welcome() {
 }
 
 const isAlwaysKeptAlive = (tab: Tab) => {
-  if (tab.type === 'query') return true
-  if (tab.type === 'design') return true
+  if (tab.type === 'query') return Boolean(tab.isExecuting)
+  if (tab.type === 'design') return Boolean(tab.isDirty)
   if (tab.type === 'data') return tab.isDirty
   return false
 }

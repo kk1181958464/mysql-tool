@@ -23,6 +23,9 @@ export interface ColumnDesign {
   unsigned: boolean
   zerofill: boolean
   onUpdateCurrentTimestamp: boolean
+  originalName?: string
+  columnType?: string
+  collation?: string
 }
 
 export interface IndexDesign {
@@ -44,13 +47,14 @@ export interface ForeignKeyDesign {
 
 export interface TableDiff {
   addColumns: ColumnDesign[]
-  modifyColumns: { old: string; new: ColumnDesign }[]
+  modifyColumns: { old: string; new: ColumnDesign; moved?: boolean }[]
   dropColumns: string[]
   addIndexes: IndexDesign[]
   dropIndexes: string[]
   addForeignKeys: ForeignKeyDesign[]
   dropForeignKeys: string[]
   changeOptions: Partial<Pick<TableDesign, 'engine' | 'charset' | 'collation' | 'comment'>>
+  primaryKey?: { dropExisting: boolean; columns: string[] }
 }
 
 export interface BackupConfig {
@@ -61,6 +65,7 @@ export interface BackupConfig {
   filePath: string
   compress: boolean
   encrypt: boolean
+  scheduleId?: string
 }
 
 export interface BackupCreateRequest {
@@ -92,6 +97,7 @@ export interface BackupRecord {
   isEncrypted: boolean
   status: 'running' | 'completed' | 'failed'
   createdAt: string
+  scheduleId?: string
 }
 
 export interface BackupSchedule {

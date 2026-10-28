@@ -83,6 +83,7 @@ interface TabState {
   updateDesign: (id: string, design: TableDesign) => void
   setDesignDirty: (id: string, dirty: boolean) => void
   renameTable: (connectionId: string, database: string, oldName: string, newName: string) => void
+  setDesignTable: (id: string, table: string) => void
 
   // 对象列表标签
   addObjectsTab: (connectionId: string, database: string) => void
@@ -287,6 +288,12 @@ export const useTabStore = create<TabState>((set, get) => ({
         }
         return t
       }),
+    }))
+  },
+
+  setDesignTable: (id, table) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === id && t.type === 'design' ? { ...t, table, title: `设计: ${table}` } : t)),
     }))
   },
 

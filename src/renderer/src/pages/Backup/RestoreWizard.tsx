@@ -7,6 +7,7 @@ import { useDatabaseStore } from '../../stores/database.store'
 import { api } from '../../utils/ipc'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { getErrorMessage } from '../../utils/error-info'
+import { useWizardConnection } from '../../hooks/useWizardConnection'
 
 interface Props { onBack: () => void; records: BackupRecord[] }
 
@@ -24,7 +25,7 @@ const RestoreWizard: React.FC<Props> = ({ onBack, records }) => {
   const [logs, setLogs] = useState<string[]>([])
   const [result, setResult] = useState<{ success: boolean; message?: string } | null>(null)
 
-  const connId = useConnectionStore((s) => s.activeConnectionId)
+  const { connId, connectionName, switched } = useWizardConnection()
   const databases = useDatabaseStore((s) => connId ? s.databases[connId] ?? [] : [])
 
   const execute = async () => {
@@ -71,7 +72,13 @@ const RestoreWizard: React.FC<Props> = ({ onBack, records }) => {
                 onRow={(r) => ({ onClick: () => setSelectedRecord(r.id), style: { cursor: 'pointer', background: selectedRecord === r.id ? 'var(--bg-hover)' : undefined } })}
               />
             ) : (
-              <Input value={filePath} onChange={(e) => setFilePath(e.target.value)} placeholder="输入备份文件路径" />
+              <div style={{ display: 'flex', gap: 8, width: '100%' }}>
+                <Input value={filePath} readOnly placeholder="请选择 .sql 或 .sql.gz 备份文件" style={{ flex: 1 }} />
+                <Button onClick={async () => {
+                  const picked = await api.dialog.openFile({ filters: [{ name: 'SQL 备份', extensions: ['sql', 'gz'] }] })
+                  if (picked) setFilePath(picked)
+                }}>选择文件</Button>
+              </div>
             )}
           </Space>
         )
@@ -126,6 +133,11 @@ const RestoreWizard: React.FC<Props> = ({ onBack, records }) => {
 
   return (
     <div style={{ padding: 16 }}>
+      <div className={`wizard-target ${switched ? 'switched' : ''}`} title={switched ? '侧栏已切换到其他连接，本向导仍作用于该连接' : undefined}>
+        <span className="wizard-target-dot" />
+        目标连接 <strong>{connectionName || '未选择'}</strong>
+        {switched && <span>· 侧栏已切换，本向导仍作用于该连接</span>}
+      </div>
       <Button icon={<ArrowLeftOutlined />} onClick={onBack} style={{ marginBottom: 16 }}>返回</Button>
       <div style={{ display: 'flex', marginBottom: 24 }}>
         {stepTitles.map((t, i) => (

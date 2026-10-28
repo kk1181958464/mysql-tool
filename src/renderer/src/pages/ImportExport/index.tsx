@@ -28,24 +28,24 @@ const ImportExport: React.FC = () => {
 
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
-      <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col span={12}>
-          <Card style={{ textAlign: 'center', cursor: 'pointer' }} onClick={() => setShowImport(true)}>
-            <ImportOutlined style={{ fontSize: 48, color: 'var(--accent)', marginBottom: 16 }} />
-            <h3>导入数据</h3>
-            <p style={{ color: 'var(--text-muted)' }}>从 CSV、Excel、SQL 文件导入数据</p>
-            <Button type="primary" icon={<ImportOutlined />}>开始导入</Button>
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card style={{ textAlign: 'center', cursor: 'pointer' }} onClick={() => setShowExport(true)}>
-            <ExportOutlined style={{ fontSize: 48, color: 'var(--success)', marginBottom: 16 }} />
-            <h3>导出数据</h3>
-            <p style={{ color: 'var(--text-muted)' }}>导出为 CSV、JSON、SQL、Excel 格式</p>
-            <Button type="primary" icon={<ExportOutlined />} style={{ background: 'var(--success)' }}>开始导出</Button>
-          </Card>
-        </Col>
-      </Row>
+      <div className="action-cards">
+        <button type="button" className="action-card" onClick={() => setShowImport(true)}>
+          <span className="action-card-icon"><ImportOutlined /></span>
+          <span className="action-card-text">
+            <span className="action-card-title">导入数据</span>
+            <span className="action-card-desc">从 CSV、Excel 或 SQL 文件导入到数据表</span>
+          </span>
+          <span className="action-card-go">开始导入 →</span>
+        </button>
+        <button type="button" className="action-card action-card-success" onClick={() => setShowExport(true)}>
+          <span className="action-card-icon"><ExportOutlined /></span>
+          <span className="action-card-text">
+            <span className="action-card-title">导出数据</span>
+            <span className="action-card-desc">导出为 CSV、JSON、SQL 或 Excel 文件</span>
+          </span>
+          <span className="action-card-go">开始导出 →</span>
+        </button>
+      </div>
 
       <Card title={<span><HistoryOutlined /> 最近操作</span>} size="small">
         {history.length > 0 ? (

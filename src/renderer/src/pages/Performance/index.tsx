@@ -27,6 +27,7 @@ const Performance: React.FC<Props> = ({ active = true }) => {
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
       <Tabs
+        className="page-tabs"
         activeKey={activeKey}
         onChange={setActiveKey}
         items={items}

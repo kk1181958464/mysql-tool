@@ -10,11 +10,11 @@ interface Props {
 }
 
 const DataBrowser: React.FC<Props> = ({ tabId }) => {
-  const { tabs } = useTabStore()
+  const tabFromStore = useTabStore((s) => s.tabs.find((t) => t.id === tabId))
   const [refreshKey, setRefreshKey] = React.useState(0)
   const [activeKey, setActiveKey] = React.useState('data')
 
-  const tab = tabs.find((t) => t.id === tabId) as DataTab | undefined
+  const tab = tabFromStore as DataTab | undefined
 
   if (!tab) {
     return (
@@ -34,23 +34,21 @@ const DataBrowser: React.FC<Props> = ({ tabId }) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Space style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
-        <span style={{ fontWeight: 500 }}>{tab.table}</span>
-        <Button size="small" onClick={() => setRefreshKey((k) => k + 1)}>
-          <ReloadOutlined /> 刷新
-        </Button>
-      </Space>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Tabs
           activeKey={activeKey}
           onChange={setActiveKey}
+          extra={(
+            <>
+              <span className="data-browser-title">{tab.database}.{tab.table}</span>
+              <Button size="small" variant="text" icon={<ReloadOutlined />} onClick={() => setRefreshKey((k) => k + 1)}>刷新</Button>
+            </>
+          )}
           items={[
             {
               key: 'data',
               label: '数据',
-              children: activeKey === 'data'
-                ? <TableData tabId={tab.id} connectionId={tab.connectionId} database={tab.database} table={tab.table} refreshVersion={refreshKey} />
-                : null,
+              children: <TableData tabId={tab.id} connectionId={tab.connectionId} database={tab.database} table={tab.table} refreshVersion={refreshKey} />,
             },
             {
               key: 'structure',

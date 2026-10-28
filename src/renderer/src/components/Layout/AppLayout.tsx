@@ -111,24 +111,21 @@ export default function AppLayout() {
               {/* Top Navigation Bar */}
               <div className="content-nav">
                 {activeConnectionId && (
-                  <Tooltip title="新建查询" placement="bottom">
-                    <button className="content-nav-btn" onClick={handleNewQuery}>
-                      <PlusOutlined />
-                      <span>新建查询</span>
-                    </button>
-                  </Tooltip>
+                  <button className="content-nav-btn" onClick={handleNewQuery}>
+                    <PlusOutlined />
+                    <span>新建查询</span>
+                  </button>
                 )}
                 <div style={{ flex: 1 }} />
                 {NAV_ITEMS.map((item) => (
-                  <Tooltip key={item.key} title={item.label} placement="bottom">
-                    <button
-                      className="content-nav-btn"
-                      onClick={() => addToolTab(item.key)}
-                    >
-                      {item.icon}
-                      <span>{item.label}</span>
-                    </button>
-                  </Tooltip>
+                  <button
+                    key={item.key}
+                    className="content-nav-btn"
+                    onClick={() => addToolTab(item.key)}
+                  >
+                    {item.icon}
+                    <span>{item.label}</span>
+                  </button>
                 ))}
               </div>
               {/* Page Content */}

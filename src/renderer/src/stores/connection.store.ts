@@ -4,6 +4,8 @@ import { api } from '../utils/ipc'
 import { useDatabaseStore } from './database.store'
 import { useTabStore } from './tab.store'
 import { requestTabCloseGuard } from './tab-close-guard'
+import { clearTableStatusCache } from '../pages/ObjectsBrowser/table-status-cache'
+
 
 const logConnectionDebug = (event: string, payload?: unknown) => {
   console.info(`[ConnectionStore] ${event}`, payload)
@@ -14,7 +16,7 @@ interface ConnectionState {
   activeConnectionId: string | null
   connectionStatuses: Record<string, ConnectionStatus>
   loadConnections: () => Promise<void>
-  saveConnection: (config: ConnectionSavePayload) => Promise<void>
+  saveConnection: (config: ConnectionSavePayload, sourceId?: string) => Promise<void>
   deleteConnection: (id: string) => Promise<void>
   connect: (idOrConfig: string | ConnectionConfig) => Promise<void>
   disconnect: (id: string) => Promise<void>
@@ -32,8 +34,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     set({ connections })
   },
 
-  saveConnection: async (config) => {
-    await api.connection.save(config)
+  saveConnection: async (config, sourceId) => {
+    await api.connection.save(config, sourceId)
     await get().loadConnections()
   },
 
@@ -106,6 +108,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
     await api.connection.disconnect(id)
     useDatabaseStore.getState().clearCache(id)
+    clearTableStatusCache(id)
     logConnectionDebug('disconnect.api.done', { id })
     set((s) => {
       const statuses = { ...s.connectionStatuses }

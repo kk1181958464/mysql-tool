@@ -14,6 +14,7 @@ import type { TableInfo } from '../../../../shared/types/metadata'
 import type { ImportProgressPayload } from '../../../../preload/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { getErrorMessage } from '../../utils/error-info'
+import { tableStatusCache } from './table-status-cache'
 
 interface Props {
   connectionId: string
@@ -26,7 +27,6 @@ type ViewMode = 'table' | 'card'
 const VIEW_MODE_KEY = 'objects-view-mode'
 const getStoredViewMode = (): ViewMode => (localStorage.getItem(VIEW_MODE_KEY) as ViewMode) || 'table'
 const setStoredViewMode = (mode: ViewMode) => localStorage.setItem(VIEW_MODE_KEY, mode)
-const tableStatusCache: Record<string, TableInfo[]> = {}
 
 export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const { tables, loadTables } = useDatabaseStore()
@@ -287,7 +287,8 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   // 点击非数据行区域清空选中
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      const t = e.target as HTMLElement
+      const t = e.target
+      if (!(t instanceof Element)) return
       if (t.closest('tbody tr, .obj-card, button, input, .context-menu, .ant-modal, [class*="modal"]')) return
       setSelectedTables(new Set())
     }
@@ -331,9 +332,9 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             const ddl = await api.meta.tableDDL(connectionId, database, n)
             const ddlSql = ((typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || '').trim()
             parts.push('-- ----------------------------')
-            parts.push(`-- Table structure for \`${n}\``)
+            parts.push(`-- Table structure for ${quoteId(n)}`)
             parts.push('-- ----------------------------')
-            parts.push(`DROP TABLE IF EXISTS \`${n}\`;`)
+            parts.push(`DROP TABLE IF EXISTS ${quoteId(n)};`)
             parts.push(ddlSql ? (ddlSql.trimEnd().endsWith(';') ? ddlSql : ddlSql + ';') : '')
           } catch (e: any) { showError(e, '导出失败'); return }
         }
@@ -360,13 +361,13 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
             const ddl = await api.meta.tableDDL(connectionId, database, n)
             const ddlSql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
             out.push('-- ----------------------------')
-            out.push(`-- Table structure for \`${n}\``)
+            out.push(`-- Table structure for ${quoteId(n)}`)
             out.push('-- ----------------------------')
-            out.push(`DROP TABLE IF EXISTS \`${n}\`;`)
+            out.push(`DROP TABLE IF EXISTS ${quoteId(n)};`)
             out.push(`${ddlSql};`)
             out.push('')
             out.push('-- ----------------------------')
-            out.push(`-- Records of \`${n}\``)
+            out.push(`-- Records of ${quoteId(n)}`)
             out.push('-- ----------------------------')
             out.push('-- INSERT statements omitted in preview. Click "Download File" to export the full structure and data.')
             out.push('')
@@ -422,9 +423,9 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       let sql = ((typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || '').trim()
       if (!sql.trimEnd().endsWith(';')) sql += ';'
       // 导出默认带 DROP，导入再补齐（双重保证）
-      sql = `DROP TABLE IF EXISTS \`${tableName}\`;\n${sql}`
+      sql = `DROP TABLE IF EXISTS ${quoteId(tableName)};\n${sql}`
       if (includeData) {
-        sql += `\n\n-- ----------------------------\n-- Records of \`${tableName}\`\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
+        sql += `\n\n-- ----------------------------\n-- Records of ${quoteId(tableName)}\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
       }
       setExportSql({ tableName, sql, includeData, selectedNames: [tableName] })
     } catch (e: any) { showError(e, '导出失败') }

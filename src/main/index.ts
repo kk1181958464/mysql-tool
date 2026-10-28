@@ -1,4 +1,5 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, nativeTheme } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, nativeTheme, session } from 'electron'
+import { pathToFileURL } from 'url'
 import * as fs from 'fs'
 import * as path from 'path'
 import { IPC } from '../shared/types/ipc-channels'
@@ -151,6 +152,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      devTools: !app.isPackaged,
       preload: path.join(__dirname, '../preload/index.js'),
     },
   })
@@ -160,7 +162,7 @@ function createWindow() {
     const allowedUrl = process.env.VITE_DEV_SERVER_URL
     const allowed = allowedUrl
       ? new URL(url).origin === new URL(allowedUrl).origin
-      : url.startsWith('file:')
+      : url.split('#')[0] === pathToFileURL(path.join(__dirname, '../renderer/index.html')).href
     if (!allowed) {
       event.preventDefault()
       logger.warn(`[security] Blocked renderer navigation to ${url}`)
@@ -203,8 +205,16 @@ function createWindow() {
   }
 }
 
+process.on('uncaughtException', (error) => {
+  logger.error('[main] uncaught exception', error)
+})
+process.on('unhandledRejection', (reason) => {
+  logger.error('[main] unhandled rejection', reason)
+})
+
 app.whenReady().then(() => {
   logger.info('App starting...')
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
   localStore.init()
   connectionManager.initializeHeartbeatInterval()
   backupService.startScheduleRunner()

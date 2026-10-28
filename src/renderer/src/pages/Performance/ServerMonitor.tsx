@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { Table, Button, Card, Row, Col, Statistic, Switch, Input, Tabs, Space, Modal } from '../../components/ui'
 import { ReloadOutlined, StopOutlined } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
@@ -14,6 +14,12 @@ interface ProcessItem {
 
 interface Props {
   active?: boolean
+}
+
+const toNameValueList = (value: unknown): { name: string; value: string }[] => {
+  if (Array.isArray(value)) return value.map((r: any) => ({ name: String(r.Variable_name), value: String(r.Value ?? '') }))
+  if (value && typeof value === 'object') return Object.entries(value as Record<string, unknown>).map(([name, v]) => ({ name, value: String(v ?? '') }))
+  return []
 }
 
 const ServerMonitor: React.FC<Props> = ({ active = true }) => {
@@ -33,8 +39,10 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
   const connId = useConnectionStore((s) => s.activeConnectionId)
   const db = useAppStore((s) => s.selectedDatabase)
 
+  const loadingRef = useRef(false)
   const load = useCallback(async () => {
-    if (!active || !connId) return
+    if (!active || !connId || loadingRef.current) return
+    loadingRef.current = true
     setLoading(true)
     setLoadError(null)
     try {
@@ -42,9 +50,9 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
         api.perf.processList(connId), api.perf.variables(connId), api.perf.status(connId), api.perf.innodbStatus(connId),
       ])
       setProcesses(Array.isArray(procRes) ? procRes : [])
-      const vars = Array.isArray(varRes) ? varRes.map((r: any) => ({ name: r.Variable_name, value: r.Value })) : []
+      const vars = toNameValueList(varRes)
       setVariables(vars)
-      const stats = Array.isArray(statRes) ? statRes.map((r: any) => ({ name: r.Variable_name, value: r.Value })) : []
+      const stats = toNameValueList(statRes)
       setStatus(stats)
       setInnodbStatus(typeof innoRes === 'string' ? innoRes : String((innoRes as any)?.Status ?? ''))
       const findStat = (n: string) => stats.find((s: any) => s.name === n)?.value ?? '0'
@@ -54,7 +62,7 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
         threads: parseInt(findStat('Threads_running')),
         bufferPool: `${(parseInt(findStat('Innodb_buffer_pool_pages_data')) / Math.max(1, parseInt(findStat('Innodb_buffer_pool_pages_total'))) * 100).toFixed(1)}%`,
       })
-    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { setLoading(false) }
+    } catch (e) { setLoadError(getErrorMessage(e, '加载失败')) } finally { loadingRef.current = false; setLoading(false) }
   }, [active, connId])
 
   useEffect(() => {
@@ -78,7 +86,7 @@ const ServerMonitor: React.FC<Props> = ({ active = true }) => {
     { key: 'Time', title: 'Time', dataIndex: 'Time', width: 80 },
     { key: 'State', title: 'State', dataIndex: 'State', width: 150, ellipsis: true },
     { key: 'Info', title: 'Info', dataIndex: 'Info', ellipsis: true },
-    { key: 'action', title: '操作', width: 80, render: (_: any, r: ProcessItem) => <Button size="small" type="danger" onClick={() => killProcess(r.Id)}><StopOutlined /> Kill</Button> },
+    { key: 'action', title: '操作', width: 80, render: (_: any, r: ProcessItem) => <Button size="small" variant="text" className="danger-text-btn" onClick={() => killProcess(r.Id)}><StopOutlined /> Kill</Button> },
   ]
 
   const varColumns = [

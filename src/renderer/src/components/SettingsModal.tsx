@@ -240,7 +240,7 @@ export default function SettingsModal({ open, onClose }: Props) {
               <ImportOutlined /> 导入配置
             </Button>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>导出/导入连接信息、数据库备注、主题设置</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>导出/导入连接信息、数据库备注、主题设置（不包含密码，导入后需重新填写）</div>
         </div>
       </div>
     </Modal>

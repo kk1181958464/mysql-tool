@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { Input, Switch } from '../../components/ui'
-import { FolderOpenOutlined } from '@ant-design/icons'
+import { FolderOpenOutlined, InfoCircleOutlined } from '@ant-design/icons'
+import { SecretInput } from './SecretInput'
+import { FormField, FormSection } from './FormField'
 
 interface Props {
   form: Record<string, any>
@@ -10,79 +12,69 @@ interface Props {
 export const SSHConfig: React.FC<Props> = ({ form, updateField }) => {
   const [authMethod, setAuthMethod] = useState<'password' | 'key'>('password')
 
-  // 根据表单内容初始化/同步认证方式，避免 UI 显示与实际连接方式不一致
   useEffect(() => {
     setAuthMethod(form.sshPrivateKey ? 'key' : 'password')
   }, [form.sshPrivateKey])
 
   const pickFile = async () => {
-    try {
-      // OpenSSH 私钥（如 id_ed25519 / id_rsa）常无扩展名；这里彻底放开过滤，并允许显示隐藏文件
-      const filePath = await (window as any).api.dialog.openFile({
-        properties: ['openFile', 'showHiddenFiles'],
-      })
-      if (filePath) {
-        updateField('sshPrivateKey', filePath)
-      }
-    } catch {
-      /* cancelled */
-    }
+    // OpenSSH 私钥（如 id_ed25519 / id_rsa）常无扩展名，因此不设过滤并显示隐藏文件
+    const filePath = await window.api.dialog.openFile({ properties: ['openFile', 'showHiddenFiles'] })
+    if (filePath) updateField('sshPrivateKey', filePath)
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div className="cm-tab-body">
+      <label className="cm-toggle">
         <Switch checked={form.sshEnabled || false} onChange={(v) => updateField('sshEnabled', v)} />
-        <span>启用 SSH 隧道</span>
-      </div>
+        <div>
+          <div className="cm-toggle-title">通过 SSH 隧道连接</div>
+          <div className="cm-toggle-desc">先登录跳板机，再从跳板机访问 MySQL</div>
+        </div>
+      </label>
       {form.sshEnabled && (
         <>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 12px', background: 'var(--bg-hover)', borderRadius: 4 }}>
-            💡 MySQL 连接信息（主机/端口/用户名/密码）请在「常规」标签页填写。启用 SSH 后，MySQL 主机地址通常填 127.0.0.1（从 SSH 服务器视角）。
+          <div className="cm-tip">
+            <InfoCircleOutlined />
+            <span>「常规」中的主机地址是从 SSH 服务器访问 MySQL 的地址，通常填写 127.0.0.1。</span>
           </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>SSH 主机</label>
-            <Input value={form.sshHost || ''} onChange={(e) => updateField('sshHost', e.target.value)} placeholder="ssh.example.com" />
-          </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>SSH 端口</label>
-            <Input type="number" value={String(form.sshPort || 22)} onChange={(e) => updateField('sshPort', Number(e.target.value))} />
-          </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>SSH 用户名</label>
-            <Input value={form.sshUser || ''} onChange={(e) => updateField('sshUser', e.target.value)} placeholder="root" />
-          </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>认证方式</label>
-            <div style={{ display: 'flex', gap: 16 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                <input type="radio" checked={authMethod === 'password'} onChange={() => setAuthMethod('password')} /> 密码
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                <input type="radio" checked={authMethod === 'key'} onChange={() => setAuthMethod('key')} /> 私钥
-              </label>
-            </div>
-          </div>
-          {authMethod === 'password' ? (
-            <div>
-              <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>SSH 密码</label>
-              <Input type="password" value={form.sshPassword || ''} onChange={(e) => updateField('sshPassword', e.target.value)} placeholder="SSH 密码" />
-            </div>
-          ) : (
-            <>
-              <div>
-                <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>私钥文件</label>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <Input value={form.sshPrivateKey || ''} readOnly placeholder="选择私钥文件" style={{ flex: 1 }} />
-                  <button className="ui-btn ui-btn-default ui-btn-small" onClick={pickFile}><FolderOpenOutlined /></button>
-                </div>
+          <FormSection title="SSH 服务器" columns={4}>
+            <FormField label="SSH 主机" required span={3}>
+              <Input value={form.sshHost || ''} onChange={(e) => updateField('sshHost', e.target.value)} placeholder="ssh.example.com" />
+            </FormField>
+            <FormField label="端口" required>
+              <Input type="number" value={String(form.sshPort || 22)} onChange={(e) => updateField('sshPort', Number(e.target.value))} />
+            </FormField>
+            <FormField label="用户名" required span={4}>
+              <Input value={form.sshUser || ''} onChange={(e) => updateField('sshUser', e.target.value)} placeholder="root" />
+            </FormField>
+          </FormSection>
+          <FormSection
+            title="认证"
+            extra={(
+              <div className="cm-segmented">
+                <button type="button" className={authMethod === 'password' ? 'active' : ''} onClick={() => setAuthMethod('password')}>密码</button>
+                <button type="button" className={authMethod === 'key' ? 'active' : ''} onClick={() => setAuthMethod('key')}>私钥</button>
               </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>私钥密码</label>
-                <Input type="password" value={form.sshPassphrase || ''} onChange={(e) => updateField('sshPassphrase', e.target.value)} placeholder="可选" />
-              </div>
-            </>
-          )}
+            )}
+          >
+            {authMethod === 'password' ? (
+              <FormField label="SSH 密码" span={2}>
+                <SecretInput value={form.sshPassword || ''} onChange={(v) => updateField('sshPassword', v)} placeholder="SSH 密码" />
+              </FormField>
+            ) : (
+              <>
+                <FormField label="私钥文件" span={2}>
+                  <div className="cm-file-input">
+                    <Input value={form.sshPrivateKey || ''} readOnly placeholder="选择私钥文件（如 id_rsa、id_ed25519）" />
+                    <button type="button" className="ui-btn ui-btn-default ui-btn-medium" onClick={pickFile}><FolderOpenOutlined /> 选择</button>
+                  </div>
+                </FormField>
+                <FormField label="私钥密码" span={2}>
+                  <SecretInput value={form.sshPassphrase || ''} onChange={(v) => updateField('sshPassphrase', v)} placeholder="没有可留空" />
+                </FormField>
+              </>
+            )}
+          </FormSection>
         </>
       )}
     </div>

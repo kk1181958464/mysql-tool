@@ -60,17 +60,20 @@ const ExplainView: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div className="sql-input-card">
         <textarea
           value={sql}
           onChange={(e) => setSql(e.target.value)}
-          placeholder="输入 SQL 查询语句..."
-          className="ui-input"
-          style={{ flex: 1, minHeight: 80, padding: 8, fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void runExplain() } }}
+          placeholder="输入要分析的 SELECT 语句，例如：SELECT * FROM orders WHERE user_id = 1"
+          spellCheck={false}
         />
-        <Button type="primary" onClick={runExplain} disabled={loading}>
-          <ThunderboltOutlined /> {loading ? '分析中...' : 'Explain'}
-        </Button>
+        <div className="sql-input-card-foot">
+          <span>Ctrl+Enter 运行，查看 MySQL 如何执行这条语句</span>
+          <Button type="primary" size="small" onClick={runExplain} loading={loading} icon={<ThunderboltOutlined />}>
+            {loading ? '分析中' : '分析执行计划'}
+          </Button>
+        </div>
       </div>
 
       {error && <ErrorNotice key={error} error={error} onClose={() => setError(null)} />}

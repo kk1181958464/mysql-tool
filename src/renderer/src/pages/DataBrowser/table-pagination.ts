@@ -3,7 +3,13 @@ export interface SortSpec {
   direction: 'ASC' | 'DESC'
 }
 
-const quoteSqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`
+const quoteSqlString = (value: string): string => `'${value
+  .replace(/\\/g, '\\\\')
+  .replace(/'/g, "\\'")
+  .replace(/\u0000/g, '\\0')
+  .replace(/\n/g, '\\n')
+  .replace(/\r/g, '\\r')
+  .replace(/\u001a/g, '\\Z')}'`
 
 export const quoteId = (id: string): string => `\`${String(id).replace(/`/g, '``')}\``
 
@@ -42,9 +48,14 @@ export const buildKeysetPredicate = (
   if (!sort || sort.column === pkColumn) {
     return `${quoteId(pkColumn)} ${op} ${escSQL(anchorPk)}`
   }
+  // MySQL sorts NULL as the smallest value, so it comes first in ASC and last in DESC.
+  const col = quoteId(sort.column)
+  const pkCompare = `${quoteId(pkColumn)} ${op} ${escSQL(anchorPk)}`
   if (anchorSort === null || anchorSort === undefined) {
-    const nullOp = op === '>' ? 'IS NOT NULL' : 'IS NULL'
-    return `(${quoteId(sort.column)} ${nullOp} OR (${quoteId(sort.column)} IS NULL AND ${quoteId(pkColumn)} ${op} ${escSQL(anchorPk)}))`
+    return op === '>'
+      ? `(${col} IS NOT NULL OR (${col} IS NULL AND ${pkCompare}))`
+      : `(${col} IS NULL AND ${pkCompare})`
   }
-  return `((${quoteId(sort.column)} ${op} ${escSQL(anchorSort)}) OR (${quoteId(sort.column)} = ${escSQL(anchorSort)} AND ${quoteId(pkColumn)} ${op} ${escSQL(anchorPk)}))`
+  const valueCompare = `(${col} ${op} ${escSQL(anchorSort)}) OR (${col} = ${escSQL(anchorSort)} AND ${pkCompare})`
+  return op === '>' ? `(${valueCompare})` : `(${valueCompare} OR ${col} IS NULL)`
 }

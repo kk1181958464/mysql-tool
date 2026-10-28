@@ -12,6 +12,7 @@ import { api } from '../../utils/ipc'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { getErrorMessage } from '../../utils/error-info'
 import type { TableDesign, ColumnDesign, IndexDesign, ForeignKeyDesign } from '../../../../shared/types/table-design'
+import { columnDefaultToSql, parseColumnType } from '../../../../shared/column-type'
 
 const emptyDesign: TableDesign = {
   name: '', engine: 'InnoDB', charset: 'utf8mb4', collation: 'utf8mb4_general_ci',
@@ -31,9 +32,15 @@ interface Props {
 }
 
 const TableDesigner: React.FC<Props> = ({ tabId }) => {
-  const { tabs, activeTabId, updateDesign, updateTabTitle, setDesignDirty } = useTabStore()
+  const tabFromStore = useTabStore((s) => s.tabs.find((t) => t.id === tabId))
+  const activeTabId = useTabStore((s) => s.activeTabId)
+  const updateDesign = useTabStore((s) => s.updateDesign)
+  const updateTabTitle = useTabStore((s) => s.updateTabTitle)
+  const setDesignDirty = useTabStore((s) => s.setDesignDirty)
+  const renameTable = useTabStore((s) => s.renameTable)
+  const setDesignTable = useTabStore((s) => s.setDesignTable)
   const { loadTables, loadColumns } = useDatabaseStore()
-  const tab = tabs.find((t) => t.id === tabId) as DesignTab | undefined
+  const tab = tabFromStore as DesignTab | undefined
 
   const connectionId = tab?.connectionId
   const database = tab?.database
@@ -66,19 +73,23 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       const fks = await api.meta.foreignKeys(connectionId, database, tableName)
       const status = (await api.meta.tableStatus(connectionId, database)).find((item) => item.name === tableName)
 
-      const columns: ColumnDesign[] = cols.map((c) => ({
-        name: c.name, type: c.dataType.toUpperCase(),
-        length: c.maxLength != null ? String(c.maxLength) : '',
-        decimals: c.numericScale != null ? String(c.numericScale) : '',
-        nullable: c.nullable, defaultValue: c.defaultValue != null ? String(c.defaultValue) : '',
-        autoIncrement: c.autoIncrement, primaryKey: c.primaryKey, unique: false, comment: c.comment,
-        unsigned: c.columnType.includes('unsigned'), zerofill: c.columnType.includes('zerofill'),
-        onUpdateCurrentTimestamp: c.extra.includes('on update CURRENT_TIMESTAMP'),
-      }))
+      const columns: ColumnDesign[] = cols.map((c) => {
+        const parsed = parseColumnType(c.columnType)
+        return {
+          name: c.name, originalName: c.name, columnType: c.columnType, collation: c.collation || undefined,
+          type: c.dataType.toUpperCase(), length: parsed.length, decimals: parsed.decimals,
+          nullable: c.nullable, defaultValue: columnDefaultToSql(c.defaultValue, c.dataType, c.extra),
+          autoIncrement: c.autoIncrement, primaryKey: c.primaryKey, unique: false, comment: c.comment,
+          unsigned: parsed.unsigned, zerofill: parsed.zerofill,
+          onUpdateCurrentTimestamp: /on update current_timestamp/i.test(c.extra),
+        }
+      })
 
       const indexes: IndexDesign[] = idxs.filter((i) => i.name !== 'PRIMARY').map((i) => ({
-        name: i.name, type: i.unique ? 'UNIQUE' : 'INDEX', method: 'BTREE' as const,
-        columns: i.columns.map((c) => ({ name: c.name, order: c.order })), comment: i.comment,
+        name: i.name,
+        type: i.type === 'FULLTEXT' ? 'FULLTEXT' : i.type === 'SPATIAL' ? 'SPATIAL' : i.unique ? 'UNIQUE' : 'INDEX',
+        method: i.type === 'HASH' ? 'HASH' : 'BTREE',
+        columns: i.columns.map((c) => ({ name: c.name, order: c.order, ...(c.subPart ? { length: Number(c.subPart) } : {}) })), comment: i.comment,
       }))
 
       const foreignKeys: ForeignKeyDesign[] = fks.map((f) => ({
@@ -89,7 +100,7 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       }))
 
       const d: TableDesign = {
-        name: tableName, engine: status?.engine || 'InnoDB', charset: 'utf8mb4',
+        name: tableName, engine: status?.engine || 'InnoDB', charset: (status?.collation || 'utf8mb4_general_ci').split('_')[0],
         collation: status?.collation || 'utf8mb4_general_ci', comment: status?.comment || '',
         columns, indexes, foreignKeys,
       }
@@ -163,15 +174,19 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
         // 编辑模式：先计算差异再提交
         const diff = await api.design.diff(original, design)
         console.log('Table diff:', diff)
-        const alterSQL = await api.design.alterTable(connectionId, database, design.name, diff, design)
-        console.log('Generated SQL:', alterSQL)
-        setOriginal(JSON.parse(JSON.stringify(design)))  // 更新原始状态
+        await api.design.alterTable(connectionId, database, original.name, diff, design)
+        if (original.name !== design.name) renameTable(connectionId, database, original.name, design.name)
       } else {
         await api.design.createTable(connectionId, database, design)
-        setOriginal(JSON.parse(JSON.stringify(design)))  // 新建后设为原始状态
+        setDesignTable(tabId, design.name)
       }
-      // 刷新左侧表列表
-      await loadTables(connectionId, database)
+      const saved: TableDesign = {
+        ...design,
+        columns: design.columns.map((c) => ({ ...c, originalName: c.name })),
+      }
+      setDesign(saved)
+      setOriginal(JSON.parse(JSON.stringify(saved)))
+      await loadTables(connectionId, database, true)
       // 强制重新加载该表的列信息（清除缓存）
       await loadColumns(connectionId, database, design.name, true)
       setSuccessMsg(isEdit ? '表已修改' : '表已创建')

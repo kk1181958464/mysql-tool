@@ -8,7 +8,16 @@ export function validateDataRecord(value: unknown, label: string, allowEmpty = f
   const entries = Object.entries(value as Record<string, unknown>)
   if (!allowEmpty && entries.length === 0) throw new Error(`${label}不能为空`)
   if (entries.length > MAX_RECORD_COLUMNS) throw new Error(`${label}最多包含 ${MAX_RECORD_COLUMNS} 个字段`)
-  return Object.fromEntries(entries.map(([key, item]) => [validateIdentifier(key, '字段名'), item]))
+  return Object.fromEntries(entries.map(([key, item]) => [validateIdentifier(key, '字段名'), normalizeValue(item)]))
+}
+
+// mysql2 expands plain objects into `key = value` lists, so non-scalar values are sent as JSON text instead.
+function normalizeValue(value: unknown): unknown {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return value
+  if (value instanceof Uint8Array) return Buffer.from(value)
+  if (value instanceof Date) return value
+  return JSON.stringify(value)
 }
 
 export function validateRecordBatch(value: unknown, label: string): Record<string, unknown>[] {

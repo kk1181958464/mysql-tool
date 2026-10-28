@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { ConnAvatar } from '../../components/ConnAvatar'
-import { Input, Button, Tag, Popconfirm, Tooltip } from '../../components/ui'
+import { Input, Button, Tooltip, Modal } from '../../components/ui'
 import {
   PlusOutlined,
   CopyOutlined,
@@ -8,12 +8,14 @@ import {
   LinkOutlined,
   DisconnectOutlined,
   SearchOutlined,
+  DownOutlined,
 } from '@ant-design/icons'
 import { useConnectionStore } from '../../stores/connection.store'
 import type { ConnectionConfig } from '../../../../shared/types/connection'
 import { v4 as uuid } from 'uuid'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { getErrorMessage } from '../../utils/error-info'
+
 
 interface Props {
   onSelect: (conn: ConnectionConfig) => void
@@ -27,6 +29,7 @@ interface Props {
 export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, selectedId, previewColor, previewIcon }) => {
   const [search, setSearch] = useState('')
   const [error, setError] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<ConnectionConfig | null>(null)
   const {
     connections,
     connectionStatuses,
@@ -48,7 +51,7 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
 
   const handleDuplicate = async (c: ConnectionConfig, e: React.MouseEvent) => {
     e.stopPropagation()
-    await saveConnection({ ...c, id: uuid(), name: `${c.name} (副本)`, sortOrder: c.sortOrder + 1 })
+    await saveConnection({ ...c, id: uuid(), name: `${c.name} (副本)`, sortOrder: c.sortOrder + 1 }, c.id)
   }
 
   const handleToggleConnect = async (c: ConnectionConfig, e: React.MouseEvent) => {
@@ -71,23 +74,43 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
     await deleteConnection(id)
   }
 
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const toggleGroup = (group: string) => setCollapsed((prev) => {
+    const next = new Set(prev)
+    if (next.has(group)) next.delete(group)
+    else next.add(group)
+    return next
+  })
+  const groupEntries = Object.entries(grouped).sort(([a], [b]) => Number(a === '未分组') - Number(b === '未分组') || a.localeCompare(b))
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+    <div className="cm-list">
+      <div className="cm-list-head">
         <Input
           prefix={<SearchOutlined />}
-          placeholder="搜索连接..."
+          placeholder="搜索名称或主机"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          allowClear
+          onClear={() => setSearch('')}
         />
-        <Button type="primary" onClick={onNew} style={{ width: '100%' }}><PlusOutlined /> 新建</Button>
+        <Tooltip title="新建连接" placement="bottom">
+          <button type="button" className="cm-new-btn" onClick={onNew}><PlusOutlined /></button>
+        </Tooltip>
       </div>
-      {error && <ErrorNotice key={error} error={error} onClose={() => setError('')} />}
-      <div style={{ flex: 1, overflow: 'auto' }}>
-        {Object.entries(grouped).map(([group, items]) => (
-          <div key={group} style={{ marginBottom: 12 }}>
-            <Tag style={{ marginBottom: 8 }}>{group}</Tag>
-            {items.map((item) => {
+      {error && <ErrorNotice key={error} error={error} onClose={() => setError('')} style={{ margin: '0 12px 8px' }} />}
+      <div className="cm-list-body">
+        {groupEntries.length === 0 && (
+          <div className="cm-list-empty">{search ? '没有匹配的连接' : '还没有连接，点击右上角 + 新建'}</div>
+        )}
+        {groupEntries.map(([group, items]) => (
+          <div key={group} className="cm-group">
+            <button type="button" className={`cm-group-head ${collapsed.has(group) ? 'collapsed' : ''}`} onClick={() => toggleGroup(group)}>
+              <DownOutlined className="cm-group-arrow" />
+              <span className="cm-group-name">{group}</span>
+              <span className="cm-group-count">{items.length}</span>
+            </button>
+            {!collapsed.has(group) && items.map((item) => {
               const connected = connectionStatuses[item.id]?.connected
               const isSelected = selectedId === item.id
               const avatarColor = isSelected && previewColor ? previewColor : item.color
@@ -95,42 +118,26 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
               return (
                 <div
                   key={item.id}
+                  className={`cm-item ${isSelected ? 'active' : ''}`}
                   onClick={() => onSelect(item)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: '6px 8px',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    marginBottom: 4,
-                    background: isSelected ? 'var(--accent-bg)' : 'transparent',
-                    border: isSelected ? '1px solid color-mix(in srgb, var(--accent) 40%, transparent)' : '1px solid transparent',
-                    transition: 'background-color var(--transition), border-color var(--transition)',
-                    gap: 10,
-                  }}
+                  onDoubleClick={(e) => { if (!connected) void handleToggleConnect(item, e) }}
                 >
                   <ConnAvatar conn={{ name: item.name, color: avatarColor, icon: avatarIcon }} status={connected ? 'connected' : 'idle'} size="small" />
-                  <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                      <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>{item.name}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.host}:{item.port}</div>
+                  <div className="cm-item-text">
+                    <span className="cm-item-name">{item.name}</span>
+                    <span className="cm-item-host">{item.user ? `${item.user}@` : ''}{item.host}:{item.port}</span>
                   </div>
-                  <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                  <div className="cm-item-actions">
                     <Tooltip title={connected ? '断开' : '连接'}>
-                      <button className="ui-btn ui-btn-text ui-btn-small" style={{ padding: 4 }} onClick={(e) => handleToggleConnect(item, e)}>
+                      <button type="button" onClick={(e) => handleToggleConnect(item, e)}>
                         {connected ? <DisconnectOutlined /> : <LinkOutlined />}
                       </button>
                     </Tooltip>
                     <Tooltip title="复制">
-                      <button className="ui-btn ui-btn-text ui-btn-small" style={{ padding: 4 }} onClick={(e) => handleDuplicate(item, e)}>
-                        <CopyOutlined />
-                      </button>
+                      <button type="button" onClick={(e) => handleDuplicate(item, e)}><CopyOutlined /></button>
                     </Tooltip>
                     <Tooltip title="删除">
-                      <button className="ui-btn ui-btn-text ui-btn-small" style={{ padding: 4, color: 'var(--error)' }} onClick={(e) => handleDelete(item.id, e)}>
-                        <DeleteOutlined />
-                      </button>
+                      <button type="button" className="danger" onClick={(e) => { e.stopPropagation(); setPendingDelete(item) }}><DeleteOutlined /></button>
                     </Tooltip>
                   </div>
                 </div>
@@ -139,6 +146,21 @@ export const ConnectionList: React.FC<Props> = ({ onSelect, onNew, onClose, sele
           </div>
         ))}
       </div>
+      <div className="cm-list-foot">共 {connections.length} 个连接{search ? `，匹配 ${filtered.length} 个` : ''}</div>
+      <Modal
+        open={Boolean(pendingDelete)}
+        title="删除连接"
+        width={400}
+        onClose={() => setPendingDelete(null)}
+        footer={(
+          <>
+            <Button onClick={() => setPendingDelete(null)}>取消</Button>
+            <Button variant="danger" onClick={async (e) => { if (pendingDelete) await handleDelete(pendingDelete.id, e); setPendingDelete(null) }}>删除</Button>
+          </>
+        )}
+      >
+        <p style={{ padding: '4px 0' }}>确定删除连接「{pendingDelete?.name}」吗？该连接的查询历史也会一并删除。</p>
+      </Modal>
     </div>
   )
 }

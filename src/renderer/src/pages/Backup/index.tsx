@@ -17,6 +17,16 @@ const formatBytes = (bytes: number): string => {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
 }
 
+const BACKUP_TYPE_LABEL: Record<string, string> = { full: '完整', structure: '仅结构', data: '仅数据' }
+const BACKUP_STATUS_LABEL: Record<string, string> = { completed: '已完成', running: '进行中', failed: '失败' }
+
+function formatTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 const Backup: React.FC = () => {
   const [view, setView] = useState<'main' | 'backup' | 'restore' | 'schedule'>('main')
   const [records, setRecords] = useState<BackupRecord[]>([])
@@ -42,11 +52,11 @@ const Backup: React.FC = () => {
 
   const columns = [
     { title: '数据库', dataIndex: 'databaseName', key: 'databaseName', width: 150 },
-    { title: '类型', dataIndex: 'backupType', key: 'backupType', width: 100, render: (v: string) => <Tag>{v}</Tag> },
+    { title: '类型', dataIndex: 'backupType', key: 'backupType', width: 100, render: (v: string) => <Tag>{BACKUP_TYPE_LABEL[v] ?? v}</Tag> },
     { title: '文件', dataIndex: 'filePath', key: 'filePath', ellipsis: true },
     { title: '大小', dataIndex: 'fileSize', key: 'fileSize', width: 100, render: (v: number) => formatBytes(v) },
-    { title: '状态', dataIndex: 'status', key: 'status', width: 80, render: (v: string) => <Tag type={v === 'completed' ? 'success' : v === 'running' ? 'primary' : 'error'}>{v}</Tag> },
-    { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 170 },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 80, render: (v: string) => <Tag type={v === 'completed' ? 'success' : v === 'running' ? 'primary' : 'error'}>{BACKUP_STATUS_LABEL[v] ?? v}</Tag> },
+    { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 170, render: (v: string) => formatTime(v) },
     { title: '操作', key: 'action', width: 120, render: (_: any, r: BackupRecord) => (
       <Space><Button size="small" icon={<RollbackOutlined />} onClick={() => setView('restore')}>恢复</Button></Space>
     )},

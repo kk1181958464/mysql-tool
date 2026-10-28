@@ -14,7 +14,7 @@ const api: ElectronAPI = {
     connect: (config) => invoke(IPC.CONNECTION_CONNECT, config),
     disconnect: (id) => invoke(IPC.CONNECTION_DISCONNECT, id),
     list: () => invoke(IPC.CONNECTION_LIST),
-    save: (config) => invoke(IPC.CONNECTION_SAVE, config),
+    save: (config, sourceId) => invoke(IPC.CONNECTION_SAVE, config, sourceId),
     delete: (id) => invoke(IPC.CONNECTION_DELETE, id),
   },
   query: {

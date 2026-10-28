@@ -1,5 +1,6 @@
 import { formatErrorMessage } from '../../shared/error-message'
 import mysql from 'mysql2/promise'
+import { readFileSync } from 'fs'
 import type { ConnectionConfig, ConnectionStatus } from '../../shared/types/connection'
 import { createTunnel } from './ssh-tunnel'
 import * as localStore from './local-store'
@@ -23,6 +24,9 @@ import {
 const pools = new Map<string, mysql.Pool>()
 const tunnels = new Map<string, { close: () => void }>()
 const connectionConfigs = new Map<string, ConnectionConfig>()
+const endpoints = new Map<string, { host: string; port: number }>()
+const reconnecting = new Map<string, Promise<void>>()
+const disconnectGenerations = new Map<string, number>()
 
 let heartbeatIntervalSeconds = HEARTBEAT_DEFAULT_SECONDS
 let heartbeatTimer: NodeJS.Timeout | null = null
@@ -71,13 +75,26 @@ function stopHeartbeatScheduler(reason: string): void {
 }
 
 async function runHeartbeatForConnection(id: string): Promise<void> {
-  const conn = await ensureConnection(id)
   let timeoutTimer: NodeJS.Timeout | null = null
   let timedOut = false
+  const work = ensureConnection(id).then(async (conn) => {
+    if (timedOut) {
+      conn.destroy()
+      return
+    }
+    try {
+      await conn.query('SELECT 1')
+      conn.release()
+    } catch (err) {
+      conn.destroy()
+      throw err
+    }
+  })
+  work.catch(() => {})
 
   try {
     await Promise.race([
-      conn.query('SELECT 1').then(() => undefined),
+      work,
       new Promise<never>((_, reject) => {
         timeoutTimer = setTimeout(() => {
           timedOut = true
@@ -85,16 +102,8 @@ async function runHeartbeatForConnection(id: string): Promise<void> {
         }, heartbeatQueryTimeoutMs)
       }),
     ])
-
   } finally {
-    if (timeoutTimer) {
-      clearTimeout(timeoutTimer)
-    }
-    if (timedOut) {
-      conn.destroy()
-    } else {
-      conn.release()
-    }
+    if (timeoutTimer) clearTimeout(timeoutTimer)
   }
 }
 
@@ -306,12 +315,20 @@ export function updateHeartbeatAutoTuneEnabled(enabled: boolean): boolean {
   return heartbeatAutoTuneEnabled
 }
 
-function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overridePort?: number): mysql.PoolOptions {
-  const connectionLimit = Math.max(1, Math.min(Math.trunc(Number(config.poolMax) || 10), 100))
+function readPem(value: string | undefined, label: string): string | undefined {
+  if (!value) return undefined
+  if (value.includes('-----BEGIN')) return value
+  try {
+    return readFileSync(value, 'utf-8')
+  } catch (err) {
+    throw new Error(`无法读取${label}文件：${value}（${(err as Error).message}）`)
+  }
+}
+
+function buildConnectionOptions(config: ConnectionConfig, overrideHost?: string, overridePort?: number): mysql.ConnectionOptions {
   const connectTimeout = Math.max(1000, Math.min(Math.trunc(Number(config.connectTimeout) || 10000), 300000))
-  const idleTimeout = Math.max(1000, Math.min(Math.trunc(Number(config.idleTimeout) || 60000), 3600000))
   const timezone = /^(?:local|Z|[+-]\d{2}:\d{2})$/.test(config.timezone || '') ? config.timezone : 'local'
-  const opts: mysql.PoolOptions = {
+  const opts: mysql.ConnectionOptions = {
     host: overrideHost || config.host,
     port: overridePort || config.port,
     user: config.user,
@@ -320,12 +337,10 @@ function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overr
     charset: config.charset,
     timezone,
     connectTimeout,
-    connectionLimit,
-    maxIdle: connectionLimit,
-    idleTimeout,
-    waitForConnections: true,
     enableKeepAlive: true,
     multipleStatements: false,
+    supportBigNumbers: true,
+    bigNumberStrings: false,
     typeCast: function (field: any, next: any) {
       if (field.type === 'DATETIME' || field.type === 'DATE' || field.type === 'TIMESTAMP' || field.type === 'NEWDATE') {
         return field.string()
@@ -335,13 +350,33 @@ function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overr
   }
   if (config.sslEnabled) {
     opts.ssl = {
-      ca: config.sslCa || undefined,
-      cert: config.sslCert || undefined,
-      key: config.sslKey || undefined,
+      ca: readPem(config.sslCa, 'CA 证书'),
+      cert: readPem(config.sslCert, '客户端证书'),
+      key: readPem(config.sslKey, '客户端密钥'),
       rejectUnauthorized: config.sslMode === 'VERIFY_CA' || config.sslMode === 'VERIFY_IDENTITY',
     }
   }
   return opts
+}
+
+function buildPoolOptions(config: ConnectionConfig, overrideHost?: string, overridePort?: number): mysql.PoolOptions {
+  const connectionLimit = Math.max(1, Math.min(Math.trunc(Number(config.poolMax) || 10), 100))
+  const idleTimeout = Math.max(1000, Math.min(Math.trunc(Number(config.idleTimeout) || 60000), 3600000))
+  return {
+    ...buildConnectionOptions(config, overrideHost, overridePort),
+    connectionLimit,
+    maxIdle: Math.min(2, connectionLimit),
+    idleTimeout,
+    waitForConnections: true,
+  }
+}
+
+export function getScriptConnectionOptions(id: string, database?: string): mysql.ConnectionOptions {
+  const config = connectionConfigs.get(id)
+  const endpoint = endpoints.get(id)
+  if (!config || !endpoint || !pools.has(id)) throw new Error('连接已断开，请重新连接后再试')
+  const opts = buildConnectionOptions(config, endpoint.host, endpoint.port)
+  return { ...opts, database: database || opts.database, multipleStatements: true }
 }
 
 function createConnectionError(message: string, code: string, cause?: unknown): ConnectionLikeError {
@@ -414,11 +449,20 @@ export async function connect(config: ConnectionConfig): Promise<ConnectionStatu
       conn = null
     }
 
+    const previousPool = pools.get(config.id)
+    const previousTunnel = tunnels.get(config.id)
     pools.set(config.id, pool)
     if (tunnel) {
       tunnels.set(config.id, tunnel)
+    } else {
+      tunnels.delete(config.id)
     }
+    endpoints.set(config.id, { host, port })
     connectionConfigs.set(config.id, config)
+    if (previousPool && previousPool !== pool) previousPool.end().catch(() => {})
+    if (previousTunnel && previousTunnel !== tunnel) {
+      try { previousTunnel.close() } catch { /* 旧隧道已关闭 */ }
+    }
     ensureHeartbeatSchedulerState()
 
     pool = null
@@ -445,20 +489,28 @@ export async function connect(config: ConnectionConfig): Promise<ConnectionStatu
   }
 }
 
-export async function disconnect(id: string): Promise<void> {
+async function closeResources(id: string): Promise<void> {
   const pool = pools.get(id)
-  if (pool) {
-    await pool.end()
-    pools.delete(id)
-  }
   const tunnel = tunnels.get(id)
-  if (tunnel) {
-    tunnel.close()
-    tunnels.delete(id)
+  pools.delete(id)
+  tunnels.delete(id)
+  endpoints.delete(id)
+  try {
+    if (pool) await pool.end()
+  } catch (err) {
+    logger.warn(`[connection-manager] pool end failed for ${id}: ${(err as Error).message}`)
+  } finally {
+    if (tunnel) {
+      try { tunnel.close() } catch { /* 隧道已关闭 */ }
+    }
   }
+}
+
+export async function disconnect(id: string): Promise<void> {
+  disconnectGenerations.set(id, (disconnectGenerations.get(id) ?? 0) + 1)
+  await closeResources(id)
   connectionConfigs.delete(id)
   ensureHeartbeatSchedulerState()
-
 }
 
 export function getPool(id: string): mysql.Pool {
@@ -493,20 +545,34 @@ export async function ensureConnection(id: string): Promise<mysql.PoolConnection
     logger.warn(`Connection lost detected for ${id}, recreating pool`)
     try { conn.destroy() } catch { /* 连接已断开，忽略 */ }
 
-    const config = getSavedConfig(id)
-    if (!config) {
-      throw createConnectionError(`Connection config not found for id: ${id}`, 'CONNECTION_CONFIG_NOT_FOUND', err)
-    }
-
-    await disconnect(id)
-    const status = await connect(config)
-    if (!status.connected) {
-      throw createConnectionError(status.error || 'Reconnect failed', 'CONNECTION_RECONNECT_FAILED', err)
-    }
-
+    await reconnect(id, err)
     conn = await getConnection(id)
     return conn
   }
+}
+
+function reconnect(id: string, cause: unknown): Promise<void> {
+  const existing = reconnecting.get(id)
+  if (existing) return existing
+
+  const generation = disconnectGenerations.get(id) ?? 0
+  const task = (async () => {
+    const config = getSavedConfig(id)
+    if (!config) {
+      throw createConnectionError('连接配置不存在，请重新连接', 'CONNECTION_CONFIG_NOT_FOUND', cause)
+    }
+    const status = await connect(config)
+    if ((disconnectGenerations.get(id) ?? 0) !== generation) {
+      await closeResources(id)
+      throw createConnectionError('连接已断开，请重新连接后再试', 'CONNECTION_CLOSED', cause)
+    }
+    if (!status.connected) {
+      throw createConnectionError(status.error || '重新连接失败', 'CONNECTION_RECONNECT_FAILED', cause)
+    }
+  })().finally(() => reconnecting.delete(id))
+
+  reconnecting.set(id, task)
+  return task
 }
 
 export async function testConnection(config: ConnectionConfig): Promise<ConnectionStatus> {
@@ -520,7 +586,7 @@ export async function testConnection(config: ConnectionConfig): Promise<Connecti
       host = '127.0.0.1'
       port = tunnel.localPort
     }
-    conn = await mysql.createConnection(buildPoolOptions(config, host, port))
+    conn = await mysql.createConnection(buildConnectionOptions(config, host, port))
     const [rows] = await conn.query('SELECT VERSION() as version')
     const version = (rows as Record<string, string>[])[0]?.version || ''
     return { id: config.id, connected: true, serverVersion: version }
@@ -538,7 +604,7 @@ export async function testConnection(config: ConnectionConfig): Promise<Connecti
 
 export async function disconnectAll(): Promise<void> {
   stopHeartbeatScheduler('disconnect all')
-  for (const id of pools.keys()) {
+  for (const id of Array.from(pools.keys())) {
     await disconnect(id)
   }
 }

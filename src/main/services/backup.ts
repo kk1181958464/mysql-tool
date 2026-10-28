@@ -3,13 +3,13 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as zlib from 'zlib'
 import { randomUUID } from 'crypto'
-import { promisify } from 'util'
 import { finished } from 'stream/promises'
 import * as localStore from './local-store'
 import * as logger from '../utils/logger'
 import * as importExport from './import-export'
 import * as connectionManager from './connection-manager'
-import { executeMultiStatementSql } from './sql-script-executor'
+import { executeSqlFile } from './sql-script-executor'
+import { pipeline } from 'stream'
 import { quoteId } from '../utils/sql'
 import type {
   BackupConfig,
@@ -20,7 +20,6 @@ import type {
   BackupScheduleRequest,
 } from '../../shared/types/table-design'
 
-const gunzip = promisify(zlib.gunzip)
 const SCHEDULE_POLL_INTERVAL_MS = 30 * 1000
 
 let scheduleTimer: NodeJS.Timeout | null = null
@@ -292,9 +291,10 @@ export async function createBackup(configOrRequest: BackupConfig | BackupCreateR
     filePath: config.filePath,
     fileSize: 0,
     isCompressed: config.compress,
-    isEncrypted: Boolean(config.encrypt),
+    isEncrypted: false,
     status: 'running',
     createdAt: new Date().toISOString(),
+    scheduleId: config.scheduleId,
   }
 
   localStore.backupRecords.save(record)
@@ -321,6 +321,7 @@ export async function createBackup(configOrRequest: BackupConfig | BackupCreateR
             insertStyle: 'single',
           },
         )
+        gzip.end()
         await finished(out)
         success = true
       } finally {
@@ -359,14 +360,6 @@ export async function createBackup(configOrRequest: BackupConfig | BackupCreateR
 }
 
 export async function restoreBackup(connId: string, filePath: string, options?: BackupRestoreOptions): Promise<void> {
-  let content: string
-  const raw = await fs.promises.readFile(filePath)
-  if (filePath.endsWith('.gz')) {
-    content = (await gunzip(raw)).toString('utf-8')
-  } else {
-    content = raw.toString('utf-8')
-  }
-
   const targetDb = options?.createNew ? options.newDbName?.trim() : options?.targetDb?.trim()
   await ensureConnectionReady(connId)
   const conn = await connectionManager.getConnection(connId)
@@ -385,7 +378,18 @@ export async function restoreBackup(connId: string, filePath: string, options?: 
     await ensureEmptyDatabase(connId, targetDb)
   }
 
-  await executeMultiStatementSql(connId, content, targetDb || undefined, { optimizeInserts: true, scriptMode: 'import' })
+  const source = fs.createReadStream(filePath)
+  const input = filePath.toLowerCase().endsWith('.gz')
+    ? pipeline(source, zlib.createGunzip(), () => {})
+    : source
+  try {
+    const result = await executeSqlFile(connId, input, targetDb || undefined, { optimizeInserts: true })
+    if (result.errors > 0) {
+      throw new Error(`恢复未完全成功：${result.errors} 条语句执行失败。首个错误：${result.firstError || '未知错误'}`)
+    }
+  } finally {
+    source.destroy()
+  }
 }
 
 export async function listBackups(connId: string): Promise<BackupRecord[]> {
@@ -459,6 +463,7 @@ async function executeSchedule(schedule: BackupSchedule): Promise<void> {
       filePath,
       compress: schedule.compress,
       encrypt: false,
+      scheduleId: schedule.id,
     })
 
     const nowText = formatLastRun(new Date())
@@ -477,7 +482,7 @@ async function pruneScheduleBackups(schedule: BackupSchedule): Promise<void> {
   const cutoff = Date.now() - schedule.retentionDays * 24 * 60 * 60 * 1000
   const records = localStore.backupRecords
     .getByConnection(schedule.connectionId)
-    .filter((item) => item.databaseName === schedule.databaseName)
+    .filter((item) => item.scheduleId === schedule.id)
 
   for (const record of records) {
     if (record.status !== 'completed') continue

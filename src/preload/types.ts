@@ -46,7 +46,7 @@ export interface ElectronAPI {
     connect(config: ConnectionConfig): Promise<ConnectionStatus>
     disconnect(id: string): Promise<void>
     list(): Promise<ConnectionConfig[]>
-    save(config: ConnectionSavePayload): Promise<void>
+    save(config: ConnectionSavePayload, sourceId?: string): Promise<void>
     delete(id: string): Promise<void>
   }
   query: {

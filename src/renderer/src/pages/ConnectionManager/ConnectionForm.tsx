@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { CloseOutlined, DownOutlined, PictureOutlined } from '@ant-design/icons'
+import { ApiOutlined, CloseOutlined, CloudServerOutlined, DatabaseOutlined, DownOutlined, PictureOutlined, SafetyCertificateOutlined, SettingOutlined } from '@ant-design/icons'
 import { Tabs, Input, Button, Space, Select, Alert, Toast } from '../../components/ui'
 import { ConnAvatar } from '../../components/ConnAvatar'
 import { ErrorNotice } from '../../components/ErrorNotice'
@@ -11,6 +11,8 @@ import { SSHConfig } from './SSHConfig'
 import { PoolConfig } from './PoolConfig'
 import type { ConnectionConfig, ConnectionSavePayload } from '../../../../shared/types/connection'
 import { v4 as uuid } from 'uuid'
+import { SecretInput } from './SecretInput'
+import { FormField, FormSection } from './FormField'
 
 interface Props {
   editing: ConnectionConfig | null
@@ -29,7 +31,7 @@ function GroupInput({ value, onChange }: { value: string; onChange: (value: stri
   const options = keyword && !exactMatch ? groups.filter((g) => g.toLowerCase().includes(keyword)) : groups
 
   return (
-    <div style={{ position: 'relative', display: 'inline-block' }}>
+    <div style={{ position: 'relative' }}>
       <Input
         value={value}
         onChange={(e) => { onChange(e.target.value); setOpen(true) }}
@@ -98,7 +100,7 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
   const [validationError, setValidationError] = useState('')
   const [success, setSuccess] = useState('')
   const [activeTab, setActiveTab] = useState('general')
-  const { saveConnection, testConnection, connect } = useConnectionStore()
+  const { saveConnection, testConnection, connect, connectionStatuses } = useConnectionStore()
   const connectionIdRef = useRef(editing?.id || uuid())
   const iconFileRef = useRef<HTMLInputElement>(null)
 
@@ -198,72 +200,85 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
   }
 
   const COLORS = ['#5b5bd6', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
+  const isConnected = Boolean(editing && connectionStatuses[editing.id]?.connected)
 
   const GeneralTab = (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div>
-        <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>分组</label>
-        <GroupInput value={form.groupName || ''} onChange={(v) => updateField('groupName', v)} />
-      </div>
-      <div>
-        <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}><span style={{ color: 'var(--error)' }}>*</span> 主机</label>
-        <Input value={form.host || ''} onChange={(e) => updateField('host', e.target.value)} placeholder="127.0.0.1" />
-      </div>
-      <div>
-        <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}><span style={{ color: 'var(--error)' }}>*</span> 端口</label>
-        <Input type="number" value={String(form.port || 3306)} onChange={(e) => updateField('port', Number(e.target.value))} />
-      </div>
-      <div>
-        <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>用户名</label>
-        <Input value={form.user || ''} onChange={(e) => updateField('user', e.target.value)} placeholder="root" />
-      </div>
-      <div>
-        <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>密码</label>
-        <Input type="password" value={form.password || ''} onChange={(e) => updateField('password', e.target.value)} placeholder="密码" />
-      </div>
-      <div>
-        <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>字符集</label>
-        <Select value={form.charset || 'utf8mb4'} onChange={(v) => updateField('charset', v)} options={[
-          { value: 'utf8mb4', label: 'utf8mb4' },
-          { value: 'utf8', label: 'utf8' },
-          { value: 'latin1', label: 'latin1' },
-          { value: 'gbk', label: 'gbk' },
-        ]} style={{ width: '100%' }} />
-      </div>
+    <div className="cm-tab-body">
+      <FormSection title="服务器" columns={4}>
+        <FormField label="主机" required span={3}>
+          <Input value={form.host || ''} onChange={(e) => updateField('host', e.target.value)} placeholder="127.0.0.1" />
+        </FormField>
+        <FormField label="端口" required>
+          <Input type="number" value={String(form.port || 3306)} onChange={(e) => updateField('port', Number(e.target.value))} />
+        </FormField>
+        <FormField label="用户名" span={2}>
+          <Input value={form.user || ''} onChange={(e) => updateField('user', e.target.value)} placeholder="root" />
+        </FormField>
+        <FormField label="密码" span={2}>
+          <SecretInput value={form.password || ''} onChange={(v) => updateField('password', v)} placeholder="密码" />
+        </FormField>
+      </FormSection>
+      <FormSection title="选项">
+        <FormField label="默认数据库" hint="留空则连接后不选中数据库">
+          <Input value={form.databaseName || ''} onChange={(e) => updateField('databaseName', e.target.value)} placeholder="可选" />
+        </FormField>
+        <FormField label="字符集">
+          <Select value={form.charset || 'utf8mb4'} onChange={(v) => updateField('charset', v)} options={[
+            { value: 'utf8mb4', label: 'utf8mb4' },
+            { value: 'utf8', label: 'utf8' },
+            { value: 'latin1', label: 'latin1' },
+            { value: 'gbk', label: 'gbk' },
+          ]} style={{ width: '100%' }} />
+        </FormField>
+        <FormField label="分组" span={2}>
+          <GroupInput value={form.groupName || ''} onChange={(v) => updateField('groupName', v)} />
+        </FormField>
+      </FormSection>
     </div>
   )
 
+  const tabLabel = (icon: React.ReactNode, text: string, on?: boolean) => (
+    <span className="cm-tab-label">{icon}{text}{on && <span className="cm-tab-dot" />}</span>
+  )
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* 公共字段：图标、名称和颜色 */}
-      <div className="conn-form-head">
-        <button type="button" className="conn-form-avatar" title="上传图标" onClick={() => iconFileRef.current?.click()}>
-          <ConnAvatar conn={{ name: form.name || '', color: form.color || '', icon: form.icon || '' }} size="large" />
-          <span className="conn-form-avatar-overlay"><PictureOutlined /></span>
-          {form.icon ? (
-            <span
-              role="button"
-              className="conn-form-avatar-reset"
-              title="恢复默认图标"
-              onClick={(e) => { e.stopPropagation(); updateIcon('') }}
-            >
-              <CloseOutlined />
-            </span>
-          ) : null}
-        </button>
-        <input ref={iconFileRef} type="file" accept={ICON_ACCEPT} hidden onChange={handleIconFile} />
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div>
-            <label style={{ display: 'block', marginBottom: 4, fontSize: 12 }}><span style={{ color: 'var(--error)' }}>*</span> 连接名称</label>
-            <Input value={form.name || ''} onChange={(e) => updateField('name', e.target.value)} placeholder="My Connection" />
-          </div>
-          <div className="conn-form-meta">
-            <span className="conn-form-label">颜色</span>
-            <div style={{ display: 'flex', gap: 4 }}>
+    <div className="cm-form">
+      <div className="cm-form-scroll">
+        <div className="cm-head">
+          <button type="button" className="conn-form-avatar" title="上传图标" onClick={() => iconFileRef.current?.click()}>
+            <ConnAvatar conn={{ name: form.name || '', color: form.color || '', icon: form.icon || '' }} size="large" />
+            <span className="conn-form-avatar-overlay"><PictureOutlined /></span>
+            {form.icon ? (
+              <span
+                role="button"
+                className="conn-form-avatar-reset"
+                title="恢复默认图标"
+                onClick={(e) => { e.stopPropagation(); updateIcon('') }}
+              >
+                <CloseOutlined />
+              </span>
+            ) : null}
+          </button>
+          <input ref={iconFileRef} type="file" accept={ICON_ACCEPT} hidden onChange={handleIconFile} />
+          <div className="cm-head-main">
+            <div className="cm-head-title">
+              <span>{editing ? '编辑连接' : '新建连接'}</span>
+              {editing && (
+                <span className={`cm-status ${isConnected ? 'on' : ''}`}>{isConnected ? '已连接' : '未连接'}</span>
+              )}
+            </div>
+            <Input
+              className="cm-name-input"
+              value={form.name || ''}
+              onChange={(e) => updateField('name', e.target.value)}
+              placeholder="连接名称，例如：生产库-订单"
+            />
+            <div className="conn-form-meta">
               {COLORS.map((c) => (
                 <button
                   key={c}
                   type="button"
+                  title={c}
                   className={`conn-color-swatch ${form.color === c ? 'active' : ''}`}
                   onClick={() => {
                     updateField('color', c)
@@ -272,40 +287,44 @@ export const ConnectionForm: React.FC<Props> = ({ editing, onSaved, onClose, onP
                   style={{ background: c }}
                 />
               ))}
+              <span className="cm-divider" />
+              <Input
+                size="small"
+                value={iconIsImage ? '' : form.icon || ''}
+                onChange={(e) => updateIcon(Array.from(e.target.value).slice(0, 2).join(''))}
+                placeholder={iconIsImage ? '已用图片' : '图标文字'}
+                disabled={iconIsImage}
+                style={{ width: 84 }}
+              />
+              <Button size="small" variant="text" icon={<PictureOutlined />} onClick={() => iconFileRef.current?.click()}>上传图片</Button>
             </div>
-            <span className="conn-form-label" style={{ marginLeft: 8 }}>图标</span>
-            <Input
-              size="small"
-              value={iconIsImage ? '' : form.icon || ''}
-              onChange={(e) => updateIcon(Array.from(e.target.value).slice(0, 2).join(''))}
-              placeholder={iconIsImage ? '图片' : '字/emoji'}
-              disabled={iconIsImage}
-              style={{ width: 72 }}
-            />
-            <Button size="small" icon={<PictureOutlined />} onClick={() => iconFileRef.current?.click()}>上传</Button>
           </div>
         </div>
+
+        <div className="cm-tabs">
+          <Tabs
+            activeKey={activeTab}
+            onChange={setActiveTab}
+            items={[
+              { key: 'general', label: tabLabel(<DatabaseOutlined />, '常规'), children: activeTab === 'general' ? GeneralTab : null },
+              { key: 'ssh', label: tabLabel(<CloudServerOutlined />, 'SSH', form.sshEnabled), children: activeTab === 'ssh' ? <SSHConfig form={form} updateField={updateField} /> : null },
+              { key: 'ssl', label: tabLabel(<SafetyCertificateOutlined />, 'SSL', form.sslEnabled), children: activeTab === 'ssl' ? <SSLConfig form={form} updateField={updateField} /> : null },
+              { key: 'advanced', label: tabLabel(<SettingOutlined />, '高级'), children: activeTab === 'advanced' ? <PoolConfig form={form} updateField={updateField} /> : null },
+            ]}
+          />
+        </div>
       </div>
-      <Tabs
-        activeKey={activeTab}
-        onChange={setActiveTab}
-        items={[
-          { key: 'general', label: '常规', children: activeTab === 'general' ? GeneralTab : null },
-          { key: 'ssl', label: 'SSL', children: activeTab === 'ssl' ? <SSLConfig form={form} updateField={updateField} /> : null },
-          { key: 'ssh', label: 'SSH', children: activeTab === 'ssh' ? <SSHConfig form={form} updateField={updateField} /> : null },
-          { key: 'advanced', label: '高级', children: activeTab === 'advanced' ? <PoolConfig form={form} updateField={updateField} /> : null },
-        ]}
-        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-      />
-      <div style={{ flexShrink: 0, paddingTop: 12, borderTop: '1px solid var(--border)', marginTop: 12 }}>
+
+      <div className="cm-footer">
         <Toast open={Boolean(success)} message={success} type="success" />
-        {validationError && <Alert type="warning" message={validationError} onClose={() => setValidationError('')} style={{ marginBottom: 8 }} />}
-        {!validationError && error && <ErrorNotice key={error} error={error} fallbackTitle="连接失败" onClose={() => setError('')} style={{ marginBottom: 8 }} />}
-        <Space>
-          <Button onClick={handleTest} disabled={testing}>{testing ? '测试中...' : '测试连接'}</Button>
+        {validationError && <Alert type="warning" message={validationError} onClose={() => setValidationError('')} />}
+        {!validationError && error && <ErrorNotice key={error} error={error} fallbackTitle="连接失败" onClose={() => setError('')} />}
+        <div className="cm-footer-actions">
+          <Button icon={<ApiOutlined />} loading={testing} onClick={handleTest}>{testing ? '测试中' : '测试连接'}</Button>
+          <div style={{ flex: 1 }} />
           <Button onClick={handleSave}>保存</Button>
           <Button type="primary" onClick={handleSaveAndConnect}>保存并连接</Button>
-        </Space>
+        </div>
       </div>
     </div>
   )

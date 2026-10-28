@@ -22,6 +22,7 @@ import { useDatabaseStore } from '../../stores/database.store'
 import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
+import { findCurrentStatement } from './current-statement'
 
 // QueryEditor 首次加载时再初始化 Monaco，避免主入口首包引入
 if (!(self as any).__MYSQL_TOOL_MONACO_READY__) {
@@ -47,9 +48,22 @@ const SQL_KEYWORDS = [
   'VARCHAR', 'INT', 'BIGINT', 'TEXT', 'DATETIME', 'TIMESTAMP', 'DECIMAL', 'BOOLEAN',
 ]
 
-// 全局存储表和字段信息
-let globalTables: string[] = []
-let globalColumns: Map<string, string[]> = new Map()
+// 每个编辑器模型各自的补全数据，避免多个查询标签互相覆盖
+type CompletionData = { tables: string[]; columns: Map<string, string[]> }
+const EMPTY_COMPLETION: CompletionData = { tables: [], columns: new Map() }
+const completionByModel = new Map<string, CompletionData>()
+const columnNameCache = new Map<string, Promise<string[]>>()
+
+const loadColumnNames = (connectionId: string, database: string, table: string): Promise<string[]> => {
+  const key = `${connectionId}:${database}:${table}`
+  let pending = columnNameCache.get(key)
+  if (!pending) {
+    pending = api.meta.columns(connectionId, database, table).then((cols) => cols.map((c) => c.name))
+    pending.catch(() => columnNameCache.delete(key))
+    columnNameCache.set(key, pending)
+  }
+  return pending
+}
 
 const COLUMN_LOAD_LIMIT = 20
 const COLUMN_LOAD_CONCURRENCY = 4
@@ -176,6 +190,7 @@ const registerSqlCompletion = () => {
 
       const context = getContext(textBefore)
       const suggestions: monaco.languages.CompletionItem[] = []
+      const { tables: globalTables, columns: globalColumns } = completionByModel.get(model.uri.toString()) ?? EMPTY_COMPLETION
 
       // 始终提供关键字
       SQL_KEYWORDS.forEach(kw => {
@@ -252,11 +267,6 @@ const registerSqlCompletion = () => {
   })
 }
 
-// 更新补全数据
-const updateCompletionData = (tables: string[], columns: Map<string, string[]>) => {
-  globalTables = tables
-  globalColumns = columns
-}
 
 const shouldUseBatchExecution = (sql: string): boolean => {
   const trimmed = sql.trim()
@@ -274,95 +284,6 @@ const shouldUseBatchExecution = (sql: string): boolean => {
 
   const createTableMatches = withoutTrailingSemicolon.match(/\bCREATE\s+TABLE\b/gi)
   return (createTableMatches?.length ?? 0) > 1
-}
-
-const findCurrentStatement = (sql: string, offset: number): string => {
-  let start = 0
-  let end = sql.length
-  let inSingle = false
-  let inDouble = false
-  let inBacktick = false
-  let inLineComment = false
-  let inBlockComment = false
-
-  for (let i = 0; i < sql.length; i += 1) {
-    const ch = sql[i]
-    const next = sql[i + 1]
-
-    if (inLineComment) {
-      if (ch === '\n') inLineComment = false
-      continue
-    }
-    if (inBlockComment) {
-      if (ch === '*' && next === '/') {
-        inBlockComment = false
-        i += 1
-      }
-      continue
-    }
-    if (inSingle) {
-      if (ch === "'" && next === "'") {
-        i += 1
-        continue
-      }
-      if (ch === '\\') {
-        i += 1
-        continue
-      }
-      if (ch === "'") inSingle = false
-      continue
-    }
-    if (inDouble) {
-      if (ch === '"' && next === '"') {
-        i += 1
-        continue
-      }
-      if (ch === '\\') {
-        i += 1
-        continue
-      }
-      if (ch === '"') inDouble = false
-      continue
-    }
-    if (inBacktick) {
-      if (ch === '`') inBacktick = false
-      continue
-    }
-
-    if (ch === '-' && next === '-') {
-      inLineComment = true
-      i += 1
-      continue
-    }
-    if (ch === '/' && next === '*') {
-      inBlockComment = true
-      i += 1
-      continue
-    }
-    if (ch === "'") {
-      inSingle = true
-      continue
-    }
-    if (ch === '"') {
-      inDouble = true
-      continue
-    }
-    if (ch === '`') {
-      inBacktick = true
-      continue
-    }
-    if (ch !== ';') continue
-
-    if (i < offset) {
-      start = i + 1
-      continue
-    }
-
-    end = i
-    break
-  }
-
-  return sql.slice(start, end).trim()
 }
 
 const splitSqlStatements = (sql: string): string[] => {
@@ -588,7 +509,8 @@ const getExecutableSql = (editor: any, fallbackSql: string, mode: 'current' | 'a
   const position = editor.getPosition?.()
   if (!position) return fallbackSql.trim()
   const offset = model.getOffsetAt(position)
-  const currentStatement = findCurrentStatement(fallbackSql, offset) || fallbackSql.trim()
+  const currentStatement = findCurrentStatement(fallbackSql, offset)
+  if (!currentStatement) return ''
   const userVariableAssignments = getUserVariableAssignmentsBefore(fallbackSql, offset, currentStatement)
   return [...userVariableAssignments, currentStatement].join(';\n')
 }
@@ -610,11 +532,17 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
   const editorRef = useRef<any>(null)
   const executionIdRef = useRef<string | null>(null)
   const runningQueryRef = useRef<{ connectionId: string | null; isExecuting: boolean }>({ connectionId: null, isExecuting: false })
-  const { tabs, setQueryResult, setQueryExecuting, setQueryError, updateQueryContent, setQueryDatabase } = useTabStore()
-  const { databases, tables, isDatabaseOpen } = useDatabaseStore()
-  const { resolvedTheme } = useAppStore()
-
-  const tab = tabs.find((t) => t.id === tabId) as QueryTab | undefined
+  const tab = useTabStore((s) => s.tabs.find((t) => t.id === tabId)) as QueryTab | undefined
+  const setQueryResult = useTabStore((s) => s.setQueryResult)
+  const setQueryExecuting = useTabStore((s) => s.setQueryExecuting)
+  const setQueryError = useTabStore((s) => s.setQueryError)
+  const updateQueryContent = useTabStore((s) => s.updateQueryContent)
+  const setQueryDatabase = useTabStore((s) => s.setQueryDatabase)
+  const databases = useDatabaseStore((s) => s.databases)
+  const tables = useDatabaseStore((s) => s.tables)
+  const isDatabaseOpen = useDatabaseStore((s) => s.isDatabaseOpen)
+  const resolvedTheme = useAppStore((s) => s.resolvedTheme)
+  const executeRef = useRef<(mode: 'current' | 'all') => void>(() => {})
 
   const activeConnectionId = tab?.connectionId ?? null
   const activeDatabase = tab?.database ?? null
@@ -674,16 +602,25 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
 
 
   // 注册 SQL 补全
+  const tableList = useDatabaseStore((s) => (activeConnectionId && activeDatabase ? s.tables[`${activeConnectionId}:${activeDatabase}`] : undefined))
+  const [editorModelUri, setEditorModelUri] = React.useState<string | null>(null)
+
   useEffect(() => {
     registerSqlCompletion()
+    if (!editorModelUri) return
+    const updateCompletionData = (names: string[], columns: Map<string, string[]>) => {
+      completionByModel.set(editorModelUri, { tables: names, columns })
+    }
 
-    if (!activeConnectionId || !activeDatabase) {
+    if (!activeConnectionId || !activeDatabase || !tableList) {
       updateCompletionData([], new Map())
       return
     }
 
-    const key = `${activeConnectionId}:${activeDatabase}`
-    const tableList = tables[key] || []
+    const cachePrefix = `${activeConnectionId}:${activeDatabase}:`
+    for (const cacheKey of columnNameCache.keys()) {
+      if (cacheKey.startsWith(cachePrefix)) columnNameCache.delete(cacheKey)
+    }
     const tableNames = tableList.map(t => t.name)
     const columnsMap = new Map<string, string[]>()
     let canceled = false
@@ -697,12 +634,12 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
       await runWithConcurrency(targets, COLUMN_LOAD_CONCURRENCY, async (t) => {
         if (canceled) return
         try {
-          const cols = await withTimeout(
-            api.meta.columns(activeConnectionId, activeDatabase, t.name),
+          const names = await withTimeout(
+            loadColumnNames(activeConnectionId, activeDatabase, t.name),
             COLUMN_LOAD_TIMEOUT_MS
           )
           if (canceled) return
-          columnsMap.set(t.name, cols.map(c => c.name))
+          columnsMap.set(t.name, names)
           updateCompletionData(tableNames, new Map(columnsMap))
         } catch {
           // 单表失败不阻断整体补全
@@ -719,13 +656,18 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
     return () => {
       canceled = true
     }
-  }, [activeConnectionId, activeDatabase, tables])
+  }, [activeConnectionId, activeDatabase, tableList, editorModelUri])
+
+  useEffect(() => () => {
+    if (editorModelUri) completionByModel.delete(editorModelUri)
+  }, [editorModelUri])
 
 
   const handleEditorMount = (editor: any) => {
     editorRef.current = editor
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => handleExecute('current'))
-    editor.addCommand(monaco.KeyCode.F5, () => handleExecute('all'))
+    setEditorModelUri(editor.getModel()?.uri.toString() ?? null)
+    editor.addAction({ id: 'kmysql.executeCurrent', label: '执行当前语句', keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter], run: () => executeRef.current('current') })
+    editor.addAction({ id: 'kmysql.executeAll', label: '执行全部', keybindings: [monaco.KeyCode.F5], run: () => executeRef.current('all') })
   }
 
   const handleExecute = useCallback(async (mode: 'current' | 'all' = 'current') => {
@@ -776,6 +718,7 @@ const QueryEditor: React.FC<Props> = ({ tabId }) => {
       setQueryError(tab.id, getErrorMessage(e, '执行失败'))
     }
   }, [tab, activeConnectionId, activeDatabase, hasSql, hasValidDatabase, executeBlockedReason, setQueryError, setQueryExecuting, setQueryResult])
+  executeRef.current = (mode) => { void handleExecute(mode) }
 
   const handleCancel = useCallback(async () => {
     if (!tab || !activeConnectionId || !tab.isExecuting) return

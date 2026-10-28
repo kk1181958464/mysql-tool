@@ -15,9 +15,10 @@ interface TabsProps {
   onChange?: (key: string) => void
   className?: string
   style?: React.CSSProperties
+  extra?: React.ReactNode
 }
 
-export function Tabs({ items, activeKey, defaultActiveKey, onChange, className = '', style }: TabsProps) {
+export function Tabs({ items, activeKey, defaultActiveKey, onChange, className = '', style, extra }: TabsProps) {
   const [innerKey, setInnerKey] = useState(defaultActiveKey || items[0]?.key)
   const currentKey = activeKey !== undefined ? activeKey : innerKey
 
@@ -41,6 +42,7 @@ export function Tabs({ items, activeKey, defaultActiveKey, onChange, className =
             {item.label}
           </button>
         ))}
+        {extra && <div className="ui-tabs-extra">{extra}</div>}
       </div>
       <div className="ui-tabs-content" style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
         {items.map((item) => (

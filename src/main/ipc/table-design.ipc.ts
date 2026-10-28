@@ -168,7 +168,7 @@ export function registerTableDesignIPC() {
         const sets = setEntries.map(([c]) => `${quoteId(c)} = ?`).join(', ')
         const setValues = setEntries.map(([, v]) => v)
         const { clause, values: whereValues } = buildWhereClause(item.where)
-        const [result] = await conn.query(`UPDATE ${quoteId(validTable)} SET ${sets} WHERE ${clause}`, [...setValues, ...whereValues]) as [ResultSetHeader, unknown]
+        const [result] = await conn.query(`UPDATE ${quoteId(validTable)} SET ${sets} WHERE ${clause} LIMIT 1`, [...setValues, ...whereValues]) as [ResultSetHeader, unknown]
         affectedRows += Number(result?.affectedRows ?? 0)
       }
       await conn.commit()
@@ -193,7 +193,7 @@ export function registerTableDesignIPC() {
       let affectedRows = 0
       for (const where of validWheres) {
         const { clause, values } = buildWhereClause(where)
-        const [result] = await conn.query(`DELETE FROM ${quoteId(validTable)} WHERE ${clause}`, values) as [ResultSetHeader, unknown]
+        const [result] = await conn.query(`DELETE FROM ${quoteId(validTable)} WHERE ${clause} LIMIT 1`, values) as [ResultSetHeader, unknown]
         affectedRows += Number(result?.affectedRows ?? 0)
       }
       await conn.commit()

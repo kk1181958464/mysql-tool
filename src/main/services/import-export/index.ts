@@ -3,7 +3,7 @@ import * as zlib from 'zlib'
 import { once } from 'events'
 import { mkdir, stat, writeFile } from 'fs/promises'
 import * as path from 'path'
-import type { Readable, Writable } from 'stream'
+import { Transform, pipeline, type Readable, type Writable } from 'stream'
 import { parse as parseStream } from 'csv-parse'
 import { stringify as stringifyStream } from 'csv-stringify'
 import { finished } from 'stream/promises'
@@ -20,6 +20,7 @@ type StreamableConnection = { query(sql: string): { stream(options?: { highWater
 type TableColumn = {
   name: string
   type: string
+  generated?: boolean
 }
 
 type ExportSqlOptions = {
@@ -73,6 +74,7 @@ const IMPORT_PREVIEW_ROWS = 100
 const MAX_EXCEL_FILE_SIZE = 100 * 1024 * 1024
 const MAX_EXCEL_IMPORT_ROWS = 250000
 const MAX_EXCEL_EXPORT_ROWS = 250000
+const EXCEL_SHEET_CHUNK = 5000
 const NAVICAT_EOL = '\r\n'
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -161,10 +163,18 @@ function getRowNavicatSqlValues(row: RowRecord, columns: TableColumn[]): string[
 
 async function getTableColumns(conn: any, table: string): Promise<TableColumn[]> {
   const [columnRows] = await conn.query(`SHOW COLUMNS FROM ${quoteId(table)}`)
-  return (columnRows as Array<{ Field: string; Type: string }>).map((column) => ({
+  return (columnRows as Array<{ Field: string; Type: string; Extra?: string }>).map((column) => ({
     name: column.Field,
     type: String(column.Type || '').toLowerCase(),
+    generated: /\bGENERATED\b/i.test(String(column.Extra || '')),
   }))
+}
+
+function buildExportSelect(table: string, columns: TableColumn[]): string {
+  const list = columns
+    .map((c) => (isJsonColumnType(c.type) ? `CAST(${quoteId(c.name)} AS CHAR) AS ${quoteId(c.name)}` : quoteId(c.name)))
+    .join(', ')
+  return `SELECT ${list} FROM ${quoteId(table)}`
 }
 
 async function getTableColumnNames(conn: any, table: string): Promise<string[]> {
@@ -179,13 +189,19 @@ async function getSingleColumnPrimaryKey(conn: any, table: string): Promise<stri
   return ordered.length === 1 ? ordered[0].Column_name : null
 }
 
-async function getExistingTableNames(conn: any): Promise<Set<string>> {
+async function getTableTypes(conn: any): Promise<Map<string, 'BASE TABLE' | 'VIEW'>> {
   const [tableRows] = await conn.query('SHOW FULL TABLES WHERE Table_type IN (\'BASE TABLE\', \'VIEW\')')
-  return new Set(
-    (tableRows as Record<string, string>[])
-      .map((row) => Object.values(row).find((value) => typeof value === 'string'))
-      .filter((value): value is string => Boolean(value))
-  )
+  const types = new Map<string, 'BASE TABLE' | 'VIEW'>()
+  for (const row of tableRows as Record<string, string>[]) {
+    const values = Object.values(row)
+    const name = values[0]
+    if (typeof name === 'string' && name) types.set(name, values[1] === 'VIEW' ? 'VIEW' : 'BASE TABLE')
+  }
+  return types
+}
+
+async function getExistingTableNames(conn: any): Promise<Set<string>> {
+  return new Set((await getTableTypes(conn)).keys())
 }
 
 function assertTablesExist(existingTables: Set<string>, tables: string[]): void {
@@ -312,33 +328,10 @@ function formatNavicatJsonText(jsonText: string): string {
 }
 
 function normalizeValueForJsonColumn(value: SqlValue): SqlValue {
-  // Navicat dump 对 JSON 字段有两种“空”语义：
-  // 1) SQL NULL（字段本身为 NULL） -> 导出为 SQL NULL
-  // 2) JSON literal null（字段存储 JSON 文本 null） -> 导出为 SQL 字符串 'null'
   if (value === undefined || value === null) return null
-
-  // 连接层可能把 JSON literal null 读成 string "null"；为对齐 Navicat，这里保留为 'null'
-  if (typeof value === 'string' && value.trim().toLowerCase() === 'null') return 'null'
-
-  // 对字符串：如果它本身是 JSON 文本，则先 parse 再 stringify，以便统一空格风格
-  let v: any = value
-  if (typeof v === 'string') {
-    const t = v.trim()
-    const looksLikeJson = t.startsWith('{') || t.startsWith('[') || t.startsWith('"') || /^-?\d/.test(t) || t === 'true' || t === 'false'
-    if (looksLikeJson) {
-      try {
-        v = JSON.parse(t)
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  if (Buffer.isBuffer(v)) return formatNavicatJsonText(JSON.stringify(v.toString('base64')))
-  if (v instanceof Date) return formatNavicatJsonText(JSON.stringify(formatExportTime(v)))
-  if (typeof v === 'bigint') return formatNavicatJsonText(JSON.stringify(v.toString()))
-
-  return formatNavicatJsonText(JSON.stringify(v))
+  if (typeof value === 'string') return value
+  if (Buffer.isBuffer(value)) return value.toString('utf8')
+  return formatNavicatJsonText(JSON.stringify(value))
 }
 
 function getRowSqlValues(row: RowRecord, columns: TableColumn[]): string[] {
@@ -353,8 +346,18 @@ function getRowSqlValues(row: RowRecord, columns: TableColumn[]): string[] {
 
 function extractTableFromSelectSql(sql: string): string | null {
   const normalized = sql.trim().replace(/\s+/g, ' ')
-  const match = normalized.match(/^SELECT\s+\*\s+FROM\s+`?([\w$]+)`?(?:\s+|;|$)/i)
+  const match = normalized.match(/^SELECT\s+\*\s+FROM\s+`?([\w$]+)`?\s*;?\s*$/i)
   return match?.[1] || null
+}
+
+const CSV_NULL = '\\N'
+
+function toCsvRow(row: RowRecord): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value === null || value === undefined ? CSV_NULL : value]))
+}
+
+function fromCsvRow(row: RowRecord): RowRecord {
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value === CSV_NULL ? null : value]))
 }
 
 function getRowColumns(rows: RowRecord[]): string[] {
@@ -439,12 +442,15 @@ async function exportToSqlStream(
   try {
     await conn.query(`USE ${quoteId(db)}`)
 
-    const requestedTables = tables.length
+    const tableTypes = await getTableTypes(conn)
+    const requested = tables.length
       ? [...tables]
-      : Array.from(await getExistingTableNames(conn)).sort((a, b) => a.localeCompare(b))
-
-    const existingTables = await getExistingTableNames(conn)
-    assertTablesExist(existingTables, requestedTables)
+      : Array.from(tableTypes.keys()).sort((a, b) => a.localeCompare(b))
+    assertTablesExist(new Set(tableTypes.keys()), requested)
+    const requestedTables = [
+      ...requested.filter((name) => tableTypes.get(name) !== 'VIEW'),
+      ...requested.filter((name) => tableTypes.get(name) === 'VIEW'),
+    ]
 
     await writeNavicatChunk(out, await buildNavicatHeader(connId, conn, db))
     await writeNavicatChunk(out, 'SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
@@ -494,30 +500,26 @@ async function exportToSqlStream(
         }
       }
 
-      if (includeData) {
+      const isView = tableTypes.get(table) === 'VIEW'
+      if (includeData && !isView) {
         const recordsHeader = `-- ----------------------------\n${formatRecordsTitle(table)}\n-- ----------------------------\n`
         await writeNavicatChunk(out, recordsHeader)
       }
 
-      if (!includeData) {
+      if (!includeData || isView) {
         reportProgress(0, tableIndex + 1)
         continue
       }
 
-      const tableColumns = await getTableColumns(conn, table)
+      const tableColumns = (await getTableColumns(conn, table)).filter((c) => !c.generated)
       if (!tableColumns.length) {
         await writeNavicatChunk(out, '\n')
         reportProgress(0, tableIndex + 1)
         continue
       }
 
-      const selectSql = tableColumns.some((c) => isJsonColumnType(c.type))
-        ? `SELECT ${tableColumns
-            .map((c) => (isJsonColumnType(c.type)
-              ? `CAST(${quoteId(c.name)} AS CHAR) AS ${quoteId(c.name)}`
-              : `${quoteId(c.name)}`))
-            .join(', ')} FROM ${quoteId(table)}`
-        : undefined
+      const selectSql = buildExportSelect(table, tableColumns)
+      const columnList = tableColumns.map((c) => quoteId(c.name)).join(', ')
 
       let exportedRows = 0
       await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
@@ -525,11 +527,11 @@ async function exportToSqlStream(
         if (!rows.length) return
         for (const row of rows) {
           const vals = getRowNavicatSqlValues(row, tableColumns).join(', ')
-          await writeNavicatChunk(out, `${insertHead} ${quoteId(table)} VALUES (${vals});\n`)
+          await writeNavicatChunk(out, `${insertHead} ${quoteId(table)} (${columnList}) VALUES (${vals});\n`)
         }
         exportedRows += rows.length
         reportProgress(exportedRows)
-      }, selectSql)
+      }, selectSql, options?.signal, false, conn)
 
       await writeNavicatChunk(out, '\n')
       reportProgress(exportedRows, tableIndex + 1)
@@ -610,14 +612,15 @@ async function queryInBatches(
   selectSql?: string,
   signal?: AbortSignal,
   consistentSnapshot = false,
+  heldConn?: any,
 ): Promise<void> {
-  const MAX_RETRIES = 2
+  const MAX_RETRIES = heldConn ? 0 : 2
   let offset = 0
   let lastCursorValue: unknown = null
   let cursorColumn: string | null | undefined
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
-    const conn = await connectionManager.ensureConnection(connId)
+    const conn = heldConn ?? await connectionManager.ensureConnection(connId)
     try {
       await conn.query(`USE ${quoteId(db)}`)
       if (consistentSnapshot) {
@@ -626,7 +629,7 @@ async function queryInBatches(
       }
       const baseSelect = selectSql || `SELECT * FROM ${quoteId(table)}`
       if (cursorColumn === undefined) {
-        cursorColumn = selectSql ? null : await getSingleColumnPrimaryKey(conn, table)
+        cursorColumn = await getSingleColumnPrimaryKey(conn, table)
       }
       while (true) {
         throwIfAborted(signal)
@@ -637,7 +640,7 @@ async function queryInBatches(
                 `${baseSelect} WHERE ${quoteId(cursorColumn)} > ? ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`,
                 [lastCursorValue]
               )
-          : await conn.query(`${baseSelect} LIMIT ${batchSize} OFFSET ${offset}`)
+          : await conn.query(`${baseSelect} ORDER BY 1 LIMIT ${batchSize} OFFSET ${offset}`)
         const batch = rows as RowRecord[]
         if (!batch.length) break
         await onBatch(batch, offset)
@@ -658,7 +661,9 @@ async function queryInBatches(
       }
       throw err
     } finally {
-      try { conn.release() } catch { /* ignore */ }
+      if (!heldConn) {
+        try { conn.release() } catch { /* ignore */ }
+      }
     }
   }
 }
@@ -680,7 +685,7 @@ export async function previewImport(filePath: string, options?: { sheetName?: st
     try {
       for await (const row of parser as AsyncIterable<Record<string, unknown>>) {
         totalRows += 1
-        if (rows.length < IMPORT_PREVIEW_ROWS) rows.push(row)
+        if (rows.length < IMPORT_PREVIEW_ROWS) rows.push(fromCsvRow(row as RowRecord))
       }
     } finally {
       input.destroy()
@@ -714,8 +719,10 @@ async function streamQueryRows(
       throwIfAborted(signal)
       await onRow(row)
     }
-  } finally {
     conn.release()
+  } catch (error) {
+    try { conn.destroy() } catch { /* connection may already be closed */ }
+    throw error
   }
 }
 
@@ -846,7 +853,7 @@ export async function importCSV(connId: string, db: string, table: string, fileP
         }
         columnsValidated = true
       }
-      batch.push(mapImportRow(row, options?.columnMapping))
+      batch.push(mapImportRow(fromCsvRow(row), options?.columnMapping))
       if (batch.length >= batchSize) {
         const result = await insertImportBatch(conn, table, batch, options?.ignoreErrors === true)
         imported += result.imported
@@ -880,10 +887,10 @@ export async function importCSV(connId: string, db: string, table: string, fileP
 
 export async function importExcel(connId: string, db: string, table: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number; errors: number; errorReportPath?: string }> {
   await assertExcelFileSize(filePath)
-  const wb = XLSX.readFile(filePath, { dense: true, sheetRows: MAX_EXCEL_IMPORT_ROWS + 2 })
+  const wb = XLSX.readFile(filePath, { dense: true, cellDates: true, sheetRows: MAX_EXCEL_IMPORT_ROWS + 2 })
   const sheet = wb.Sheets[options?.sheetName || wb.SheetNames[0]]
   if (!sheet) return { imported: 0, errors: 0 }
-  const rows = XLSX.utils.sheet_to_json<RowRecord>(sheet)
+  const rows = XLSX.utils.sheet_to_json<RowRecord>(sheet, { defval: null })
   if (rows.length > MAX_EXCEL_IMPORT_ROWS) {
     throw new Error(`Excel 单工作表最多导入 ${MAX_EXCEL_IMPORT_ROWS.toLocaleString('en-US')} 行，请先另存为 CSV 再导入`)
   }
@@ -924,16 +931,25 @@ export async function importExcel(connId: string, db: string, table: string, fil
 export async function importSQL(connId: string, db: string, filePath: string, options?: ImportFileOptions): Promise<{ imported: number; errors: number; executed: number }> {
   const fileSize = Math.max(1, (await stat(filePath)).size)
   const source = fs.createReadStream(filePath)
+  let bytesRead = 0
   let lastReported = 0
-  source.on('data', () => {
-    if (options?.signal?.aborted) source.destroy(new Error('任务已取消'))
-    if (source.bytesRead - lastReported < 256 * 1024 && source.bytesRead < fileSize) return
-    lastReported = source.bytesRead
-    options?.onProgress?.({ current: Math.min(source.bytesRead, fileSize), total: fileSize, fail: 0, stage: 'reading' })
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytesRead += chunk.length
+      if (bytesRead - lastReported >= 256 * 1024 || bytesRead >= fileSize) {
+        lastReported = bytesRead
+        options?.onProgress?.({ current: Math.min(bytesRead, fileSize), total: fileSize, fail: 0, stage: 'reading' })
+      }
+      callback(null, chunk)
+    },
   })
-  const input = filePath.toLowerCase().endsWith('.gz') ? source.pipe(zlib.createGunzip()) : source
+  const gunzip = filePath.toLowerCase().endsWith('.gz') ? zlib.createGunzip() : null
+  const input = gunzip ? pipeline(source, counter, gunzip, () => {}) : pipeline(source, counter, () => {})
   const abortSql = () => {
-    source.destroy(new Error('任务已取消'))
+    const error = new Error('任务已取消')
+    source.destroy(error)
+    counter.destroy(error)
+    gunzip?.destroy(error)
     cancelMultiStatementSql(connId, options?.taskId)
   }
   options?.signal?.addEventListener('abort', abortSql, { once: true })
@@ -951,6 +967,7 @@ export async function importSQL(connId: string, db: string, filePath: string, op
     )
   } finally {
     options?.signal?.removeEventListener('abort', abortSql)
+    source.destroy()
   }
   if (result.errors > 0 && options?.ignoreErrors !== true) {
     throw new Error(result.firstError || 'SQL 导入失败')
@@ -980,7 +997,7 @@ export async function exportToCSV(connId: string, db: string, sql: string, fileP
         await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
           throwIfAborted(options?.signal)
           for (const row of rows) {
-            if (!csv.write(row)) {
+            if (!csv.write(toCsvRow(row))) {
               await once(csv, 'drain')
             }
           }
@@ -1004,7 +1021,7 @@ export async function exportToCSV(connId: string, db: string, sql: string, fileP
     let success = false
     try {
       await streamQueryRows(connId, db, sql, async (row) => {
-        if (!csv.write(row)) await once(csv, 'drain')
+        if (!csv.write(toCsvRow(row))) await once(csv, 'drain')
       }, options?.signal)
       csv.end()
       await finished(out)
@@ -1032,9 +1049,14 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
       let streamClosed = false
       try {
         const conn = await connectionManager.getConnection(connId)
+        let columns: string[]
         try {
           await conn.query(`USE ${quoteId(db)}`)
-          const columns = await getTableColumnNames(conn, table)
+          columns = await getTableColumnNames(conn, table)
+        } finally {
+          conn.release()
+        }
+        {
           const arrayMode = options?.arrayMode !== false
           const pretty = options?.pretty !== false
           if (arrayMode) await writeChunk(out, pretty ? '[\n' : '[')
@@ -1053,8 +1075,6 @@ export async function exportToJSON(connId: string, db: string, sql: string, file
           else await writeChunk(out, '\n')
           await closeStream(out)
           streamClosed = true
-        } finally {
-          conn.release()
         }
       } finally {
         if (!streamClosed) out.destroy()
@@ -1112,10 +1132,18 @@ export async function exportToExcel(connId: string, db: string, sql: string, fil
   }
 
   const wb = XLSX.utils.book_new()
-  const sheet = XLSX.utils.json_to_sheet(rows)
+  const sheet = XLSX.utils.json_to_sheet(rows.slice(0, EXCEL_SHEET_CHUNK))
+  for (let start = EXCEL_SHEET_CHUNK; start < rows.length; start += EXCEL_SHEET_CHUNK) {
+    throwIfAborted(options?.signal)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    XLSX.utils.sheet_add_json(sheet, rows.slice(start, start + EXCEL_SHEET_CHUNK), { skipHeader: true, origin: -1 })
+  }
+  rows.length = 0
   XLSX.utils.book_append_sheet(wb, sheet, (options?.sheetName || 'Sheet1').slice(0, 31))
   try {
-    XLSX.writeFile(wb, tmpPath, { bookType: 'xlsx' })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' }) as Buffer
+    await fs.promises.writeFile(tmpPath, buffer)
     await commitTemporaryExport(tmpPath, filePath)
   } finally {
     await removeTemporaryExport(tmpPath)

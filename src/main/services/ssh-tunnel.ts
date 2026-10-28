@@ -5,20 +5,9 @@ import { createHash } from 'crypto'
 import type { ConnectionConfig } from '../../shared/types/connection'
 import * as logger from '../utils/logger'
 
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer()
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port
-      srv.close(() => resolve(port))
-    })
-    srv.on('error', reject)
-  })
-}
-
 export async function createTunnel(config: ConnectionConfig): Promise<{ localPort: number; close: () => void }> {
-  const localPort = await findFreePort()
   const sshClient = new Client()
+  let localPort = 0
 
   const debugLines: string[] = []
   const pushDebug = (msg: string) => {
@@ -109,8 +98,15 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
   })
 
   const server = net.createServer((sock) => {
+    sock.on('error', (err) => logger.warn(`[ssh-tunnel] local socket error: ${err.message}`))
     sshClient.forwardOut('127.0.0.1', localPort, config.host, config.port, (err, stream) => {
       if (err) { sock.destroy(); return }
+      stream.on('error', (streamErr: Error) => {
+        logger.warn(`[ssh-tunnel] forward stream error: ${streamErr.message}`)
+        sock.destroy()
+      })
+      sock.on('close', () => stream.destroy())
+      stream.on('close', () => sock.destroy())
       sock.pipe(stream).pipe(sock)
     })
   })
@@ -118,7 +114,11 @@ export async function createTunnel(config: ConnectionConfig): Promise<{ localPor
   try {
     await new Promise<void>((resolve, reject) => {
       sshClient.on('ready', () => {
-        server.listen(localPort, '127.0.0.1', () => {
+        server.once('error', reject)
+        server.listen(0, '127.0.0.1', () => {
+          localPort = (server.address() as net.AddressInfo).port
+          server.off('error', reject)
+          server.on('error', (err) => logger.warn(`[ssh-tunnel] local server error: ${err.message}`))
           resolve()
         })
       })

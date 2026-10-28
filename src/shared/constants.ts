@@ -86,3 +86,5 @@ export function normalizeHeartbeatAutoTuneEnabled(raw: unknown): boolean {
   if (value === 'false' || value === '0' || value === 'no' || value === 'off') return false
   return HEARTBEAT_AUTOTUNE_DEFAULT
 }
+
+export const SAVED_SECRET_PLACEHOLDER = '\u2063kmysql-saved-secret\u2063'

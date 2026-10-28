@@ -41,12 +41,13 @@ export const ConnectionManager: React.FC<Props> = ({ open, onClose, initialEditi
     <Modal
       open={open}
       title="连接管理"
-      width={900}
+      width={980}
       onClose={onClose}
       footer={null}
+      className="cm-modal"
     >
-      <div style={{ display: 'flex', height: 500 }}>
-        <div style={{ width: 280, flexShrink: 0, borderRight: '1px solid var(--border)', overflow: 'auto', padding: 16 }}>
+      <div className="cm-layout">
+        <div className="cm-side">
           <ConnectionList
             onSelect={(conn) => {
               setEditing(conn)
@@ -60,7 +61,7 @@ export const ConnectionManager: React.FC<Props> = ({ open, onClose, initialEditi
             previewIcon={previewIcon}
           />
         </div>
-        <div style={{ flex: 1, overflow: 'hidden', padding: 16, display: 'flex', flexDirection: 'column' }}>
+        <div className="cm-main">
           <ConnectionForm
             key={formKey}
             editing={editing}
