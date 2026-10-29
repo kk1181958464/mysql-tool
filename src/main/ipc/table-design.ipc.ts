@@ -68,6 +68,17 @@ export function registerTableDesignIPC() {
     }
   })
 
+  ipcMain.handle(IPC.DESIGN_PREVIEW, async (_e, oldDesign, newDesign) => {
+    try {
+      const next = validateTableDesign(newDesign)
+      if (!oldDesign) return { sql: tableDesigner.generateCreateTableSQL(next) }
+      const prev = validateTableDesign(oldDesign)
+      return { sql: tableDesigner.generateAlterTableSQL(prev.name, tableDesigner.diffTables(prev, next), next) }
+    } catch (error) {
+      return { sql: '', error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
   ipcMain.handle(IPC.DESIGN_DIFF, async (_e, oldDesign, newDesign) => {
     return tableDesigner.diffTables(validateTableDesign(oldDesign), validateTableDesign(newDesign))
   })

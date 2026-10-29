@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import * as zlib from 'zlib'
 import { once } from 'events'
-import { mkdir, stat, writeFile } from 'fs/promises'
+import { mkdir, stat } from 'fs/promises'
 import * as path from 'path'
 import { Transform, pipeline, type Readable, type Writable } from 'stream'
 import { parse as parseStream } from 'csv-parse'
@@ -200,10 +200,6 @@ async function getTableTypes(conn: any): Promise<Map<string, 'BASE TABLE' | 'VIE
   return types
 }
 
-async function getExistingTableNames(conn: any): Promise<Set<string>> {
-  return new Set((await getTableTypes(conn)).keys())
-}
-
 function assertTablesExist(existingTables: Set<string>, tables: string[]): void {
   const missingTables = tables.filter((table) => !existingTables.has(table))
   if (!missingTables.length) return
@@ -378,12 +374,15 @@ async function getObjectNames(conn: any, sql: string, db: string): Promise<strin
     .sort((a, b) => a.localeCompare(b))
 }
 
-async function getTriggerNames(conn: any, db: string): Promise<string[]> {
-  return getObjectNames(
-    conn,
-    'SELECT TRIGGER_NAME AS name FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?',
-    db,
+async function getTriggerNames(conn: any, db: string, tables: Set<string>): Promise<string[]> {
+  const [rows] = await conn.query(
+    'SELECT TRIGGER_NAME AS name, EVENT_OBJECT_TABLE AS tbl FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?',
+    [db],
   )
+  return (rows as Array<{ name?: string; tbl?: string }>)
+    .filter((row) => row.name && row.tbl && tables.has(row.tbl))
+    .map((row) => String(row.name))
+    .sort((a, b) => a.localeCompare(b))
 }
 
 async function getRoutineNames(conn: any, db: string, type: 'PROCEDURE' | 'FUNCTION'): Promise<string[]> {
@@ -431,6 +430,38 @@ async function removeTemporaryExport(tmpPath: string | null): Promise<void> {
   try { await fs.promises.unlink(tmpPath) } catch { /* ignore cleanup errors */ }
 }
 
+const MULTI_INSERT_MAX_LENGTH = 1024 * 1024
+
+// 视图可能引用其他视图，按依赖顺序输出，避免导入时引用尚未创建的视图
+async function orderViewsByDependency(conn: any, views: string[]): Promise<string[]> {
+  if (views.length < 2) return views
+  const ddl = new Map<string, string>()
+  for (const view of views) {
+    const [rows] = await conn.query(`SHOW CREATE VIEW ${quoteId(view)}`)
+    ddl.set(view, String((rows as Record<string, string>[])[0]?.['Create View'] || ''))
+  }
+  const ordered: string[] = []
+  const state = new Map<string, 'visiting' | 'done'>()
+  const visit = (view: string) => {
+    if (state.has(view)) return
+    state.set(view, 'visiting')
+    const text = ddl.get(view) || ''
+    for (const other of views) {
+      if (other !== view && text.includes(quoteId(other))) visit(other)
+    }
+    state.set(view, 'done')
+    ordered.push(view)
+  }
+  views.forEach(visit)
+  return ordered
+}
+
+function insertHeadFor(style: ExportSqlOptions['insertStyle']): string {
+  if (style === 'ignore') return 'INSERT IGNORE INTO'
+  if (style === 'replace') return 'REPLACE INTO'
+  return 'INSERT INTO'
+}
+
 async function exportToSqlStream(
   connId: string,
   db: string,
@@ -439,26 +470,43 @@ async function exportToSqlStream(
   options?: SqlExportStreamOptions,
 ): Promise<void> {
   const conn = await connectionManager.getConnection(connId)
+  let previousTimeZone: string | null = null
+  let inSnapshot = false
   try {
     await conn.query(`USE ${quoteId(db)}`)
+
+    // TIMESTAMP 按 UTC 导出，并在文件中声明，导入到不同时区的服务器时值不变
+    const [tzRows] = await conn.query('SELECT @@session.time_zone AS tz')
+    previousTimeZone = String((tzRows as Array<{ tz?: string }>)[0]?.tz || 'SYSTEM')
+    await conn.query("SET time_zone = '+00:00'")
+
+    if (options?.consistentSnapshot) {
+      await conn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+      await conn.query('START TRANSACTION WITH CONSISTENT SNAPSHOT')
+      inSnapshot = true
+    }
 
     const tableTypes = await getTableTypes(conn)
     const requested = tables.length
       ? [...tables]
       : Array.from(tableTypes.keys()).sort((a, b) => a.localeCompare(b))
     assertTablesExist(new Set(tableTypes.keys()), requested)
+    const requestedSet = new Set(requested)
+    const isWholeDatabase = Array.from(tableTypes.keys()).every((name) => requestedSet.has(name))
     const requestedTables = [
       ...requested.filter((name) => tableTypes.get(name) !== 'VIEW'),
-      ...requested.filter((name) => tableTypes.get(name) === 'VIEW'),
+      ...await orderViewsByDependency(conn, requested.filter((name) => tableTypes.get(name) === 'VIEW')),
     ]
 
     await writeNavicatChunk(out, await buildNavicatHeader(connId, conn, db))
-    await writeNavicatChunk(out, 'SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n')
+    await writeNavicatChunk(out, "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n/*!40103 SET TIME_ZONE = '+00:00' */;\n\n")
 
-    const dropTable = options?.dropTable !== false
     const createTable = options?.createTable !== false
+    // 不重建表时绝不能 DROP，否则后续 INSERT 会写入不存在的表
+    const dropTable = createTable && options?.dropTable !== false
     const includeData = options?.includeData !== false
-    const insertHead = 'INSERT INTO'
+    const insertStyle = options?.insertStyle ?? 'single'
+    const insertHead = insertHeadFor(insertStyle)
 
     for (let tableIndex = 0; tableIndex < requestedTables.length; tableIndex += 1) {
       throwIfAborted(options?.signal)
@@ -520,14 +568,32 @@ async function exportToSqlStream(
 
       const selectSql = buildExportSelect(table, tableColumns)
       const columnList = tableColumns.map((c) => quoteId(c.name)).join(', ')
+      const prefix = `${insertHead} ${quoteId(table)} (${columnList}) VALUES `
 
       let exportedRows = 0
       await queryInBatches(connId, db, table, EXPORT_BATCH_SIZE, async (rows) => {
         throwIfAborted(options?.signal)
         if (!rows.length) return
-        for (const row of rows) {
-          const vals = getRowNavicatSqlValues(row, tableColumns).join(', ')
-          await writeNavicatChunk(out, `${insertHead} ${quoteId(table)} (${columnList}) VALUES (${vals});\n`)
+        if (insertStyle === 'multi') {
+          let tuples: string[] = []
+          let length = 0
+          const flush = async () => {
+            if (!tuples.length) return
+            await writeNavicatChunk(out, `${prefix}${tuples.join(', ')};\n`)
+            tuples = []
+            length = 0
+          }
+          for (const row of rows) {
+            const tuple = `(${getRowNavicatSqlValues(row, tableColumns).join(', ')})`
+            if (length + tuple.length > MULTI_INSERT_MAX_LENGTH) await flush()
+            tuples.push(tuple)
+            length += tuple.length + 2
+          }
+          await flush()
+        } else {
+          for (const row of rows) {
+            await writeNavicatChunk(out, `${prefix}(${getRowNavicatSqlValues(row, tableColumns).join(', ')});\n`)
+          }
         }
         exportedRows += rows.length
         reportProgress(exportedRows)
@@ -537,11 +603,21 @@ async function exportToSqlStream(
       reportProgress(exportedRows, tableIndex + 1)
     }
 
-    await exportTriggers(conn, db, out)
-    await exportRoutines(conn, db, out, 'PROCEDURE')
-    await exportRoutines(conn, db, out, 'FUNCTION')
-    await exportEvents(conn, db, out)
+    // 仅导出数据时不重建对象；只导部分表时只带上这些表的触发器，存储过程/函数/事件属于整库
+    if (createTable) {
+      await exportTriggers(conn, db, out, new Set(requestedTables))
+      if (isWholeDatabase) {
+        await exportRoutines(conn, db, out, 'PROCEDURE')
+        await exportRoutines(conn, db, out, 'FUNCTION')
+        await exportEvents(conn, db, out)
+      }
+    }
     await writeNavicatChunk(out, 'SET FOREIGN_KEY_CHECKS = 1;\n')
+
+    if (inSnapshot) {
+      inSnapshot = false
+      await conn.query('COMMIT')
+    }
 
     if (options?.emitFinished !== false) {
       options?.onProgress?.({
@@ -553,6 +629,12 @@ async function exportToSqlStream(
       })
     }
   } finally {
+    if (inSnapshot) {
+      try { await conn.query('ROLLBACK') } catch { /* preserve original error */ }
+    }
+    if (previousTimeZone) {
+      try { await conn.query('SET time_zone = ?', [previousTimeZone]) } catch { /* connection may be broken */ }
+    }
     conn.release()
   }
 }
@@ -564,8 +646,8 @@ async function writeDelimitedCreate(out: Writable, sql: string): Promise<void> {
   await writeNavicatChunk(out, 'DELIMITER ;\n\n')
 }
 
-async function exportTriggers(conn: any, db: string, out: Writable): Promise<void> {
-  const names = await getTriggerNames(conn, db)
+async function exportTriggers(conn: any, db: string, out: Writable, tables: Set<string>): Promise<void> {
+  const names = await getTriggerNames(conn, db, tables)
   for (const name of names) {
     const [rows] = await conn.query(`SHOW CREATE TRIGGER ${quoteId(name)}`)
     const createSql = (rows as Array<Record<string, string>>)[0]?.['SQL Original Statement']
@@ -631,22 +713,40 @@ async function queryInBatches(
       if (cursorColumn === undefined) {
         cursorColumn = await getSingleColumnPrimaryKey(conn, table)
       }
+      if (!cursorColumn) {
+        // 无单列主键时 ORDER BY 1 + OFFSET 在首列有重复值时会漏行/重复，改为单次流式读取
+        const rawConnection = conn.connection as unknown as StreamableConnection
+        const stream = rawConnection.query(baseSelect).stream({ highWaterMark: batchSize })
+        let batch: RowRecord[] = []
+        try {
+          for await (const row of stream as AsyncIterable<RowRecord>) {
+            throwIfAborted(signal)
+            batch.push(row)
+            if (batch.length >= batchSize) {
+              await onBatch(batch, offset)
+              offset += batch.length
+              batch = []
+            }
+          }
+        } finally {
+          stream.destroy()
+        }
+        if (batch.length) await onBatch(batch, offset)
+        if (consistentSnapshot) await conn.commit()
+        return
+      }
       while (true) {
         throwIfAborted(signal)
-        const [rows] = cursorColumn
-          ? lastCursorValue === null
-            ? await conn.query(`${baseSelect} ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`)
-            : await conn.query(
-                `${baseSelect} WHERE ${quoteId(cursorColumn)} > ? ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`,
-                [lastCursorValue]
-              )
-          : await conn.query(`${baseSelect} ORDER BY 1 LIMIT ${batchSize} OFFSET ${offset}`)
+        const [rows] = lastCursorValue === null
+          ? await conn.query(`${baseSelect} ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`)
+          : await conn.query(
+              `${baseSelect} WHERE ${quoteId(cursorColumn)} > ? ORDER BY ${quoteId(cursorColumn)} ASC LIMIT ${batchSize}`,
+              [lastCursorValue]
+            )
         const batch = rows as RowRecord[]
         if (!batch.length) break
         await onBatch(batch, offset)
-        if (cursorColumn) {
-          lastCursorValue = batch[batch.length - 1]?.[cursorColumn]
-        }
+        lastCursorValue = batch[batch.length - 1]?.[cursorColumn]
         offset += batch.length
         if (batch.length < batchSize) break
       }
@@ -656,7 +756,8 @@ async function queryInBatches(
       if (consistentSnapshot) {
         try { await conn.rollback() } catch { /* preserve original error */ }
       }
-      if (!consistentSnapshot && attempt < MAX_RETRIES && connectionManager.isConnectionLostError(err)) {
+      // 流式读取已输出部分行时不能重试，否则会重复写出
+      if (!consistentSnapshot && attempt < MAX_RETRIES && (cursorColumn || offset === 0) && connectionManager.isConnectionLostError(err)) {
         continue
       }
       throw err
@@ -1189,41 +1290,5 @@ export async function exportToSqlWritable(
 }
 
 export async function exportStructure(connId: string, db: string, tables: string[], filePath: string): Promise<void> {
-  const conn = await connectionManager.getConnection(connId)
-  try {
-    await conn.query(`USE ${quoteId(db)}`)
-    await mkdir(path.dirname(filePath), { recursive: true })
-
-    let sql = `SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n`
-
-    const requestedTables = tables.length
-      ? [...tables]
-      : Array.from(await getExistingTableNames(conn)).sort((a, b) => a.localeCompare(b))
-
-    for (const table of requestedTables) {
-      const [ddlRows] = await conn.query(`SHOW CREATE TABLE ${quoteId(table)}`)
-      const row0 = (ddlRows as Record<string, string>[])[0] || {}
-      const ddlRaw = row0['Create Table'] || row0['Create View']
-      if (!ddlRaw) continue
-
-      sql += `-- ----------------------------\n${formatTableStructureTitle(table)}\n-- ----------------------------\n`
-
-      const isView = Boolean(row0['Create View']) && !row0['Create Table']
-      sql += isView
-        ? `DROP VIEW IF EXISTS ${quoteId(table)};\n`
-        : `DROP TABLE IF EXISTS ${quoteId(table)};\n`
-
-      if (row0['Create Table']) {
-        sql += `${formatNavicatDDL(ddlRaw)}\n\n`
-      } else {
-        const body = ddlRaw.trimEnd().endsWith(';') ? ddlRaw.trimEnd().slice(0, -1) : ddlRaw.trimEnd()
-        sql += `${body};\n\n`
-      }
-    }
-
-    sql += 'SET FOREIGN_KEY_CHECKS = 1;\n'
-    await writeFile(filePath, normalizeNavicatSqlText(sql), 'utf-8')
-  } finally {
-    conn.release()
-  }
+  await exportToSQL(connId, db, tables, filePath, { includeData: false, createTable: true, dropTable: true })
 }

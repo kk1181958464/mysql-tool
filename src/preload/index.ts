@@ -43,6 +43,7 @@ const api: ElectronAPI = {
     alterTable: (connId, db, tableName, diff, newDesign) => invoke(IPC.DESIGN_ALTER_TABLE, connId, db, tableName, diff, newDesign),
     dropTable: (connId, db, table) => invoke(IPC.DESIGN_DROP_TABLE, connId, db, table),
     diff: (oldDesign, newDesign) => invoke(IPC.DESIGN_DIFF, oldDesign, newDesign),
+    preview: (oldDesign, newDesign) => invoke(IPC.DESIGN_PREVIEW, oldDesign, newDesign),
   },
   data: {
     insert: (connId, db, table, data) => invoke(IPC.DATA_INSERT, connId, db, table, data),
@@ -116,6 +117,9 @@ const api: ElectronAPI = {
       ipcRenderer.on(IPC.APP_UPDATE_STATE_CHANGED, handler)
       return () => ipcRenderer.removeListener(IPC.APP_UPDATE_STATE_CHANGED, handler)
     },
+  },
+  clipboard: {
+    writeText: (text) => invoke(IPC.CLIPBOARD_WRITE_TEXT, text),
   },
   win: {
     minimize: () => ipcRenderer.send(IPC.WIN_MINIMIZE),

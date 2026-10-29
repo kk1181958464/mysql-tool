@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useLayoutEffect } from 'react'
-import { Tree, Empty, Modal, Button, Select } from './ui'
+import { Tree, Empty, Modal, Button, Select, toast } from './ui'
 import {
   DatabaseOutlined,
   TableOutlined,
@@ -681,8 +681,8 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       const ddl = await api.meta.tableDDL(activeConnectionId, dbName, tableName)
       let sql = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
       if (!sql.trimEnd().endsWith(';')) sql += ';'
-      // 导出默认带 DROP，导入再补齐（双重保证）
-      sql = `DROP TABLE IF EXISTS ${quoteId(tableName)};\n${sql}`
+      const isView = !/^\s*CREATE\s+(?:TEMPORARY\s+)?TABLE\b/i.test(sql)
+      sql = `SET FOREIGN_KEY_CHECKS = 0;\n\n${isView ? 'DROP VIEW' : 'DROP TABLE'} IF EXISTS ${quoteId(tableName)};\n${sql}\n\nSET FOREIGN_KEY_CHECKS = 1;`
       if (includeData) {
         sql += `\n\n-- ----------------------------\n-- Records of ${quoteId(tableName)}\n-- ----------------------------\n-- INSERT statements omitted in preview. Click \"Download File\" to export the full structure and data.`
       }
@@ -703,7 +703,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
       await loadTables(activeConnectionId, dbName, true)
       const tbls = useDatabaseStore.getState().tables[`${activeConnectionId}:${dbName}`] || []
       const previewTables = includeData ? tbls.slice(0, 3) : tbls
-      const parts: string[] = []
+      const parts: string[] = ['SET NAMES utf8mb4;', 'SET FOREIGN_KEY_CHECKS = 0;', '']
       if (includeData) {
         parts.push('-- Preview summary only: showing the first 3 tables. Click "Download File" to export the full structure and data.')
         if (tbls.length > previewTables.length) {
@@ -718,7 +718,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         parts.push('-- ----------------------------')
         parts.push(`-- Table structure for \`${t.name}\``)
         parts.push('-- ----------------------------')
-        parts.push(`DROP TABLE IF EXISTS \`${t.name}\`;`)
+        parts.push(`${t.type === 'VIEW' ? 'DROP VIEW' : 'DROP TABLE'} IF EXISTS ${quoteId(t.name)};`)
         parts.push(d)
         if (includeData) {
           parts.push('')
@@ -729,6 +729,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
         }
         parts.push('')
       }
+      parts.push('SET FOREIGN_KEY_CHECKS = 1;')
       const sql = parts.join('\n')
       setExportSql({ dbName, tableName: dbName, includeData, sql, isDb: true })
     } catch (e: any) {
@@ -736,39 +737,6 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     } finally {
       setPreviewLoading(false)
     }
-  }
-
-  // 分批导出单表全量数据
-  const fullExportTable = async (dbName: string, tableName: string, onRows?: (n: number) => void): Promise<string> => {
-    const ddl = await api.meta.tableDDL(activeConnectionId!, dbName, tableName)
-    let raw = (typeof ddl === 'string' ? ddl : (ddl as any)?.ddl) || ''
-    let sql = raw.trimEnd().endsWith(';') ? raw : raw + ';'
-    const batchSize = 1000
-    let offset = 0
-    let totalRows = 0
-    while (true) {
-      if (exportCancelledRef.current) break
-      const res = await api.query.execute(activeConnectionId!, `SELECT * FROM ${quoteId(dbName)}.${quoteId(tableName)} LIMIT ${batchSize} OFFSET ${offset}`, dbName)
-      if (!res.rows?.length) break
-      totalRows += res.rows.length
-      onRows?.(totalRows)
-      const cols = res.fields?.map((f: any) => f.name) || Object.keys(res.rows[0])
-      const values = res.rows.map((row: any) =>
-        '(' + cols.map((c: string) => {
-          const v = row[c]
-          if (v === null) return 'NULL'
-          if (typeof v === 'number') return v
-          if (typeof v === 'object') {
-            try { return `'${JSON.stringify(v).replace(/'/g, "''")}'` } catch { /* fall through */ }
-          }
-          return `'${String(v).replace(/'/g, "''")}'`
-        }).join(', ') + ')'
-      ).join(',\n')
-      sql += `\n\nINSERT INTO ${quoteId(tableName)} (${cols.map(quoteId).join(', ')}) VALUES\n${values};`
-      if (res.rows.length < batchSize) break
-      offset += batchSize
-    }
-    return sql
   }
 
   const handleDownloadSql = async () => {
@@ -785,8 +753,13 @@ export default function ConnectionTree({ filterText = '' }: Props) {
     setExportSql(null)
 
     if (!includeData) {
-      // 仅结构，直接写文件
-      await api.dialog.writeFile(filePath, exportSql.sql)
+      // 仅结构也交给主进程：关闭外键检查、视图按依赖排序，整库时带上触发器/存储过程/事件
+      try {
+        await api.importExport.exportStructure(activeConnectionId, dbName, isDb ? [] : [tableName], filePath)
+        toast.success('结构已导出')
+      } catch (e: any) {
+        showError(e, '导出失败')
+      }
       return
     }
 
@@ -827,7 +800,7 @@ export default function ConnectionTree({ filterText = '' }: Props) {
 
   const handleCopySql = async () => {
     if (!exportSql) return
-    await navigator.clipboard.writeText(exportSql.sql)
+    await window.api.clipboard.writeText(exportSql.sql)
     setExportSql(null)
     showInfo('已复制到剪贴板')
   }

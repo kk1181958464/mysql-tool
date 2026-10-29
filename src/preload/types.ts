@@ -75,6 +75,7 @@ export interface ElectronAPI {
     alterTable(connId: string, db: string, tableName: string, diff: TableDiff, newDesign: TableDesign): Promise<string>
     dropTable(connId: string, db: string, table: string): Promise<string>
     diff(oldDesign: TableDesign, newDesign: TableDesign): Promise<TableDiff>
+    preview(oldDesign: TableDesign | null, newDesign: TableDesign): Promise<{ sql: string; error?: string }>
   }
   data: {
     insert(connId: string, db: string, table: string, data: Record<string, any>): Promise<any>
@@ -136,6 +137,9 @@ export interface ElectronAPI {
     install(): Promise<void>
     openRelease(): Promise<void>
     onStateChanged(cb: (state: AppUpdateState) => void): () => void
+  }
+  clipboard: {
+    writeText(text: string): Promise<void>
   }
   win: {
     minimize(): void

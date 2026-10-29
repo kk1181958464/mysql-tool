@@ -31,7 +31,7 @@ export function ErrorNotice({ error, fallbackTitle = '操作失败', onRetry, on
   }
 
   const copy = async () => {
-    await navigator.clipboard.writeText(info.detail)
+    await window.api.clipboard.writeText(info.detail)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1500)
   }

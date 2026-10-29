@@ -31,6 +31,14 @@ const setStoredViewMode = (mode: ViewMode) => localStorage.setItem(VIEW_MODE_KEY
 export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
   const { tables, loadTables } = useDatabaseStore()
   const { addDataTab, addDesignTab } = useTabStore()
+  const closeTableTabs = (names: string[]) => {
+    const store = useTabStore.getState()
+    const targets = new Set(names)
+    store.removeTabsByIds(store.tabs
+      .filter((tab) => tab.connectionId === connectionId && tab.database === database
+        && (tab.type === 'data' || tab.type === 'design') && targets.has((tab as { table?: string | null }).table ?? ''))
+      .map((tab) => tab.id))
+  }
   const [viewMode, setViewMode] = useState<ViewMode>(getStoredViewMode)
   const [tableStatus, setTableStatus] = useState<TableInfo[]>([])
   const [loading, setLoading] = useState(false)
@@ -223,6 +231,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       for (const name of validSelectedTableNames) {
         await api.query.execute(connectionId, `DROP TABLE ${quoteId(database)}.${quoteId(name)}`)
       }
+      closeTableTabs(validSelectedTableNames)
       setSelectedTables(new Set())
       setExportSql(null)
       handleRefresh()
@@ -241,6 +250,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         await api.query.execute(connectionId, `TRUNCATE TABLE ${quoteId(database)}.${quoteId(tableName)}`)
       }
       setBatchTruncateTargets([])
+      handleRefresh()
     } catch (e: any) {
       showError(e, '清空失败')
     } finally {
@@ -282,6 +292,12 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
       document.removeEventListener('click', handleClick)
       document.removeEventListener('scroll', handleScroll, true)
     }
+  }, [])
+
+  useEffect(() => {
+    const close = () => setContextMenu(null)
+    window.addEventListener('app:close-context-menus', close)
+    return () => window.removeEventListener('app:close-context-menus', close)
   }, [])
 
   // 点击非数据行区域清空选中
@@ -387,6 +403,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     setOperating(true)
     try {
       await api.query.execute(connectionId, `DROP TABLE ${quoteId(database)}.${quoteId(deleteConfirm)}`)
+      closeTableTabs([deleteConfirm])
       setExportSql(null)
       handleRefresh()
       setDeleteConfirm(null)
@@ -400,6 +417,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     try {
       await api.query.execute(connectionId, `TRUNCATE TABLE ${quoteId(database)}.${quoteId(truncateConfirm)}`)
       setTruncateConfirm(null)
+      handleRefresh()
     } catch (e: any) { showError(e, '清空失败') }
     setOperating(false)
   }
@@ -409,6 +427,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     setOperating(true)
     try {
       await api.query.execute(connectionId, `RENAME TABLE ${quoteId(database)}.${quoteId(renameModal.tableName)} TO ${quoteId(database)}.${quoteId(renameModal.newName)}`)
+      useTabStore.getState().renameTable(connectionId, database, renameModal.tableName, renameModal.newName)
       handleRefresh()
       setRenameModal(null)
     } catch (e: any) { showError(e, '重命名失败') }
@@ -488,7 +507,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
 
   const handleCopySql = async () => {
     if (!exportSql) return
-    await navigator.clipboard.writeText(exportSql.sql)
+    await window.api.clipboard.writeText(exportSql.sql)
     setExportSql(null)
     showInfo('已复制到剪贴板')
   }

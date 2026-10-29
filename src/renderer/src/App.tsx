@@ -46,6 +46,16 @@ export default function App() {
   }, [accentColor])
 
   useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !document.querySelector('.context-menu')) return
+      window.dispatchEvent(new Event('app:close-context-menus'))
+      document.dispatchEvent(new Event('app:close-context-menus'))
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
+
+  useEffect(() => {
     if (!PERF_METRICS_ENABLED) return
     if (firstInteractionReportedRef.current) return
 

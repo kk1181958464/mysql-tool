@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, nativeTheme, session } from 'electron'
+import { app, BrowserWindow, Menu, Tray, clipboard, ipcMain, nativeImage, nativeTheme, session } from 'electron'
 import { pathToFileURL } from 'url'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -214,7 +214,7 @@ process.on('unhandledRejection', (reason) => {
 
 app.whenReady().then(() => {
   logger.info('App starting...')
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === 'clipboard-sanitized-write'))
   localStore.init()
   connectionManager.initializeHeartbeatInterval()
   backupService.startScheduleRunner()
@@ -240,6 +240,11 @@ app.whenReady().then(() => {
     app.quit()
   })
   ipcMain.handle(IPC.WIN_IS_MAXIMIZED, () => mainWindow?.isMaximized() ?? false)
+  ipcMain.handle(IPC.CLIPBOARD_WRITE_TEXT, (_event, text: unknown) => {
+    if (typeof text !== 'string') throw new Error('剪贴板内容必须是文本')
+    if (text.length > 64 * 1024 * 1024) throw new Error('复制内容过大')
+    clipboard.writeText(text)
+  })
   ipcMain.on(IPC.WIN_SET_THEME, (_event, theme: unknown) => {
     if (theme !== 'light' && theme !== 'dark') return
     mainWindow?.setBackgroundColor(WINDOW_BACKGROUND[theme])

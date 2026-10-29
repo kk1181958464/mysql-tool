@@ -195,6 +195,12 @@ export default function Sidebar() {
     return () => window.removeEventListener(OPEN_CONNECTION_MANAGER_EVENT, open)
   }, [])
 
+  useEffect(() => {
+    const close = () => setContextMenu(null)
+    window.addEventListener('app:close-context-menus', close)
+    return () => window.removeEventListener('app:close-context-menus', close)
+  }, [])
+
   const handleMenuAction = async (action: string) => {
     if (!contextMenu) return
     const conn = contextMenu.conn

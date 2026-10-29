@@ -8,16 +8,27 @@ import * as connectionManager from './connection-manager'
 import * as localStore from './local-store'
 import { quoteId } from '../utils/sql'
 import { applyResultRowLimit } from '../utils/sql-result-limit'
-import { stripLeadingTrivia, findTopLevelKeyword, isWordBoundaryChar } from '../utils/sql-cursor'
+import { stripLeadingTrivia, findTopLevelKeyword } from '../utils/sql-cursor'
+import { SqlStatementScanner } from '../../shared/sql-splitter'
 import * as logger from '../utils/logger'
 import type { QueryResult, QueryResultSet, QueryStatementResult } from '../../shared/types/query'
 
 const STMT_KEYWORDS = /^(?:CREATE|INSERT|DROP|ALTER|LOCK|UNLOCK|SET|DELETE|UPDATE|REPLACE|SELECT|WITH|CALL|TRUNCATE|USE|GRANT|REVOKE|COMMIT|ROLLBACK|START\s+TRANSACTION|BEGIN|SHOW|DESCRIBE|DESC|EXPLAIN|ANALYZE|OPTIMIZE|RENAME)\s/i
-const PARSE_YIELD_EVERY = 5000
+const PARSE_CHUNK_SIZE = 256 * 1024
 const IMPORT_INSERT_BATCH_MAX_STATEMENTS = 500
 const IMPORT_INSERT_BATCH_MAX_SQL_LENGTH = 4 * 1024 * 1024
-const COMPOUND_CREATE_START = /^CREATE\s+(?:DEFINER\s*=\s*(?:`[^`]+`|[^`\s]+)@(?:`[^`]+`|[^`\s]+)\s+)?(?:OR\s+REPLACE\s+)?(?:TRIGGER|PROCEDURE|FUNCTION|EVENT)\b/i
-const BLOCK_START_KEYWORDS = new Set(['BEGIN', 'CASE', 'IF', 'LOOP', 'REPEAT', 'WHILE'])
+
+// 合并后的 INSERT 不能超过服务器 max_allowed_packet（5.7 默认仅 4MB），否则每批都会失败并退回逐条执行
+async function getInsertBatchMaxLength(conn: mysql.Connection): Promise<number> {
+  try {
+    const [rows] = await conn.query('SELECT @@max_allowed_packet AS packet')
+    const packet = Number((rows as Array<{ packet?: number | string }>)[0]?.packet)
+    if (!Number.isFinite(packet) || packet <= 0) return IMPORT_INSERT_BATCH_MAX_SQL_LENGTH
+    return Math.max(64 * 1024, Math.min(IMPORT_INSERT_BATCH_MAX_SQL_LENGTH, Math.floor(packet / 2)))
+  } catch {
+    return IMPORT_INSERT_BATCH_MAX_SQL_LENGTH / 4
+  }
+}
 
 const yieldToEventLoop = async () => new Promise<void>((resolve) => setImmediate(resolve))
 
@@ -110,29 +121,6 @@ function removeRunningScriptConnection(key: string, conn: mysql.Connection): voi
   }
 }
 
-function matchKeywordAt(sql: string, index: number): string | null {
-  for (const keyword of BLOCK_START_KEYWORDS) {
-    if (sql.slice(index, index + keyword.length).toUpperCase() !== keyword) continue
-    const prev = sql[index - 1]
-    const next = sql[index + keyword.length]
-    if (!isWordBoundaryChar(prev) || !isWordBoundaryChar(next)) continue
-    const rest = sql.slice(index + keyword.length, index + keyword.length + 24)
-    if (/^\s*\(/.test(rest) && keyword !== 'BEGIN') return null
-    if (keyword === 'IF' && /^\s+(?:NOT\s+)?EXISTS\b/i.test(rest)) return null
-    return keyword
-  }
-  return null
-}
-
-function getCompoundEndLength(sql: string, index: number): number {
-  if (sql.slice(index, index + 3).toUpperCase() !== 'END'
-    || !isWordBoundaryChar(sql[index - 1])
-    || !isWordBoundaryChar(sql[index + 3])) return 0
-
-  const suffix = sql.slice(index + 3).match(/^(\s+)(IF|CASE|LOOP|REPEAT|WHILE)\b/i)
-  return 3 + (suffix?.[0].length || 0)
-}
-
 function parseBatchableInsert(stmt: string): BatchableInsertStatement | null {
   const core = stripLeadingTrivia(stmt).trim().replace(/;+\s*$/, '').trim()
   if (!/^(?:INSERT|REPLACE)\s/i.test(core)) return null
@@ -167,7 +155,7 @@ function buildInsertBatchUnit(pending: ExecutionStatement[], parsed: BatchableIn
   }
 }
 
-function buildExecutionUnits(statements: string[]): ExecutionUnit[] {
+function buildExecutionUnits(statements: string[], maxSqlLength = IMPORT_INSERT_BATCH_MAX_SQL_LENGTH): ExecutionUnit[] {
   const units: ExecutionUnit[] = []
   let pendingInsert: ExecutionStatement[] = []
   let pendingParsed: BatchableInsertStatement | null = null
@@ -195,7 +183,7 @@ function buildExecutionUnits(statements: string[]): ExecutionUnit[] {
     const canJoinPending = pendingParsed
       && pendingParsed.headKey === parsed.headKey
       && pendingInsert.length < IMPORT_INSERT_BATCH_MAX_STATEMENTS
-      && projectedLength <= IMPORT_INSERT_BATCH_MAX_SQL_LENGTH
+      && projectedLength <= maxSqlLength
 
     if (!canJoinPending) {
       flushPendingInsert()
@@ -373,117 +361,19 @@ export async function splitStatementsWithProgress(
 ): Promise<string[]> {
   const statements: string[] = []
   const total = Math.max(sql.length, 1)
-  let currentStatement = ''
-  let i = 0
-  let inSQ = false
-  let inDQ = false
-  let inBT = false
-  let inLC = false
-  let inBC = false
-  let delimiter = ';'
-  let statementStart = 0
-  let inCompoundStatement = false
-  let compoundDepth = 0
-  let lastReported = -1
-
-  const finalizeCurrent = async (endIndex: number) => {
-    const trimmed = currentStatement.trim()
-    if (trimmed) statements.push(trimmed)
-    currentStatement = ''
-    statementStart = endIndex
-    inCompoundStatement = false
-    compoundDepth = 0
-    await maybeReport()
+  const scanner = new SqlStatementScanner()
+  const collect = (segments: ReturnType<SqlStatementScanner['feed']>) => {
+    for (const segment of segments) if (!segment.empty && segment.text) statements.push(segment.text)
   }
-
-  const maybeReport = async (force = false) => {
-    if (!onProgress) return
-    const current = Math.min(i, total)
-    if (!force && current - lastReported < PARSE_YIELD_EVERY && current < total) return
-    lastReported = current
-    onProgress({ current, total, stage: 'parsing' })
-    await yieldToEventLoop()
+  for (let offset = 0; offset < sql.length; offset += PARSE_CHUNK_SIZE) {
+    collect(scanner.feed(sql.slice(offset, offset + PARSE_CHUNK_SIZE)))
+    if (onProgress) {
+      onProgress({ current: Math.min(offset + PARSE_CHUNK_SIZE, total), total, stage: 'parsing' })
+      await yieldToEventLoop()
+    }
   }
-
-  while (i < sql.length) {
-    const c = sql[i]
-    const n = sql[i + 1]
-    if (inLC) { if (c === '\n') inLC = false; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (inBC) { if (c === '*' && n === '/') { currentStatement += '*/'; i += 2; await maybeReport(); inBC = false; continue } currentStatement += c; i += 1; await maybeReport(); continue }
-    if (inSQ) { if (c === "'" && n === "'") { currentStatement += "''"; i += 2; await maybeReport(); continue } if (c === '\\') { currentStatement += c + (n || ''); i += 2; await maybeReport(); continue } if (c === "'") inSQ = false; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (inDQ) { if (c === '"' && n === '"') { currentStatement += '""'; i += 2; await maybeReport(); continue } if (c === '\\') { currentStatement += c + (n || ''); i += 2; await maybeReport(); continue } if (c === '"') inDQ = false; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (inBT) { if (c === '`') inBT = false; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (c === '-' && n === '-' && (i + 2 >= sql.length || /\s/.test(sql[i + 2]))) { inLC = true; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (c === '#') { inLC = true; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (c === '/' && n === '*') { inBC = true; currentStatement += '/*'; i += 2; await maybeReport(); continue }
-    if (c === "'") { inSQ = true; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (c === '"') { inDQ = true; currentStatement += c; i += 1; await maybeReport(); continue }
-    if (c === '`') { inBT = true; currentStatement += c; i += 1; await maybeReport(); continue }
-
-    if (!currentStatement.trim()) {
-      const lineStart = i === 0 || sql[i - 1] === '\n'
-      if (lineStart && sql.slice(i, i + 9).toUpperCase() === 'DELIMITER' && isWordBoundaryChar(sql[i + 9])) {
-        let j = i + 9
-        while (j < sql.length && /\s/.test(sql[j])) j += 1
-        let k = j
-        while (k < sql.length && sql[k] !== '\n' && sql[k] !== '\r') k += 1
-        delimiter = sql.slice(j, k).trim() || ';'
-        i = k
-        statementStart = i
-        await maybeReport()
-        continue
-      }
-    }
-
-    if (!inCompoundStatement && delimiter === ';' && !currentStatement.trim()) {
-      const upcoming = sql.slice(i)
-      if (COMPOUND_CREATE_START.test(stripLeadingTrivia(upcoming))) {
-        inCompoundStatement = true
-        compoundDepth = 0
-      }
-    }
-
-    if (inCompoundStatement) {
-      const keyword = matchKeywordAt(sql, i)
-      if (keyword) {
-        if (keyword === 'BEGIN') {
-          compoundDepth += 1
-        } else if (compoundDepth > 0) {
-          compoundDepth += 1
-        }
-        currentStatement += sql.slice(i, i + keyword.length)
-        i += keyword.length
-        await maybeReport()
-        continue
-      }
-
-      const endLength = getCompoundEndLength(sql, i)
-      if (endLength > 0) {
-        if (compoundDepth > 0) compoundDepth -= 1
-        currentStatement += sql.slice(i, i + endLength)
-        i += endLength
-        await maybeReport()
-        continue
-      }
-    }
-
-    if (delimiter && sql.slice(i, i + delimiter.length) === delimiter) {
-      if (!inCompoundStatement || compoundDepth === 0) {
-        await finalizeCurrent(i + delimiter.length)
-        i += delimiter.length
-        continue
-      }
-    }
-
-    currentStatement += c
-    i += 1
-    await maybeReport()
-  }
-
-  const trimmed = currentStatement.trim()
-  if (trimmed) statements.push(trimmed)
-  i = total
-  await maybeReport(true)
+  collect(scanner.finish())
+  onProgress?.({ current: total, total, stage: 'parsing' })
   return statements
 }
 
@@ -552,7 +442,7 @@ export async function executeMultiStatementSql(
       }
     }
     const executionUnits = optimizeInserts
-      ? buildExecutionUnits(executableStatements)
+      ? buildExecutionUnits(executableStatements, await getInsertBatchMaxLength(conn))
       : executableStatements.map((stmt, index) => ({
           sql: stmt,
           statements: [{ index: index + 1, sql: stmt }],
@@ -702,10 +592,11 @@ export async function executeSqlFile(
   let pendingInserts: ExecutionStatement[] = []
   let pendingParsed: BatchableInsertStatement | null = null
   let pendingSqlLength = 0
+  let maxBatchSqlLength = IMPORT_INSERT_BATCH_MAX_SQL_LENGTH
 
   const executeStatements = async (statements: ExecutionStatement[]) => {
     if (!statements.length) return true
-    const units = options?.optimizeInserts ? buildExecutionUnits(statements.map((item) => item.sql)) : statements.map((statement) => ({
+    const units = options?.optimizeInserts ? buildExecutionUnits(statements.map((item) => item.sql), maxBatchSqlLength) : statements.map((statement) => ({
       sql: statement.sql,
       statements: [statement],
       batchedInsert: false,
@@ -753,7 +644,7 @@ export async function executeSqlFile(
     const canJoinPending = pendingParsed
       && pendingParsed.headKey === parsed.headKey
       && pendingInserts.length < IMPORT_INSERT_BATCH_MAX_STATEMENTS
-      && projectedLength <= IMPORT_INSERT_BATCH_MAX_SQL_LENGTH
+      && projectedLength <= maxBatchSqlLength
 
     if (!canJoinPending) {
       const ok = await flushPendingInserts()
@@ -772,6 +663,7 @@ export async function executeSqlFile(
     await conn.query(`SET SQL_MODE=''`)
     await conn.query(`SET FOREIGN_KEY_CHECKS=0`)
     await conn.query(`SET NAMES utf8mb4`)
+    if (options?.optimizeInserts) maxBatchSqlLength = await getInsertBatchMaxLength(conn)
 
     const input = typeof filePathOrStream === 'string'
       ? fs.createReadStream(filePathOrStream, { encoding: 'utf-8' })
@@ -781,180 +673,30 @@ export async function executeSqlFile(
       crlfDelay: Infinity,
     })
 
-    let delimiter = ';'
-    let currentStatement = ''
+    const scanner = new SqlStatementScanner()
     let stopped = false
 
-    let inSQ = false
-    let inDQ = false
-    let inBT = false
-    let inLC = false
-    let inBC = false
-    let inCompoundStatement = false
-    let compoundDepth = 0
-
-    const finalizeCurrentStatement = async () => {
-      const trimmed = currentStatement.trim()
-      currentStatement = ''
-      inCompoundStatement = false
-      compoundDepth = 0
-      if (!trimmed) return true
-      const ok = await enqueueStatement(trimmed)
-      if (!ok) {
-        stopped = true
-        rl.close()
+    const enqueueSegments = async (segments: ReturnType<SqlStatementScanner['feed']>) => {
+      for (const segment of segments) {
+        if (segment.empty || !segment.text) continue
+        if (!(await enqueueStatement(segment.text))) {
+          stopped = true
+          rl.close()
+          return
+        }
       }
-      return ok
     }
 
+    let firstLine = true
     for await (const rawLine of rl) {
-      const line = String(rawLine)
-      const delimiterMatch = !inSQ && !inDQ && !inBT && !inLC && !inBC && !currentStatement.trim()
-        ? line.match(/^\s*DELIMITER\s+(.+?)\s*$/i)
-        : null
-      if (delimiterMatch) {
-        delimiter = delimiterMatch[1] || ';'
-        continue
-      }
-
-      const sql = `${line}\n`
-      for (let i = 0; i < sql.length; i += 1) {
-        const ch = sql[i]
-        const next = sql[i + 1]
-
-        if (inLC) {
-          currentStatement += ch
-          if (ch === '\n') inLC = false
-          continue
-        }
-        if (inBC) {
-          if (ch === '*' && next === '/') {
-            currentStatement += '*/'
-            i += 1
-            inBC = false
-            continue
-          }
-          currentStatement += ch
-          continue
-        }
-        if (inSQ) {
-          if (ch === "'" && next === "'") {
-            currentStatement += "''"
-            i += 1
-            continue
-          }
-          if (ch === '\\') {
-            currentStatement += ch + (next || '')
-            i += 1
-            continue
-          }
-          if (ch === "'") inSQ = false
-          currentStatement += ch
-          continue
-        }
-        if (inDQ) {
-          if (ch === '"' && next === '"') {
-            currentStatement += '""'
-            i += 1
-            continue
-          }
-          if (ch === '\\') {
-            currentStatement += ch + (next || '')
-            i += 1
-            continue
-          }
-          if (ch === '"') inDQ = false
-          currentStatement += ch
-          continue
-        }
-        if (inBT) {
-          if (ch === '`') inBT = false
-          currentStatement += ch
-          continue
-        }
-
-        if (ch === '-' && next === '-' && (i + 2 >= sql.length || /\s/.test(sql[i + 2]))) {
-          inLC = true
-          currentStatement += ch
-          continue
-        }
-        if (ch === '#') {
-          inLC = true
-          currentStatement += ch
-          continue
-        }
-        if (ch === '/' && next === '*') {
-          inBC = true
-          currentStatement += '/*'
-          i += 1
-          continue
-        }
-        if (ch === "'") {
-          inSQ = true
-          currentStatement += ch
-          continue
-        }
-        if (ch === '"') {
-          inDQ = true
-          currentStatement += ch
-          continue
-        }
-        if (ch === '`') {
-          inBT = true
-          currentStatement += ch
-          continue
-        }
-
-        if (!inCompoundStatement && delimiter === ';' && !currentStatement.trim()) {
-          const upcoming = `${currentStatement}${sql.slice(i)}`
-          if (COMPOUND_CREATE_START.test(stripLeadingTrivia(upcoming))) {
-            inCompoundStatement = true
-            compoundDepth = 0
-          }
-        }
-
-        if (inCompoundStatement) {
-          const keyword = matchKeywordAt(sql, i)
-          if (keyword) {
-            if (keyword === 'BEGIN') {
-              compoundDepth += 1
-            } else if (compoundDepth > 0) {
-              compoundDepth += 1
-            }
-            currentStatement += sql.slice(i, i + keyword.length)
-            i += keyword.length - 1
-            continue
-          }
-
-          const endLength = getCompoundEndLength(sql, i)
-          if (endLength > 0) {
-            if (compoundDepth > 0) compoundDepth -= 1
-            currentStatement += sql.slice(i, i + endLength)
-            i += endLength - 1
-            continue
-          }
-        }
-
-        if (delimiter && sql.slice(i, i + delimiter.length) === delimiter) {
-          if (!inCompoundStatement || compoundDepth === 0) {
-            const ok = await finalizeCurrentStatement()
-            i += delimiter.length - 1
-            if (!ok) break
-            continue
-          }
-        }
-
-        currentStatement += ch
-      }
-
-      if (stopped) {
-        break
-      }
+      // readline 不会去掉 UTF-8 BOM，留在首条语句里会导致语法错误
+      const line = firstLine ? String(rawLine).replace(/^\uFEFF/, '') : String(rawLine)
+      firstLine = false
+      await enqueueSegments(scanner.feed(`${line}\n`))
+      if (stopped) break
     }
 
-    if (!stopped && currentStatement.trim()) {
-      await enqueueStatement(currentStatement)
-    }
+    if (!stopped) await enqueueSegments(scanner.finish())
     if (!stopped) {
       await flushPendingInserts()
     }

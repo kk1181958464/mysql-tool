@@ -23,6 +23,7 @@ import { useAppStore } from '../../stores/app.store'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
 import { findCurrentStatement } from './current-statement'
+import { splitSqlStatements } from '../../../../shared/sql-splitter'
 
 // QueryEditor 首次加载时再初始化 Monaco，避免主入口首包引入
 if (!(self as any).__MYSQL_TOOL_MONACO_READY__) {
@@ -284,97 +285,6 @@ const shouldUseBatchExecution = (sql: string): boolean => {
 
   const createTableMatches = withoutTrailingSemicolon.match(/\bCREATE\s+TABLE\b/gi)
   return (createTableMatches?.length ?? 0) > 1
-}
-
-const splitSqlStatements = (sql: string): string[] => {
-  const statements: string[] = []
-  let start = 0
-  let inSingle = false
-  let inDouble = false
-  let inBacktick = false
-  let inLineComment = false
-  let inBlockComment = false
-
-  for (let i = 0; i < sql.length; i += 1) {
-    const ch = sql[i]
-    const next = sql[i + 1]
-
-    if (inLineComment) {
-      if (ch === '\n') inLineComment = false
-      continue
-    }
-    if (inBlockComment) {
-      if (ch === '*' && next === '/') {
-        inBlockComment = false
-        i += 1
-      }
-      continue
-    }
-    if (inSingle) {
-      if (ch === "'" && next === "'") {
-        i += 1
-        continue
-      }
-      if (ch === '\\') {
-        i += 1
-        continue
-      }
-      if (ch === "'") inSingle = false
-      continue
-    }
-    if (inDouble) {
-      if (ch === '"' && next === '"') {
-        i += 1
-        continue
-      }
-      if (ch === '\\') {
-        i += 1
-        continue
-      }
-      if (ch === '"') inDouble = false
-      continue
-    }
-    if (inBacktick) {
-      if (ch === '`') inBacktick = false
-      continue
-    }
-
-    if (ch === '-' && next === '-') {
-      inLineComment = true
-      i += 1
-      continue
-    }
-    if (ch === '#') {
-      inLineComment = true
-      continue
-    }
-    if (ch === '/' && next === '*') {
-      inBlockComment = true
-      i += 1
-      continue
-    }
-    if (ch === "'") {
-      inSingle = true
-      continue
-    }
-    if (ch === '"') {
-      inDouble = true
-      continue
-    }
-    if (ch === '`') {
-      inBacktick = true
-      continue
-    }
-    if (ch !== ';') continue
-
-    const statement = sql.slice(start, i).trim()
-    if (statement) statements.push(statement)
-    start = i + 1
-  }
-
-  const tail = sql.slice(start).trim()
-  if (tail) statements.push(tail)
-  return statements
 }
 
 const extractUserVariables = (sql: string): Set<string> => {

@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react'
-import { Tabs, Button, Modal, Toast } from '../../components/ui'
-import { SaveOutlined, DiffOutlined } from '@ant-design/icons'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { Tabs, Button, Tooltip, toast } from '../../components/ui'
+import { SaveOutlined, DiffOutlined, TableOutlined, CodeOutlined, CopyOutlined, DatabaseOutlined } from '@ant-design/icons'
 import { ColumnEditor } from './ColumnEditor'
 import { IndexEditor } from './IndexEditor'
 import { ForeignKeyEditor } from './ForeignKeyEditor'
@@ -19,22 +19,41 @@ const emptyDesign: TableDesign = {
   comment: '', columns: [], indexes: [], foreignKeys: [],
 }
 
-const LENGTH_TYPES = new Set([
-  'CHAR', 'VARCHAR', 'BINARY', 'VARBINARY', 'BIT',
-  'TINYINT', 'SMALLINT', 'MEDIUMINT', 'INT', 'INTEGER', 'BIGINT',
-  'FLOAT', 'DOUBLE', 'DECIMAL', 'NUMERIC',
-])
-
-const SCALE_TYPES = new Set(['DECIMAL', 'NUMERIC', 'FLOAT', 'DOUBLE'])
-
 interface Props {
   tabId: string
+}
+
+const countChanges = (original: TableDesign, design: TableDesign): number => {
+  const strip = ({ originalName: _o, ...rest }: ColumnDesign) => JSON.stringify(rest)
+  const prevCols = new Map(original.columns.map((c) => [c.name, c]))
+  const kept = new Set<string>()
+  let n = 0
+  for (const c of design.columns) {
+    const prev = c.originalName ? prevCols.get(c.originalName) : undefined
+    if (!prev) { n++; continue }
+    kept.add(prev.name)
+    if (strip(prev) !== strip(c)) n++
+  }
+  n += original.columns.filter((c) => !kept.has(c.name)).length
+  const keyed = <T extends { name: string }>(a: T[], b: T[]) => {
+    const prev = new Map(a.map((x) => [x.name, JSON.stringify(x)]))
+    const next = new Map(b.map((x) => [x.name, JSON.stringify(x)]))
+    let d = 0
+    for (const [k, v] of next) if (prev.get(k) !== v) d++
+    for (const k of prev.keys()) if (!next.has(k)) d++
+    return d
+  }
+  n += keyed(original.indexes, design.indexes) + keyed(original.foreignKeys, design.foreignKeys)
+  if (original.name !== design.name) n++
+  for (const k of ['engine', 'charset', 'collation', 'comment'] as const) if (original[k] !== design[k]) n++
+  const order = (d: TableDesign) => d.columns.map((c) => c.originalName ?? '').filter((x) => prevCols.has(x)).join(',')
+  if (n === 0 && order(design) !== original.columns.map((c) => c.name).join(',')) n++
+  return n
 }
 
 const TableDesigner: React.FC<Props> = ({ tabId }) => {
   const tabFromStore = useTabStore((s) => s.tabs.find((t) => t.id === tabId))
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const updateDesign = useTabStore((s) => s.updateDesign)
   const updateTabTitle = useTabStore((s) => s.updateTabTitle)
   const setDesignDirty = useTabStore((s) => s.setDesignDirty)
   const renameTable = useTabStore((s) => s.renameTable)
@@ -49,29 +68,26 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
   const isEdit = !!tableName
   const [design, setDesign] = useState<TableDesign>({ ...emptyDesign })
   const [original, setOriginal] = useState<TableDesign | null>(null)
+  const [loading, setLoading] = useState(isEdit)
+  const [loadError, setLoadError] = useState<unknown>(null)
+  const [saveError, setSaveError] = useState<unknown>(null)
   const [diffOpen, setDiffOpen] = useState(false)
-  const [ddlPreview, setDdlPreview] = useState('')
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [successMsg, setSuccessMsg] = useState<string | null>(null)
+  const [preview, setPreview] = useState<{ sql: string; error?: string }>({ sql: '' })
   const [isSaving, setIsSaving] = useState(false)
   const [activePanel, setActivePanel] = useState('columns')
 
-  useEffect(() => {
-    if (isEdit && connectionId && database && tableName) {
-      loadExisting()
-    } else {
-      setDesign({ ...emptyDesign })
-      setOriginal(null)
-    }
-  }, [tableName, database, connectionId])
-
-  const loadExisting = async () => {
+  const loadExisting = useCallback(async () => {
     if (!connectionId || !database || !tableName) return
+    setLoading(true)
+    setLoadError(null)
     try {
-      const cols = await api.meta.columns(connectionId, database, tableName)
-      const idxs = await api.meta.indexes(connectionId, database, tableName)
-      const fks = await api.meta.foreignKeys(connectionId, database, tableName)
-      const status = (await api.meta.tableStatus(connectionId, database)).find((item) => item.name === tableName)
+      const [cols, idxs, fks, statusList] = await Promise.all([
+        api.meta.columns(connectionId, database, tableName),
+        api.meta.indexes(connectionId, database, tableName),
+        api.meta.foreignKeys(connectionId, database, tableName),
+        api.meta.tableStatus(connectionId, database),
+      ])
+      const status = statusList.find((item) => item.name === tableName)
 
       const columns: ColumnDesign[] = cols.map((c) => {
         const parsed = parseColumnType(c.columnType)
@@ -106,74 +122,68 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       }
       setDesign(d)
       setOriginal(JSON.parse(JSON.stringify(d)))
-    } catch (e: any) {
-      setErrorMsg(getErrorMessage(e, '加载表结构失败'))
+    } catch (e) {
+      setLoadError(e)
+    } finally {
+      setLoading(false)
     }
-  }
+  }, [connectionId, database, tableName])
 
-  const generateDDL = (): string => {
-    const d = design
-    const lines: string[] = [`CREATE TABLE \`${d.name}\` (`]
-    const colDefs: string[] = d.columns.map((c) => {
-      let def = `  \`${c.name}\` ${c.type}`
-      const type = c.type.toUpperCase()
-      const length = c.length.trim()
-      const decimals = c.decimals.trim()
-      if (length && LENGTH_TYPES.has(type)) {
-        def += `(${length}${decimals && SCALE_TYPES.has(type) ? `,${decimals}` : ''})`
-      }
-      if (c.unsigned) def += ' UNSIGNED'
-      if (!c.nullable) def += ' NOT NULL'
-      if (c.autoIncrement) def += ' AUTO_INCREMENT'
-      if (c.defaultValue) def += ` DEFAULT ${c.defaultValue}`
-      if (c.comment) def += ` COMMENT '${c.comment}'`
-      return def
-    })
-    const pks = d.columns.filter((c) => c.primaryKey).map((c) => `\`${c.name}\``)
-    if (pks.length) colDefs.push(`  PRIMARY KEY (${pks.join(', ')})`)
-    for (const idx of d.indexes) colDefs.push(`  ${idx.type} \`${idx.name}\` (${idx.columns.map((c) => `\`${c.name}\` ${c.order}`).join(', ')}) USING ${idx.method}`)
-    for (const fk of d.foreignKeys) colDefs.push(`  CONSTRAINT \`${fk.name}\` FOREIGN KEY (${fk.columns.map((c) => `\`${c}\``).join(', ')}) REFERENCES \`${fk.referencedTable}\` (${fk.referencedColumns.map((c) => `\`${c}\``).join(', ')}) ON UPDATE ${fk.onUpdate} ON DELETE ${fk.onDelete}`)
-    lines.push(colDefs.join(',\n'))
-    lines.push(`) ENGINE=${d.engine} DEFAULT CHARSET=${d.charset} COLLATE=${d.collation}${d.comment ? ` COMMENT='${d.comment}'` : ''};`)
-    return lines.join('\n')
-  }
+  useEffect(() => {
+    if (isEdit) {
+      loadExisting()
+    } else {
+      setDesign({ ...emptyDesign })
+      setOriginal(null)
+      setLoading(false)
+    }
+  }, [isEdit, loadExisting])
 
-  useEffect(() => { setDdlPreview(generateDDL()) }, [design])
+  // SQL 预览由主进程生成，与实际执行的语句保持一致
+  useEffect(() => {
+    if (activePanel !== 'preview') return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      const result = await api.design.preview(isEdit ? original : null, design).catch((e) => ({ sql: '', error: getErrorMessage(e, '生成 SQL 失败') }))
+      if (!cancelled) setPreview(result)
+    }, 200)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [activePanel, design, original, isEdit])
+
+  const changeCount = useMemo(() => (original ? countChanges(original, design) : 0), [original, design])
 
   const handleDesignChange = (newDesign: TableDesign) => {
     setDesign(newDesign)
     setDesignDirty(tabId, true)
-    // 更新标签页标题
-    if (newDesign.name && !isEdit) {
-      updateTabTitle(tabId, `新建表: ${newDesign.name}`)
-    }
+    if (!isEdit) updateTabTitle(tabId, newDesign.name ? `新建表: ${newDesign.name}` : '新建表')
   }
 
   const validateDesign = (): string | null => {
     if (!design.name.trim()) return '请输入表名'
     if (design.columns.length === 0) return '请至少添加一个字段'
+    const seen = new Set<string>()
     for (let i = 0; i < design.columns.length; i++) {
       const col = design.columns[i]
       if (!col.name.trim()) return `第 ${i + 1} 个字段缺少名称`
       if (!col.type) return `字段 "${col.name}" 缺少类型`
+      const key = col.name.trim().toLowerCase()
+      if (seen.has(key)) return `字段名 "${col.name}" 重复`
+      seen.add(key)
     }
     return null
   }
 
   const handleSave = useCallback(async () => {
-    if (!connectionId || !database) { setErrorMsg('请先选择连接和数据库'); return }
+    if (!connectionId || !database) { toast.warning('请先选择连接和数据库'); return }
     const validationError = validateDesign()
-    if (validationError) { setErrorMsg(validationError); return }
-
-    // 如果没有改动，不执行保存
-    if (isEdit && !tab?.isDirty) { return }
+    if (validationError) { toast.warning(validationError); return }
+    if (isEdit && changeCount === 0) { toast.info('没有需要保存的修改'); return }
 
     setIsSaving(true)
+    setSaveError(null)
     try {
       if (isEdit && original) {
-        // 编辑模式：先计算差异再提交
         const diff = await api.design.diff(original, design)
-        console.log('Table diff:', diff)
         await api.design.alterTable(connectionId, database, original.name, diff, design)
         if (original.name !== design.name) renameTable(connectionId, database, original.name, design.name)
       } else {
@@ -186,20 +196,17 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
       }
       setDesign(saved)
       setOriginal(JSON.parse(JSON.stringify(saved)))
-      await loadTables(connectionId, database, true)
-      // 强制重新加载该表的列信息（清除缓存）
-      await loadColumns(connectionId, database, design.name, true)
-      setSuccessMsg(isEdit ? '表已修改' : '表已创建')
       setDesignDirty(tabId, false)
-      setTimeout(() => setSuccessMsg(null), 3000)
-    } catch (e: any) {
-      setErrorMsg(getErrorMessage(e, isEdit ? '修改表失败' : '创建表失败'))
+      toast.success(isEdit ? '表结构已保存' : `表 ${design.name} 已创建`)
+      await loadTables(connectionId, database, true)
+      await loadColumns(connectionId, database, design.name, true)
+    } catch (e) {
+      setSaveError(e)
     } finally {
       setIsSaving(false)
     }
-  }, [connectionId, database, design, isEdit, original, tabId, tab?.isDirty, setDesignDirty])
+  }, [connectionId, database, design, isEdit, original, tabId, changeCount, setDesignDirty])
 
-  // Ctrl+S 快捷键保存
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's' && activeTabId === tabId) {
@@ -213,124 +220,135 @@ const TableDesigner: React.FC<Props> = ({ tabId }) => {
 
   if (!tab) return null
 
+  const statusChip = !isEdit
+    ? <span className="td-chip td-chip-new">新建</span>
+    : changeCount > 0
+      ? <span className="td-chip td-chip-dirty">{changeCount} 处修改</span>
+      : <span className="td-chip">已同步</span>
+
+  const count = (n: number) => <span className="td-tab-count">{n}</span>
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: 12 }}>
-      <div className="table-designer-toolbar">
-        <label className="toolbar-field">
-          <span>表名</span>
-          <input value={design.name} onChange={(e) => handleDesignChange({ ...design, name: e.target.value })} />
-        </label>
-        <label className="toolbar-field">
-          <span>引擎</span>
-          <select value={design.engine} onChange={(e) => handleDesignChange({ ...design, engine: e.target.value })}>
-            <option value="InnoDB">InnoDB</option>
-            <option value="MyISAM">MyISAM</option>
-            <option value="MEMORY">MEMORY</option>
-          </select>
-        </label>
-        <label className="toolbar-field">
-          <span>字符集</span>
-          <select value={design.charset} onChange={(e) => handleDesignChange({ ...design, charset: e.target.value })}>
-            <option value="utf8mb4">utf8mb4</option>
-            <option value="utf8">utf8</option>
-            <option value="latin1">latin1</option>
-          </select>
-        </label>
-        <label className="toolbar-field">
-          <span>注释</span>
-          <input value={design.comment} onChange={(e) => handleDesignChange({ ...design, comment: e.target.value })} />
-        </label>
-        <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={isSaving} disabled={isSaving}>
-          {isSaving ? '保存中...' : '保存'}
-        </Button>
-        {isEdit && <Button size="small" icon={<DiffOutlined />} onClick={() => setDiffOpen(true)} disabled={isSaving}>查看差异</Button>}
+    <div className="td-page">
+      <div className="td-header">
+        <div className="td-header-icon"><TableOutlined /></div>
+        <div className="td-header-main">
+          <div className="td-title-row">
+            <input
+              className="td-title-input"
+              value={design.name}
+              placeholder="输入表名"
+              spellCheck={false}
+              autoFocus={!isEdit}
+              disabled={loading}
+              onChange={(e) => handleDesignChange({ ...design, name: e.target.value })}
+            />
+            {statusChip}
+          </div>
+          <div className="td-meta-row">
+            <span className="td-meta-db"><DatabaseOutlined /> {database}</span>
+            <span className="td-meta-dot" />
+            <input
+              className="td-comment-input"
+              value={design.comment}
+              placeholder="添加表注释…"
+              disabled={loading}
+              onChange={(e) => handleDesignChange({ ...design, comment: e.target.value })}
+            />
+            <span className="td-meta-dot" />
+            <button type="button" className="td-meta-link" onClick={() => setActivePanel('options')}>
+              {design.engine} · {design.collation}
+            </button>
+          </div>
+        </div>
+        <div className="td-header-actions">
+          <Tooltip title="查看将要执行的 SQL" placement="bottom">
+            <Button size="small" icon={<CodeOutlined />} onClick={() => setActivePanel('preview')}>预览 SQL</Button>
+          </Tooltip>
+          {isEdit && <Button size="small" icon={<DiffOutlined />} onClick={() => setDiffOpen(true)} disabled={isSaving || !original}>查看差异</Button>}
+          <Tooltip title="Ctrl+S" placement="bottom">
+            <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={isSaving} disabled={isSaving || loading}>
+              {isEdit ? '保存修改' : '创建表'}
+            </Button>
+          </Tooltip>
+        </div>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <Tabs
-          activeKey={activePanel}
-          onChange={setActivePanel}
-          items={[
-            {
-              key: 'columns',
-              label: '列',
-              children: activePanel === 'columns'
-                ? <ColumnEditor columns={design.columns} onChange={(columns) => handleDesignChange({ ...design, columns })} />
-                : null,
-            },
-            {
-              key: 'indexes',
-              label: '索引',
-              children: activePanel === 'indexes'
-                ? <IndexEditor indexes={design.indexes} columns={design.columns} onChange={(indexes) => handleDesignChange({ ...design, indexes })} />
-                : null,
-            },
-            {
-              key: 'fk',
-              label: '外键',
-              children: activePanel === 'fk'
-                ? <ForeignKeyEditor foreignKeys={design.foreignKeys} columns={design.columns} onChange={(foreignKeys) => handleDesignChange({ ...design, foreignKeys })} />
-                : null,
-            },
-            {
-              key: 'options',
-              label: '选项',
-              children: activePanel === 'options'
-                ? <TableOptions design={design} onChange={handleDesignChange} />
-                : null,
-            },
-            {
-              key: 'preview',
-              label: 'DDL 预览',
-              children: activePanel === 'preview'
-                ? <pre style={{ background: 'var(--bg-hover)', padding: 12, borderRadius: 4, overflow: 'auto', fontSize: 12, fontFamily: 'monospace', maxHeight: 500 }}>{ddlPreview}</pre>
-                : null,
-            },
-          ]}
-        />
+      {saveError != null && (
+        <ErrorNotice className="td-error" error={saveError} fallbackTitle={isEdit ? '修改表失败' : '创建表失败'} onClose={() => setSaveError(null)} />
+      )}
+
+      <div className="td-content">
+        {loading ? (
+          <div className="td-skeleton">
+            {Array.from({ length: 6 }, (_, i) => <div key={i} className="ui-table-skeleton-line" style={{ width: `${90 - i * 8}%` }} />)}
+          </div>
+        ) : loadError != null ? (
+          <div className="td-load-error">
+            <ErrorNotice error={loadError} fallbackTitle="加载表结构失败" onRetry={loadExisting} />
+          </div>
+        ) : (
+          <Tabs
+            className="td-tabs"
+            activeKey={activePanel}
+            onChange={setActivePanel}
+            items={[
+              {
+                key: 'columns',
+                label: <>字段{count(design.columns.length)}</>,
+                children: <ColumnEditor columns={design.columns} original={original?.columns} onChange={(columns) => handleDesignChange({ ...design, columns })} />,
+              },
+              {
+                key: 'indexes',
+                label: <>索引{count(design.indexes.length)}</>,
+                children: <IndexEditor indexes={design.indexes} columns={design.columns} onChange={(indexes) => handleDesignChange({ ...design, indexes })} />,
+              },
+              {
+                key: 'fk',
+                label: <>外键{count(design.foreignKeys.length)}</>,
+                children: activePanel === 'fk' && connectionId && database
+                  ? <ForeignKeyEditor connectionId={connectionId} database={database} tableName={design.name} foreignKeys={design.foreignKeys} columns={design.columns} onChange={(foreignKeys) => handleDesignChange({ ...design, foreignKeys })} />
+                  : null,
+              },
+              {
+                key: 'options',
+                label: '选项',
+                children: <TableOptions design={design} onChange={handleDesignChange} />,
+              },
+              {
+                key: 'preview',
+                label: isEdit ? 'SQL 预览' : 'DDL 预览',
+                children: activePanel === 'preview' ? <SqlPreview isEdit={isEdit} preview={preview} /> : null,
+              },
+            ]}
+          />
+        )}
       </div>
 
       {original && <StructureDiff open={diffOpen} onClose={() => setDiffOpen(false)} original={original} current={design} />}
+    </div>
+  )
+}
 
-      {isSaving && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'color-mix(in srgb, var(--scrim) 30%, transparent)',
-          animation: 'fade-in var(--dur-base) ease',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 999,
-          pointerEvents: 'none',
-        }}>
-          <div style={{
-            background: 'var(--bg-surface)',
-            border: '1px solid var(--border)',
-            borderRadius: 10,
-            padding: '14px 20px',
-            boxShadow: 'var(--shadow)',
-            animation: 'menu-pop var(--dur-base) var(--ease-spring)',
-            color: 'var(--text-primary)',
-            fontSize: 13,
-          }}>
-            正在保存表结构...
-          </div>
-        </div>
+function SqlPreview({ isEdit, preview }: { isEdit: boolean; preview: { sql: string; error?: string } }) {
+  const copy = async () => {
+    await window.api.clipboard.writeText(preview.sql)
+    toast.success('SQL 已复制')
+  }
+  const empty = !preview.error && !preview.sql.trim()
+  return (
+    <div className="td-preview">
+      <div className="td-preview-head">
+        <span>{isEdit ? '保存时将执行以下语句' : '创建表时将执行以下语句'}</span>
+        <Button size="small" variant="text" icon={<CopyOutlined />} disabled={!preview.sql} onClick={copy}>复制</Button>
+      </div>
+      {preview.error ? (
+        <div className="td-preview-msg">{preview.error}</div>
+      ) : empty ? (
+        <div className="td-preview-msg">{isEdit ? '暂无修改' : '填写表名和字段后这里会显示建表语句'}</div>
+      ) : (
+        <pre className="td-preview-code">{preview.sql}</pre>
       )}
-
-      <Toast open={Boolean(successMsg)} message={successMsg} type="success" />
-
-      {/* 错误弹窗 */}
-      <Modal
-        open={!!errorMsg}
-        title={isEdit ? '修改表失败' : '创建表失败'}
-        width={460}
-        onClose={() => setErrorMsg(null)}
-        footer={<Button variant="primary" onClick={() => setErrorMsg(null)}>确定</Button>}
-      >
-        {errorMsg && <ErrorNotice error={errorMsg} fallbackTitle={isEdit ? '修改表失败' : '创建表失败'} />}
-      </Modal>
     </div>
   )
 }

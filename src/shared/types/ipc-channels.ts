@@ -26,6 +26,7 @@ export const IPC = {
   DESIGN_ALTER_TABLE: 'design:alterTable',
   DESIGN_DROP_TABLE: 'design:dropTable',
   DESIGN_DIFF: 'design:diff',
+  DESIGN_PREVIEW: 'design:preview',
   DATA_INSERT: 'data:insert',
   DATA_UPDATE: 'data:update',
   DATA_DELETE: 'data:delete',
@@ -74,4 +75,5 @@ export const IPC = {
   WIN_QUIT: 'win:quit',
   WIN_IS_MAXIMIZED: 'win:isMaximized',
   WIN_SET_THEME: 'win:setTheme',
+  CLIPBOARD_WRITE_TEXT: 'clipboard:writeText',
 } as const

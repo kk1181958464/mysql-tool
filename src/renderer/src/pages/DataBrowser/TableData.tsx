@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { Table, Input, Space, Button, DateTimePicker, Modal, Tag, Checkbox, Toast, toast, Alert } from '../../components/ui'
-import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined } from '@ant-design/icons'
+import { Table, Input, Button, DateTimePicker, Modal, Toast, toast, Alert, Select, Tooltip } from '../../components/ui'
+import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined, SearchOutlined, CloseOutlined, ExportOutlined, CodeOutlined, ProfileOutlined, UndoOutlined, CopyOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
 import type { ColumnDetail } from '../../../../shared/types/metadata'
@@ -26,8 +26,10 @@ import {
   type SimpleFilterField,
 } from './table-filter'
 import { parseClipboardGrid } from './table-clipboard'
+import { RowDetailPanel } from './RowDetailPanel'
+import { ColumnPicker } from './ColumnPicker'
 import { ErrorNotice } from '../../components/ErrorNotice'
-import { getErrorMessage } from '../../utils/error-info'
+import { formatErrorSummary, getErrorMessage } from '../../utils/error-info'
 
 interface Props {
   tabId: string
@@ -328,7 +330,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [result, setResult] = useState<QueryResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
-  const rowsPerPage = useAppStore((s) => s.rowsPerPage)
+  const defaultRowsPerPage = useAppStore((s) => s.rowsPerPage)
+  const [rowsPerPage, setRowsPerPage] = useState(defaultRowsPerPage)
   const paginationMode = useAppStore((s) => s.paginationMode)
   const { loadColumns, columns: columnCache } = useDatabaseStore()
   const setDataDirty = useTabStore((s) => s.setDataDirty)
@@ -376,9 +379,14 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [paginationFallbackHint, setPaginationFallbackHint] = useState('')
   const [transformedBaseRows, setTransformedBaseRows] = useState<Array<Record<string, unknown>>>([])
   const [pendingPaginationHint, setPendingPaginationHint] = useState('')
-  const [columnFilter, setColumnFilter] = useState('')
-  const [isColumnPickerExpanded, setIsColumnPickerExpanded] = useState(false)
   const [visibleColumnNames, setVisibleColumnNames] = useState<Set<string>>(new Set())
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  const [lastSql, setLastSql] = useState('')
+  const [sqlOpen, setSqlOpen] = useState(false)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detailRowKey, setDetailRowKey] = useState<string | null>(null)
+  const addQueryTab = useTabStore((s) => s.addQueryTab)
   const knownColumnNamesRef = useRef<Set<string>>(new Set())
   const fetchRequestIdRef = useRef(0)
   const transformJobIdRef = useRef(0)
@@ -397,8 +405,9 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   useEffect(() => {
     knownColumnNamesRef.current = new Set()
     setVisibleColumnNames(new Set())
-    setColumnFilter('')
-    setIsColumnPickerExpanded(false)
+    setSearchInput('')
+    setSearch('')
+    setDetailRowKey(null)
   }, [connectionId, database, table])
 
   useEffect(() => {
@@ -425,9 +434,29 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     return column?.type || columnDetailsByName.get(columnName)?.dataType || ''
   }, [result?.columns, columnDetailsByName])
 
-  const effectiveWhere = useMemo(
+  const filterWhere = useMemo(
     () => filterMode === 'simple' ? buildSimpleFilterWhere(appliedSimpleFilterTree, getFilterColumnType) : where,
     [filterMode, appliedSimpleFilterTree, getFilterColumnType, where]
+  )
+
+  // 快速搜索：文本类字段 LIKE，数字关键字额外匹配数值字段
+  const searchWhere = useMemo(() => {
+    const keyword = search.trim()
+    if (!keyword || !result?.columns.length) return ''
+    const typeOf = (name: string) => columnDetailsByName.get(name)?.dataType || ''
+    const like = escSQL(`%${keyword.replace(/[\\%_]/g, (m) => `\\${m}`)}%`)
+    const parts: string[] = []
+    for (const col of result.columns) {
+      const type = typeOf(col.name)
+      if (/char|text|enum|set|json/i.test(type)) parts.push(`${quoteId(col.name)} LIKE ${like}`)
+      else if (/^-?\d+(\.\d+)?$/.test(keyword) && isNumericType(type)) parts.push(`${quoteId(col.name)} = ${keyword}`)
+    }
+    return parts.length ? parts.join(' OR ') : '1 = 0'
+  }, [search, result?.columns, columnDetailsByName])
+
+  const effectiveWhere = useMemo(
+    () => [filterWhere, searchWhere].filter((p) => p.trim()).map((p) => (filterWhere && searchWhere ? `(${p})` : p)).join(' AND '),
+    [filterWhere, searchWhere]
   )
 
   const filterSummary = useMemo(
@@ -464,6 +493,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setDraftSimpleFilterTree(cloneSimpleFilterGroup(emptyFilter))
     setDraftWhereInput('')
     setOrderBy('')
+    setRowsPerPage(defaultRowsPerPage)
+    setLastSql('')
     setSelectedRowKeys(new Set())
     setDeleteConfirmOpen(false)
     setDeleteBusy(false)
@@ -662,6 +693,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       const res = await api.query.execute(connectionId, sql, database)
 
       if (requestId !== fetchRequestIdRef.current) return
+      setLastSql(sql)
 
       if (effectiveMode === 'keyset' && action === 'prev') {
         res.rows = [...res.rows].reverse()
@@ -1160,6 +1192,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     }
     anchorCellRef.current = { rowKey, colName }
     setSelectedCells(new Set([key]))
+    setDetailRowKey(rowKey)
   }, [result?.columns, allRowKeys])
 
   useEffect(() => {
@@ -1390,6 +1423,18 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
       return
     }
 
+    // Ctrl+C 复制选中单元格（TSV，可直接粘贴到表格软件）
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && !e.shiftKey) {
+      if (selectedCells.size === 0 && selectedRowKeys.size === 0) return
+      if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
+      const active = document.activeElement as HTMLElement | null
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return
+      if (window.getSelection()?.toString()) return
+      e.preventDefault()
+      void copySelection()
+      return
+    }
+
     // 2) Ctrl+A 全选所有复选框行
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
       if (!shouldHandlePanelKeyboardEvent(e, { allowSelection: true })) return
@@ -1487,6 +1532,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       anchorCellRef.current = { rowKey: nextRowKey, colName: nextColName }
       setSelectedCells(new Set([nextCellKey]))
+      setDetailRowKey(nextRowKey)
 
       window.requestAnimationFrame(() => {
         const target = rootRef.current?.querySelector(`[data-cell-id="${nextCellDomId}"]`) as HTMLElement | null
@@ -1564,12 +1610,137 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     return `UPDATE ${quoteId(table)} SET ${sets} WHERE ${whereClause}${pkCols.length ? '' : ' LIMIT 1'};`
   }
 
+  useEffect(() => {
+    const close = () => {
+      setCellContextMenu(null)
+      setHeaderContextMenu(null)
+    }
+    window.addEventListener('app:close-context-menus', close)
+    return () => window.removeEventListener('app:close-context-menus', close)
+  }, [])
+
   const handleCellContextMenu = (e: React.MouseEvent, rowKey: string, colName: string, record: Record<string, unknown>) => {
     e.preventDefault()
     e.stopPropagation()
-    const menuH = 220
-    const y = e.clientY + menuH > window.innerHeight ? e.clientY - menuH : e.clientY
+    const menuH = 430
+    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 8))
     setCellContextMenu({ x: e.clientX, y, rowKey, colName, record })
+  }
+
+  const copySql = async (sql: string, rowCount: number, kind: string) => {
+    if (!sql) {
+      toast.warning('没有可复制的行')
+      return
+    }
+    try {
+      await window.api.clipboard.writeText(sql)
+      toast.success(`已复制 ${rowCount} 行 ${kind} 语句`)
+    } catch (e) {
+      toast.error(formatErrorSummary(e, '复制失败'))
+    }
+  }
+
+  const visibleColumnList = useMemo(
+    () => (result?.columns || []).filter((c) => visibleColumnNames.has(c.name)),
+    [result?.columns, visibleColumnNames]
+  )
+
+  const currentValue = useCallback((rowKey: string, colName: string) => {
+    const pending = pendingChanges.get(rowKey)
+    if (pending && colName in pending) return pending[colName]
+    return rowsByKey.get(rowKey)?.[colName]
+  }, [pendingChanges, rowsByKey])
+
+  const textOf = useCallback((value: unknown, colName: string) => {
+    if (value === null || value === undefined) return ''
+    const type = columnDetailsByName.get(colName)?.dataType?.toLowerCase() || ''
+    return fmtValue(value, type === 'date')
+  }, [columnDetailsByName])
+
+  const writeClipboard = async (text: string, message: string) => {
+    try {
+      await window.api.clipboard.writeText(text)
+      toast.success(message)
+    } catch (e) {
+      toast.error(formatErrorSummary(e, '复制失败'))
+    }
+  }
+
+  const rowsAsTsv = (keys: string[], withHeader: boolean) => {
+    const cols = visibleColumnList.map((c) => c.name)
+    const clean = (v: string) => (/[\t\n"]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
+    const lines = keys.map((k) => cols.map((c) => clean(textOf(currentValue(k, c), c))).join('\t'))
+    return (withHeader ? [cols.join('\t'), ...lines] : lines).join('\n')
+  }
+
+  const copySelection = async () => {
+    if (selectedRowKeys.size > 0 && selectedCells.size === 0) {
+      const keys = allRowKeys.filter((k) => selectedRowKeys.has(k))
+      await writeClipboard(rowsAsTsv(keys, false), `已复制 ${keys.length} 行`)
+      return
+    }
+    const cells = Array.from(selectedCells).map(parseCellKey).filter((c): c is { rowKey: string; colName: string } => !!c)
+    if (!cells.length) return
+    const colOrder = visibleColumnList.map((c) => c.name)
+    const rows = allRowKeys.filter((k) => cells.some((c) => c.rowKey === k))
+    const cols = colOrder.filter((n) => cells.some((c) => c.colName === n))
+    const picked = new Set(cells.map((c) => toCellKey(c.rowKey, c.colName)))
+    const text = rows.map((r) => cols.map((c) => (picked.has(toCellKey(r, c)) ? textOf(currentValue(r, c), c) : '')).join('\t')).join('\n')
+    await writeClipboard(text, cells.length === 1 ? '已复制' : `已复制 ${cells.length} 个单元格`)
+  }
+
+  // 在简单筛选树中追加一个条件；高级模式下追加到 WHERE
+  const addQuickFilter = (colName: string, mode: 'eq' | 'neq' | 'notNull', value: unknown) => {
+    const isNull = value === null || value === undefined
+    const operator = mode === 'eq' ? (isNull ? 'IS NULL' : '=') : mode === 'neq' ? (isNull ? 'IS NOT NULL' : '!=') : 'IS NOT NULL'
+    const literalValue = operator.startsWith('IS') ? '' : textOf(value, colName)
+    if (filterMode === 'advanced') {
+      const clause = `${quoteId(colName)} ${operator}${operator.startsWith('IS') ? '' : ` ${escSQL(literalValue)}`}`
+      const next = where.trim() ? `(${where.trim()}) AND ${clause}` : clause
+      applyWhereFilter('advanced', simpleFilterTree, next)
+      return
+    }
+    const condition = { ...getDefaultSimpleFilter(), column: colName, operator, value: literalValue }
+    const base = cloneSimpleFilterGroup(appliedSimpleFilterTree)
+    const meaningful = base.children.filter((c) => c.type === 'group' || c.column)
+    const nextTree: SimpleFilterGroup = base.join === 'AND'
+      ? { ...base, children: [...meaningful, condition] }
+      : { ...getDefaultSimpleFilterGroup(), children: meaningful.length ? [{ ...base, children: meaningful }, condition] : [condition] }
+    applyWhereFilter('simple', nextTree, whereInput)
+  }
+
+  const cloneRow = (record: Record<string, unknown>) => {
+    if (newRows.length > 0) {
+      toast.warning('请先保存或放弃当前新增的行')
+      return
+    }
+    newRowCounter.current += 1
+    const key = `_new_${newRowCounter.current}`
+    const sourceKey = getRowKey(record)
+    const copy: Record<string, unknown> = { _newKey: key }
+    for (const col of result?.columns || []) {
+      if (columnDetailsByName.get(col.name)?.autoIncrement || col.autoIncrement) continue
+      const v = currentValue(sourceKey, col.name)
+      if (v !== undefined && !isBinaryValue(v)) copy[col.name] = isDateValue(v) ? textOf(v, col.name) : v
+    }
+    setNewRows((prev) => [...prev, copy])
+    setDetailRowKey(key)
+  }
+
+  const discardChanges = () => {
+    setPendingChanges(new Map())
+    setNewRows([])
+    setEditingDirtyCells(new Set())
+    setSelectedCells(new Set())
+    toast.info('已放弃未保存的修改')
+  }
+
+  const hideColumn = (colName: string) => {
+    setVisibleColumnNames((prev) => {
+      const next = new Set(prev)
+      next.delete(colName)
+      return next
+    })
   }
 
   const handleContextAction = async (action: string) => {
@@ -1579,24 +1750,51 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
     // 若勾选了多行，则按多行执行；否则按当前右键行执行
     const selectedKeys = selectedRowKeyList.length > 0 ? selectedRowKeyList : [rowKey]
+    const value = currentValue(rowKey, colName)
 
     switch (action) {
+      case 'copyValue':
+        if (selectedCells.size > 1 && selectedCells.has(toCellKey(rowKey, colName))) await copySelection()
+        else await writeClipboard(textOf(value, colName), '已复制')
+        break
+      case 'copyColumnName':
+        await writeClipboard(colName, `已复制字段名 ${colName}`)
+        break
+      case 'copyTsv':
+        await writeClipboard(rowsAsTsv(selectedKeys, true), `已复制 ${selectedKeys.length} 行（含表头）`)
+        break
+      case 'copyJson': {
+        const rows = selectedKeys.map((k) => Object.fromEntries(visibleColumnList.map((c) => {
+          const v = currentValue(k, c.name)
+          return [c.name, v === null || v === undefined ? null : typeof v === 'number' ? v : textOf(v, c.name)]
+        })))
+        await writeClipboard(JSON.stringify(rows.length === 1 ? rows[0] : rows, null, 2), `已复制 ${rows.length} 行 JSON`)
+        break
+      }
+      case 'filterEq':
+        addQuickFilter(colName, 'eq', value)
+        break
+      case 'filterNeq':
+        addQuickFilter(colName, 'neq', value)
+        break
+      case 'detail':
+        setDetailRowKey(rowKey)
+        setDetailOpen(true)
+        break
+      case 'clone':
+        cloneRow(record)
+        break
+      case 'hideColumn':
+        hideColumn(colName)
+        break
       case 'copyInsert': {
-        const sql = selectedKeys
-          .map(k => rowsByKey.get(k))
-          .filter(Boolean)
-          .map(r => generateInsertSQL(r!))
-          .join('\n')
-        await navigator.clipboard.writeText(sql)
+        const rows = selectedKeys.map(k => rowsByKey.get(k)).filter(Boolean)
+        await copySql(rows.map(r => generateInsertSQL(r!)).join('\n'), rows.length, 'INSERT')
         break
       }
       case 'copyUpdate': {
-        const sql = selectedKeys
-          .map(k => rowsByKey.get(k))
-          .filter(Boolean)
-          .map(r => generateUpdateSQL(r!))
-          .join('\n')
-        await navigator.clipboard.writeText(sql)
+        const rows = selectedKeys.map(k => rowsByKey.get(k)).filter(Boolean)
+        await copySql(rows.map(r => generateUpdateSQL(r!)).join('\n'), rows.length, 'UPDATE')
         break
       }
       case 'setEmpty':
@@ -1666,9 +1864,16 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     },
   }), [allChecked, allRowKeys, getRowKey, selectedRowKeys])
 
-  const handleHeaderMenuAction = useCallback((action: 'asc' | 'desc' | 'clear') => {
+  const handleHeaderMenuAction = (action: 'asc' | 'desc' | 'clear' | 'hide' | 'copyName' | 'notNull') => {
     if (!headerContextMenu) return
     const colName = headerContextMenu.colName
+    if (action === 'hide' || action === 'copyName' || action === 'notNull') {
+      setHeaderContextMenu(null)
+      if (action === 'hide') hideColumn(colName)
+      else if (action === 'copyName') void writeClipboard(colName, `已复制字段名 ${colName}`)
+      else addQuickFilter(colName, 'notNull', null)
+      return
+    }
     const nextOrderBy = action === 'asc'
       ? `${quoteId(colName)} ASC`
       : action === 'desc'
@@ -1680,7 +1885,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setPage(1)
     setCursor(null)
     fetchData('reset', false, 1, true, nextOrderBy)
-  }, [headerContextMenu, fetchData])
+  }
 
   const dataCols = useMemo(() => {
     const filtered = (result?.columns || []).filter((col) => visibleColumnNames.has(col.name))
@@ -1771,135 +1976,146 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   }, [result?.columns, pendingChanges, selectedCells, recentlyUpdatedCells, columnDetailsByName, orderBy, handleCellChange, handleCellSelect, handleColumnSelect, handleEditingDirtyChange, visibleColumnNames, selectedRowKeyList.length])
 
   const columns = useMemo(() => [checkboxCol, ...dataCols], [checkboxCol, dataCols])
-  const columnPickerItems = useMemo(() => {
-    const keyword = columnFilter.trim().toLowerCase()
-    return (result?.columns || []).filter((column) => {
-      if (!keyword) return true
-      const comment = columnDetailsByName.get(column.name)?.comment || ''
-      return column.name.toLowerCase().includes(keyword) || comment.toLowerCase().includes(keyword)
-    })
-  }, [result?.columns, columnDetailsByName, columnFilter])
-  const visibleColumnCount = visibleColumnNames.size
-  const totalColumnCount = result?.columns.length || 0
   const isKeysetMode = lastQueryMode === 'keyset'
   const configuredModeLabel = PAGINATION_MODE_LABEL[paginationMode]
   const effectiveModeLabel = lastQueryMode === 'keyset' ? '游标' : '偏移'
+  const columnComments = useMemo(
+    () => new Map(Array.from(columnDetailsByName, ([name, detail]) => [name, detail.comment?.trim() || ''])),
+    [columnDetailsByName]
+  )
+  const changeCount = pendingChanges.size + newRows.length + editingDirtyCells.size
+  const detailRecord = detailRowKey ? rowsByKey.get(detailRowKey) ?? null : null
+  const detailIndex = detailRowKey ? allRowKeys.indexOf(detailRowKey) : -1
+  const detailEditable = Boolean(pk) || Boolean(detailRecord?._newKey)
+  const detailLabel = !detailRecord ? '' : detailRecord._newKey ? '新增行' : pkCols.length
+    ? pkCols.map((c) => `${c.name} = ${textOf(detailRecord[c.name], c.name)}`).join(', ')
+    : `第 ${detailIndex + 1} 行`
+  const pageSizeOptions = Array.from(new Set([50, 100, 200, 500, 1000, defaultRowsPerPage]))
+    .sort((a, b) => a - b)
+    .map((n) => ({ value: n, label: `${n} 条/页` }))
+  const nextDisabled = loading || (isKeysetMode || countSource !== 'exact' ? !hasNextPage : page >= totalPages)
+
+  const addEmptyRow = () => {
+    newRowCounter.current += 1
+    const key = `_new_${newRowCounter.current}`
+    setNewRows((prev) => [...prev, { _newKey: key }])
+    setDetailRowKey(key)
+  }
+
+  const clearSearch = () => {
+    setSearchInput('')
+    setSearch('')
+  }
+
+  const clearSort = () => {
+    setOrderBy('')
+    setPage(1)
+    setCursor(null)
+    fetchData('reset', false, 1, true, '')
+  }
+
+  const goPrev = () => {
+    if (loading || page <= 1) return
+    const prevPage = page - 1
+    setPage(prevPage)
+    if (prevPage === 1) {
+      setCursor(null)
+      fetchData('reset', false, 1)
+    } else {
+      fetchData(isKeysetMode ? 'prev' : 'reset', false, prevPage)
+    }
+  }
+
+  const goNext = () => {
+    if (nextDisabled) return
+    const nextPage = page + 1
+    setPage(nextPage)
+    fetchData(isKeysetMode ? 'next' : 'reset', false, nextPage)
+  }
+
+  const jumpTo = () => {
+    const n = Number(jumpPage)
+    if (!Number.isFinite(n) || n < 1) { setJumpPage(String(page)); return }
+    const targetPage = countSource === 'exact' ? Math.min(totalPages, n) : n
+    if (targetPage === page) return
+    setPage(targetPage)
+    setCursor(null)
+    fetchData('reset', false, targetPage)
+  }
 
   return (
-    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '8px 12px' }}>
-      <Space style={{ marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <Button size="small" style={{ height: 28, padding: '0 12px' }} onClick={openFilterModal}>
-          <FilterOutlined /> {effectiveWhere ? '编辑筛选' : '筛选'}
-        </Button>
-        {effectiveWhere ? (
-          <>
-            <Tag color="primary" title={effectiveWhere}>当前条件：{filterSummary || effectiveWhere}</Tag>
-            <Button size="small" style={{ height: 28, padding: '0 12px' }} onClick={handleClearFilter}>
-              删除
-            </Button>
-          </>
-        ) : null}
-        {sortSummary ? (
-          <Tag color="primary" title={orderBy}>当前排序：{sortSummary}</Tag>
-        ) : null}
-        <Button size="small" style={{ height: 28, padding: '0 12px' }} disabled={newRows.length > 0} onClick={() => {
-          newRowCounter.current += 1
-          const emptyRow: Record<string, unknown> = { _newKey: `_new_${newRowCounter.current}` }
-          setNewRows(prev => [...prev, emptyRow])
-        }}>
-          <PlusOutlined /> 新增
-        </Button>
-        {selectedRowKeyList.length > 0 && (
-          <Button
-            size="small"
-            type="danger"
-            disabled={deleteBusy}
-            onClick={handleToolbarDelete}
-            className="toolbar-pop"
-          >
-            <DeleteOutlined /> 删除 {selectedRowKeyList.length} 行
-          </Button>
+    <div ref={rootRef} className="db-data">
+      <div className="db-toolbar">
+        <Button size="small" icon={<FilterOutlined />} className={filterWhere ? 'db-btn-active' : ''} onClick={openFilterModal}>筛选</Button>
+        {result && result.columns.length > 0 && (
+          <ColumnPicker columns={result.columns} comments={columnComments} visible={visibleColumnNames} onChange={setVisibleColumnNames} />
         )}
-        {(hasUnsavedChanges || isSaving) && (
-          <Button
-            size="small"
-            type="primary"
-            loading={isSaving}
-            disabled={isSaving}
-            onClick={flushEditingAndSave}
-            style={{ minWidth: 132, transition: 'opacity 0.2s ease, transform 0.2s ease', opacity: isSaving ? 0.9 : 1 }}
-          >
-            <SaveOutlined /> {isSaving ? '保存中...' : `保存修改 (${pendingChanges.size + newRows.length + editingDirtyCells.size})`}
-          </Button>
-        )}
-        {newRows.length === 0 && <Button size="small" style={{ height: 28, padding: '0 12px' }} onClick={() => setExportOpen(true)}>导出</Button>}
-      </Space>
+        <span className="db-toolbar-sep" />
+        <Button size="small" icon={<PlusOutlined />} disabled={newRows.length > 0} onClick={addEmptyRow}>新增</Button>
+        <Button size="small" icon={<ExportOutlined />} disabled={newRows.length > 0} onClick={() => setExportOpen(true)}>导出</Button>
+        <Tooltip title="查看当前页执行的 SQL" placement="bottom">
+          <Button size="small" variant="text" icon={<CodeOutlined />} disabled={!lastSql} onClick={() => setSqlOpen(true)}>SQL</Button>
+        </Tooltip>
+        <div style={{ flex: 1 }} />
+        <div className={`db-search ${search ? 'active' : ''}`}>
+          <SearchOutlined />
+          <input
+            value={searchInput}
+            placeholder="搜索文本字段，回车确认"
+            spellCheck={false}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') setSearch(searchInput.trim())
+              if (e.key === 'Escape') clearSearch()
+            }}
+          />
+          {searchInput && <button type="button" title="清除" onClick={clearSearch}><CloseOutlined /></button>}
+        </div>
+        <Tooltip title={detailOpen ? '隐藏行详情' : '显示行详情'} placement="bottom">
+          <Button size="small" variant="text" icon={<ProfileOutlined />} className={detailOpen ? 'db-btn-active' : ''} onClick={() => setDetailOpen((v) => !v)}>详情</Button>
+        </Tooltip>
+      </div>
 
-      {error && <ErrorNotice key={error} error={error} fallbackTitle="操作失败" onClose={() => setError('')} style={{ marginBottom: 8 }} />}
-      {result && result.columns.length > 0 && !pk && (
-        <Alert type="warning" message="该表没有主键，已有数据为只读；可以新增行，修改或删除请使用 SQL。" style={{ marginBottom: 8 }} />
-      )}
-      <Toast open={!error && Boolean(successMessage)} message={successMessage} type="success" />
-
-      {result && result.columns.length > 0 && (
-        <div style={{ marginBottom: 8, border: '1px solid var(--border)', background: 'var(--bg-surface)' }}>
-          <button
-            type="button"
-            aria-expanded={isColumnPickerExpanded}
-            onClick={() => setIsColumnPickerExpanded((expanded) => !expanded)}
-            style={{ width: '100%', height: 32, padding: '0 10px', border: 0, background: 'transparent', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left' }}
-          >
-            <span style={{ width: 0, height: 0, borderTop: '4px solid transparent', borderBottom: '4px solid transparent', borderLeft: '6px solid currentColor', transform: isColumnPickerExpanded ? 'rotate(90deg)' : undefined, transition: 'transform 0.15s ease' }} />
-            <span style={{ fontSize: 12 }}>字段筛选</span>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>已显示 {visibleColumnCount}/{totalColumnCount}</span>
-          </button>
-          {isColumnPickerExpanded && (
-            <>
-          <div style={{ padding: 8, display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
-            <Input
-              size="small"
-              placeholder="搜索字段名称或注释"
-              value={columnFilter}
-              onChange={(e) => setColumnFilter(e.target.value)}
-              allowClear
-              style={{ width: 260 }}
-            />
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>已显示 {visibleColumnCount}/{totalColumnCount}</span>
-            <Button size="small" onClick={() => setVisibleColumnNames(new Set((result.columns || []).map((column) => column.name)))}>全选</Button>
-            <Button size="small" disabled={visibleColumnCount === 0} onClick={() => setVisibleColumnNames(new Set())}>清空</Button>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', maxHeight: 152, overflow: 'auto', padding: 8, gap: 4 }}>
-            {columnPickerItems.map((column) => {
-              const comment = columnDetailsByName.get(column.name)?.comment?.trim() || ''
-              return (
-                <label key={column.name} title={comment ? `${column.name} - ${comment}` : column.name} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, padding: '4px 6px', cursor: 'pointer' }}>
-                  <Checkbox
-                    checked={visibleColumnNames.has(column.name)}
-                    onChange={(checked) => setVisibleColumnNames((previous) => {
-                      const next = new Set(previous)
-                      if (checked) next.add(column.name)
-                      else next.delete(column.name)
-                      return next
-                    })}
-                  />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }}>{column.name}</span>
-                  {comment && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: 11 }}>({comment})</span>}
-                </label>
-              )
-            })}
-            {columnPickerItems.length === 0 && <span style={{ color: 'var(--text-muted)', fontSize: 12, padding: 4 }}>没有匹配字段</span>}
-          </div>
-            </>
+      {(filterWhere || search || sortSummary) && (
+        <div className="db-chips">
+          {filterWhere && (
+            <span className="db-chip" title={filterWhere}>
+              <FilterOutlined />
+              <button type="button" className="db-chip-label" onClick={openFilterModal}>{filterSummary || filterWhere}</button>
+              <button type="button" className="db-chip-x" title="移除筛选" onClick={handleClearFilter}><CloseOutlined /></button>
+            </span>
+          )}
+          {search && (
+            <span className="db-chip">
+              <SearchOutlined />
+              <span className="db-chip-label">包含“{search}”</span>
+              <button type="button" className="db-chip-x" title="清除搜索" onClick={clearSearch}><CloseOutlined /></button>
+            </span>
+          )}
+          {sortSummary && (
+            <span className="db-chip" title={orderBy}>
+              <span className="db-chip-label">排序：{sortSummary}</span>
+              <button type="button" className="db-chip-x" title="移除排序" onClick={clearSort}><CloseOutlined /></button>
+            </span>
+          )}
+          {[filterWhere, search, sortSummary].filter(Boolean).length > 1 && (
+            <button type="button" className="db-link" onClick={() => { handleClearFilter(); clearSearch(); if (sortSummary) clearSort() }}>全部清除</button>
           )}
         </div>
       )}
+
+      {error && <ErrorNotice key={error} error={error} fallbackTitle="操作失败" onClose={() => setError('')} className="db-notice" />}
+      {result && result.columns.length > 0 && !pk && (
+        <Alert type="warning" message="该表没有主键，已有数据为只读；可以新增行，修改或删除请使用 SQL。" className="db-notice" />
+      )}
+      <Toast open={!error && Boolean(successMessage)} message={successMessage} type="success" />
 
       <FilterModal
         open={isFilterModalOpen}
         filterMode={draftFilterMode}
         simpleFilterTree={draftSimpleFilterTree}
         whereInput={draftWhereInput}
-        effectiveWhere={effectiveWhere}
+        effectiveWhere={filterWhere}
         columnOptions={simpleFilterColumnOptions}
         onClose={closeFilterModal}
         onApply={handleApplyFilterModal}
@@ -1934,125 +2150,129 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         </div>
       </Modal>
 
-      <div style={{ flex: 1, minHeight: 0 }} onClick={handleCanvasClick}>
-        <Table
-          size="small"
-          loading={loading}
-          dataSource={tableDataSource}
-          columns={columns}
-          rowKey={getRowKey}
-          onRow={(record: Record<string, unknown>) => {
-            const rk = getRowKey(record)
-            const isSelected = selectedRowKeys.has(rk)
-            const isNew = !!record._newKey
-            let style: React.CSSProperties | undefined
-            if (isSelected && isNew) {
-              style = { background: 'color-mix(in srgb, var(--accent) 16%, var(--success-bg))' }
-            } else if (isSelected) {
-              style = { background: 'color-mix(in srgb, var(--accent) 13%, transparent)' }
-            } else if (isNew) {
-              style = { background: 'var(--success-bg)', animation: 'row-insert var(--dur-slow) var(--ease-out)' }
-            }
-            return { style }
-          }}
-          scroll={{ x: 'max-content' }}
-          virtual={{
-            enabled: tableDataSource.length >= TABLEDATA_VIRTUAL_THRESHOLD,
-            rowHeight: 34,
-            overscan: 8,
-            threshold: TABLEDATA_VIRTUAL_THRESHOLD,
-          }}
-          resizable
-        />
-      </div>
+      <div className="db-main">
+        <div className="db-table-wrap" onClick={handleCanvasClick}>
+          <Table
+            size="small"
+            loading={loading}
+            dataSource={tableDataSource}
+            columns={columns}
+            rowKey={getRowKey}
+            onRow={(record: Record<string, unknown>) => {
+              const rk = getRowKey(record)
+              const isSelected = selectedRowKeys.has(rk)
+              const isNew = !!record._newKey
+              const isDetail = detailOpen && rk === detailRowKey
+              let style: React.CSSProperties | undefined
+              if (isSelected && isNew) {
+                style = { background: 'color-mix(in srgb, var(--accent) 16%, var(--success-bg))' }
+              } else if (isSelected) {
+                style = { background: 'color-mix(in srgb, var(--accent) 13%, transparent)' }
+              } else if (isNew) {
+                style = { background: 'var(--success-bg)', animation: 'row-insert var(--dur-slow) var(--ease-out)' }
+              } else if (isDetail) {
+                style = { background: 'color-mix(in srgb, var(--accent) 6%, transparent)' }
+              }
+              return { style }
+            }}
+            scroll={{ x: 'max-content' }}
+            virtual={{
+              enabled: tableDataSource.length >= TABLEDATA_VIRTUAL_THRESHOLD,
+              rowHeight: 34,
+              overscan: 8,
+              threshold: TABLEDATA_VIRTUAL_THRESHOLD,
+            }}
+            resizable
+          />
 
-      <div className="data-footer">
-        <div className="data-footer-info">
-          <span className="data-footer-count">
-            {countSource === 'estimate' ? '约 ' : '共 '}<strong>{totalCount.toLocaleString()}</strong> 行
-          </span>
-          {countSource !== 'exact' && (
-            <button className="ui-btn ui-btn-text ui-btn-small" disabled={loading || countLoading} onClick={() => { void countRows() }}>
-              {countLoading ? '统计中...' : '精确统计'}
-            </button>
-          )}
-          <span className="data-footer-sep" />
-          <span className="data-footer-mode" title={`配置：${configuredModeLabel}，实际：${effectiveModeLabel}`}>
-            {effectiveModeLabel}分页{configuredModeLabel !== effectiveModeLabel ? `（配置为${configuredModeLabel}）` : ''}
-          </span>
-          {(pendingPaginationHint || paginationFallbackHint) && <span className="data-footer-hint">{pendingPaginationHint || paginationFallbackHint}</span>}
-          {(hasUnsavedChanges || isSaving) && (
-            <span className="data-footer-dirty">{pendingChanges.size + newRows.length + editingDirtyCells.size} 处未保存 · Ctrl+S 保存</span>
+          {(changeCount > 0 || isSaving || selectedRowKeyList.length > 0) && (
+            <div className="db-actionbar">
+              {selectedRowKeyList.length > 0 && (
+                <>
+                  <span className="db-actionbar-text">已选 <b>{selectedRowKeyList.length}</b> 行</span>
+                  <Button size="small" variant="text" icon={<CopyOutlined />} onClick={() => void writeClipboard(rowsAsTsv(allRowKeys.filter((k) => selectedRowKeys.has(k)), true), `已复制 ${selectedRowKeyList.length} 行`)}>复制</Button>
+                  <Button size="small" variant="text" className="danger-text-btn" icon={<DeleteOutlined />} disabled={deleteBusy} onClick={handleToolbarDelete}>删除</Button>
+                  <button type="button" className="db-actionbar-x" title="取消选择" onClick={() => setSelectedRowKeys(new Set())}><CloseOutlined /></button>
+                </>
+              )}
+              {selectedRowKeyList.length > 0 && (changeCount > 0 || isSaving) && <span className="db-actionbar-sep" />}
+              {(changeCount > 0 || isSaving) && (
+                <>
+                  <span className="db-actionbar-dot" />
+                  <span className="db-actionbar-text"><b>{changeCount}</b> 处未保存</span>
+                  <Button size="small" variant="text" icon={<UndoOutlined />} disabled={isSaving} onClick={discardChanges}>放弃</Button>
+                  <Button size="small" type="primary" icon={<SaveOutlined />} loading={isSaving} disabled={isSaving} onClick={flushEditingAndSave}>
+                    {isSaving ? '保存中…' : '保存'}
+                  </Button>
+                </>
+              )}
+            </div>
           )}
         </div>
-        <div className="data-footer-pager">
-          <button
-            className="ui-btn ui-btn-default ui-btn-small"
-            disabled={loading || page <= 1}
-            onClick={() => {
-              if (loading || page <= 1) return
-              setPage((prev) => Math.max(1, prev - 1))
-              const prevPage = Math.max(1, page - 1)
-              if (prevPage === 1) {
-                setCursor(null)
-                fetchData('reset', false, 1)
-              } else {
-                fetchData(isKeysetMode ? 'prev' : 'reset', false, prevPage)
-              }
+
+        {detailOpen && result && (
+          <RowDetailPanel
+            record={detailRecord}
+            rowLabel={detailLabel}
+            columns={result.columns}
+            details={columnDetailsByName}
+            pending={detailRowKey ? pendingChanges.get(detailRowKey) : undefined}
+            editable={detailEditable}
+            formatValue={textOf}
+            isBinary={isBinaryValue}
+            hasPrev={detailIndex > 0}
+            hasNext={detailIndex >= 0 && detailIndex < allRowKeys.length - 1}
+            onPrev={() => detailIndex > 0 && setDetailRowKey(allRowKeys[detailIndex - 1])}
+            onNext={() => detailIndex < allRowKeys.length - 1 && setDetailRowKey(allRowKeys[detailIndex + 1])}
+            onChange={(colName, value) => {
+              if (!detailRowKey) return
+              handleCellChange(detailRowKey, colName, value)
+              markCellsRecentlyUpdated([toCellKey(detailRowKey, colName)])
             }}
-          >
-            上一页
-          </button>
-          <span className="data-footer-page">{isKeysetMode || countSource !== 'exact' ? page : `${page} / ${totalPages}`}</span>
-          <button
-            className="ui-btn ui-btn-default ui-btn-small"
-            disabled={loading || (isKeysetMode || countSource !== 'exact' ? !hasNextPage : page >= totalPages)}
-            onClick={() => {
-              if (loading || (isKeysetMode || countSource !== 'exact' ? !hasNextPage : page >= totalPages)) return
-              const nextPage = page + 1
-              setPage(nextPage)
-              fetchData(isKeysetMode ? 'next' : 'reset', false, nextPage)
-            }}
-          >
-            下一页
-          </button>
-          {isKeysetMode ? (
-            null
-          ) : (
+            onClose={() => setDetailOpen(false)}
+          />
+        )}
+      </div>
+
+      <div className="db-footer">
+        <div className="db-footer-info">
+          <span title={`分页方式：${effectiveModeLabel}（设置为${configuredModeLabel}）${paginationFallbackHint ? `，${paginationFallbackHint}` : ''}`}>
+            {countSource === 'exact' ? '共 ' : '约 '}<strong>{totalCount.toLocaleString()}</strong> 行
+          </span>
+          {countSource !== 'exact' && (
+            <button type="button" className="db-link" disabled={loading || countLoading} onClick={() => { void countRows() }}>
+              {countLoading ? '统计中…' : '精确统计'}
+            </button>
+          )}
+          {result && (
             <>
-              <span className="data-footer-hint-muted">跳至</span>
-              <Input
-                value={jumpPage}
-                onChange={(e) => setJumpPage(e.target.value.replace(/\D/g, ''))}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    const n = Number(jumpPage)
-                    if (!Number.isFinite(n) || n < 1) return
-                    const targetPage = countSource === 'exact' ? Math.min(totalPages, n) : n
-                    setPage(targetPage)
-                    setCursor(null)
-                    fetchData('reset', false, targetPage)
-                  }
-                }}
-                size="small"
-                style={{ width: 56 }}
-                placeholder="页码"
-              />
-              <button
-                className="ui-btn ui-btn-default ui-btn-small"
-                onClick={() => {
-                  const n = Number(jumpPage)
-                  if (!Number.isFinite(n) || n < 1) return
-                  const targetPage = countSource === 'exact' ? Math.min(totalPages, n) : n
-                  setPage(targetPage)
-                  setCursor(null)
-                  fetchData('reset', false, targetPage)
-                }}
-              >
-                跳转
-              </button>
+              <span className="db-footer-sep" />
+              <span>本页 {result.rows.length} 行</span>
+              <span className="db-footer-sep" />
+              <span>{result.executionTime} ms</span>
             </>
           )}
+          {pendingPaginationHint && <span className="db-footer-hint">{pendingPaginationHint}</span>}
+        </div>
+        <div className="db-footer-pager">
+          <Select size="small" value={rowsPerPage} options={pageSizeOptions} onChange={(v) => setRowsPerPage(Number(v))} style={{ width: 104 }} />
+          <Button size="small" variant="text" icon={<LeftOutlined />} disabled={loading || page <= 1} onClick={goPrev} />
+          {isKeysetMode ? (
+            <span className="db-footer-page">第 {page} 页</span>
+          ) : (
+            <span className="db-footer-page">
+              <input
+                className="db-page-input"
+                value={jumpPage}
+                title="输入页码后回车跳转"
+                onChange={(e) => setJumpPage(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={(e) => { if (e.key === 'Enter') jumpTo() }}
+                onBlur={() => setJumpPage(String(page))}
+              />
+              {countSource === 'exact' && <span>/ {totalPages}</span>}
+            </span>
+          )}
+          <Button size="small" variant="text" icon={<RightOutlined />} disabled={nextDisabled} onClick={goNext} />
         </div>
       </div>
 
@@ -2081,34 +2301,74 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         >
           <div className="context-menu-item" onClick={() => handleHeaderMenuAction('asc')}>升序排序</div>
           <div className="context-menu-item" onClick={() => handleHeaderMenuAction('desc')}>降序排序</div>
-          <div className="context-menu-item" onClick={() => handleHeaderMenuAction('clear')}>移除所有排序</div>
+          {orderBy && <div className="context-menu-item" onClick={() => handleHeaderMenuAction('clear')}>移除排序</div>}
+          <div className="context-menu-divider" />
+          <div className="context-menu-item" onClick={() => handleHeaderMenuAction('notNull')}>只看非空值</div>
+          <div className="context-menu-item" onClick={() => handleHeaderMenuAction('copyName')}>复制字段名</div>
+          <div className="context-menu-item" onClick={() => handleHeaderMenuAction('hide')}>隐藏此列</div>
         </div>
       )}
 
       {/* 单元格右键菜单 */}
       {cellContextMenu && (() => {
         const count = selectedRowKeyList.length > 0 ? selectedRowKeyList.length : 1
-        const suffix = count > 1 ? `(${count})` : ''
+        const suffix = count > 1 ? ` (${count} 行)` : ''
+        const value = currentValue(cellContextMenu.rowKey, cellContextMenu.colName)
+        const isNullValue = value === null || value === undefined
+        const preview = isNullValue ? 'NULL' : textOf(value, cellContextMenu.colName)
+        const shortValue = preview.length > 18 ? `${preview.slice(0, 18)}…` : preview
+        const multiCells = selectedCells.size > 1 && selectedCells.has(toCellKey(cellContextMenu.rowKey, cellContextMenu.colName))
+        const isNewRow = cellContextMenu.rowKey.startsWith('_new_')
         return (
         <div
           className="context-menu"
           style={{ left: cellContextMenu.x, top: cellContextMenu.y }}
           onClick={() => setCellContextMenu(null)}
         >
+          <div className="context-menu-item" onClick={() => handleContextAction('copyValue')}>{multiCells ? `复制 ${selectedCells.size} 个单元格` : '复制值'}<span className="context-menu-shortcut">Ctrl+C</span></div>
+          <div className="context-menu-item" onClick={() => handleContextAction('copyColumnName')}>复制字段名</div>
+          <div className="context-menu-item" onClick={() => handleContextAction('copyJson')}>复制为 JSON{suffix}</div>
+          <div className="context-menu-item" onClick={() => handleContextAction('copyTsv')}>复制为 TSV{suffix}</div>
           <div className="context-menu-item" onClick={() => handleContextAction('copyInsert')}>复制为 INSERT{suffix}</div>
           <div className="context-menu-item" onClick={() => handleContextAction('copyUpdate')}>复制为 UPDATE{suffix}</div>
-          {count <= 1 && (
+          {!isNewRow && (
             <>
-              <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+              <div className="context-menu-divider" />
+              <div className="context-menu-item" onClick={() => handleContextAction('filterEq')}>{isNullValue ? '筛选为 NULL 的行' : `筛选 = ${shortValue}`}</div>
+              <div className="context-menu-item" onClick={() => handleContextAction('filterNeq')}>{isNullValue ? '排除 NULL' : `排除 ${shortValue}`}</div>
+            </>
+          )}
+          <div className="context-menu-divider" />
+          {count <= 1 && <div className="context-menu-item" onClick={() => handleContextAction('detail')}>查看行详情</div>}
+          {count <= 1 && <div className="context-menu-item" onClick={() => handleContextAction('clone')}>复制为新行</div>}
+          {count <= 1 && (pk || isNewRow) && (
+            <>
               <div className="context-menu-item" onClick={() => handleContextAction('setEmpty')}>设为空字符串</div>
               <div className="context-menu-item" onClick={() => handleContextAction('setNull')}>设为 NULL</div>
             </>
           )}
-          <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+          <div className="context-menu-item" onClick={() => handleContextAction('hideColumn')}>隐藏此列</div>
+          <div className="context-menu-divider" />
           <div className="context-menu-item danger" onClick={() => handleContextAction('deleteRow')}><DeleteOutlined /> 删除行{suffix}</div>
         </div>
         )
       })()}
+
+      <Modal
+        open={sqlOpen}
+        title="当前页 SQL"
+        width={640}
+        onClose={() => setSqlOpen(false)}
+        footer={(
+          <>
+            <Button variant="default" icon={<CopyOutlined />} onClick={() => void writeClipboard(lastSql, 'SQL 已复制')}>复制</Button>
+            <Button variant="primary" icon={<CodeOutlined />} onClick={() => { addQueryTab(connectionId, database, `${lastSql};`); setSqlOpen(false) }}>在查询中打开</Button>
+          </>
+        )}
+      >
+        <pre className="db-sql-preview">{lastSql}</pre>
+        <div className="db-sql-hint">分页方式：{effectiveModeLabel}{paginationFallbackHint ? `（${paginationFallbackHint}）` : ''}</div>
+      </Modal>
 
       <DataExport
         open={exportOpen}

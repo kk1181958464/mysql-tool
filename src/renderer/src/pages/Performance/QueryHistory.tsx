@@ -185,7 +185,7 @@ const QueryHistory: React.FC<Props> = ({ active = true }) => {
       />
 
       <Modal title="SQL 详情" open={!!selectedSql} onClose={() => setSelectedSql(null)} width={700}
-        footer={<Space><Button onClick={() => { navigator.clipboard.writeText(selectedSql ?? '') }}><CopyOutlined /> 复制</Button><Button type="primary" onClick={() => selectedSql && openInEditor(selectedSql)}>在编辑器中打开</Button></Space>}>
+        footer={<Space><Button onClick={() => { window.api.clipboard.writeText(selectedSql ?? '') }}><CopyOutlined /> 复制</Button><Button type="primary" onClick={() => selectedSql && openInEditor(selectedSql)}>在编辑器中打开</Button></Space>}>
         <pre style={{ maxHeight: 400, overflow: 'auto', background: 'var(--bg-hover)', padding: 12, borderRadius: 6, fontSize: 13 }}>{selectedSql}</pre>
       </Modal>
     </div>
