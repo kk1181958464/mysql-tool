@@ -9,6 +9,7 @@ import {
 import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
 import { api } from '../../utils/ipc'
+import { fitMenuToViewport } from '../../utils/context-menu'
 import { quoteId } from '../DataBrowser/table-pagination'
 import type { TableInfo } from '../../../../shared/types/metadata'
 import type { ImportProgressPayload } from '../../../../preload/types'
@@ -278,9 +279,7 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
     if (!selectedTables.has(tableName)) {
       setSelectedTables(new Set([tableName]))
     }
-    const menuHeight = 280
-    const y = e.clientY + menuHeight > window.innerHeight ? e.clientY - menuHeight : e.clientY
-    setContextMenu({ tableName, x: e.clientX, y })
+    setContextMenu({ tableName, x: e.clientX, y: e.clientY })
   }
 
   useEffect(() => {
@@ -802,6 +801,8 @@ export const ObjectsBrowser: React.FC<Props> = ({ connectionId, database }) => {
         const s = n > 1 ? `(${n})` : ''
         return (
         <div
+          key={`${contextMenu.x},${contextMenu.y}`}
+          ref={fitMenuToViewport}
           className="context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={() => setContextMenu(null)}

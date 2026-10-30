@@ -28,6 +28,7 @@ import {
 import { parseClipboardGrid } from './table-clipboard'
 import { RowDetailPanel } from './RowDetailPanel'
 import { ColumnPicker } from './ColumnPicker'
+import { fitMenuToViewport } from '../../utils/context-menu'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { formatErrorSummary, getErrorMessage } from '../../utils/error-info'
 
@@ -1622,9 +1623,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const handleCellContextMenu = (e: React.MouseEvent, rowKey: string, colName: string, record: Record<string, unknown>) => {
     e.preventDefault()
     e.stopPropagation()
-    const menuH = 430
-    const y = Math.max(8, Math.min(e.clientY, window.innerHeight - menuH - 8))
-    setCellContextMenu({ x: e.clientX, y, rowKey, colName, record })
+    setCellContextMenu({ x: e.clientX, y: e.clientY, rowKey, colName, record })
   }
 
   const copySql = async (sql: string, rowCount: number, kind: string) => {
@@ -2295,6 +2294,7 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
 
       {headerContextMenu && (
         <div
+          ref={fitMenuToViewport}
           className="context-menu"
           style={{ left: headerContextMenu.x, top: headerContextMenu.y }}
           onClick={(e) => e.stopPropagation()}
@@ -2321,6 +2321,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         const isNewRow = cellContextMenu.rowKey.startsWith('_new_')
         return (
         <div
+          key={`${cellContextMenu.x},${cellContextMenu.y}`}
+          ref={fitMenuToViewport}
           className="context-menu"
           style={{ left: cellContextMenu.x, top: cellContextMenu.y }}
           onClick={() => setCellContextMenu(null)}
