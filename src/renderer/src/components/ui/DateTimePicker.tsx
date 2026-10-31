@@ -122,7 +122,7 @@ export function DateTimePicker({ value, dateOnly, anchorRect, onConfirm, onCance
   }
 
   return createPortal(
-    <div ref={panelRef} style={S.panel} onMouseDown={e => e.stopPropagation()}>
+    <div ref={panelRef} className="ui-dtp-panel" style={S.panel} onMouseDown={e => e.stopPropagation()}>
       {/* 年月导航 */}
       <div style={S.header}>
         <button style={S.navBtn} onClick={() => setYear(y => y - 1)}>«</button>

@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { Table, Input, Button, DateTimePicker, Modal, Toast, toast, Alert, Select, Tooltip } from '../../components/ui'
-import { PlusOutlined, DeleteOutlined, FilterOutlined, SaveOutlined, MoreOutlined, SearchOutlined, CloseOutlined, ExportOutlined, CodeOutlined, ProfileOutlined, UndoOutlined, CopyOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
+import { PlusOutlined, DeleteOutlined, SaveOutlined, MoreOutlined, SearchOutlined, CloseOutlined, ExportOutlined, CodeOutlined, ProfileOutlined, UndoOutlined, CopyOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons'
 import { api } from '../../utils/ipc'
 import type { QueryResult } from '../../../../shared/types/query'
 import type { ColumnDetail } from '../../../../shared/types/metadata'
 import { DataExport } from './DataExport'
-import { FilterModal, type FilterMode, type SimpleFilterGroup } from './FilterModal'
+import { FilterBar } from './FilterBar'
 import { useAppStore } from '../../stores/app.store'
 import { useDatabaseStore } from '../../stores/database.store'
 import { useTabStore } from '../../stores/tab.store'
@@ -15,15 +15,11 @@ import { buildKeysetPredicate, compareDirection, escSQL, parseSort, quoteId } fr
 import {
   buildSimpleFilterWhere,
   cloneSimpleFilterGroup,
-  describeSimpleFilterNode,
   getDefaultSimpleFilter,
   getDefaultSimpleFilterGroup,
   isDateLikeType,
-  moveNodeInGroup,
-  removeNodeFromTree,
-  updateConditionInTree,
-  updateGroupInTree,
-  type SimpleFilterField,
+  type FilterMode,
+  type SimpleFilterGroup,
 } from './table-filter'
 import { parseClipboardGrid } from './table-clipboard'
 import { RowDetailPanel } from './RowDetailPanel'
@@ -342,10 +338,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   const [appliedSimpleFilterTree, setAppliedSimpleFilterTree] = useState<SimpleFilterGroup>(getDefaultSimpleFilterGroup())
   const [whereInput, setWhereInput] = useState('')
   const [where, setWhere] = useState('')
-  const [isFilterModalOpen, setIsFilterModalOpen] = useState(false)
-  const [draftFilterMode, setDraftFilterMode] = useState<FilterMode>('simple')
-  const [draftSimpleFilterTree, setDraftSimpleFilterTree] = useState<SimpleFilterGroup>(getDefaultSimpleFilterGroup())
-  const [draftWhereInput, setDraftWhereInput] = useState('')
   const [orderBy, setOrderBy] = useState('')
   const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set())
   const selectedRowKeyList = useMemo(() => Array.from(selectedRowKeys), [selectedRowKeys])
@@ -425,14 +417,9 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     })
   }, [result?.columns])
 
-  const simpleFilterColumnOptions = useMemo(
-    () => (result?.columns || []).map((col) => ({ value: col.name, label: col.name })),
-    [result?.columns]
-  )
-
   const getFilterColumnType = useCallback((columnName: string) => {
-    const column = result?.columns.find((item) => item.name === columnName)
-    return column?.type || columnDetailsByName.get(columnName)?.dataType || ''
+    // 查询结果里的 type 是 MySQL 类型编号（如 '3'），优先用表结构中的类型名
+    return columnDetailsByName.get(columnName)?.dataType || result?.columns.find((item) => item.name === columnName)?.type || ''
   }, [result?.columns, columnDetailsByName])
 
   const filterWhere = useMemo(
@@ -460,11 +447,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     [filterWhere, searchWhere]
   )
 
-  const filterSummary = useMemo(
-    () => filterMode === 'simple' ? describeSimpleFilterNode(appliedSimpleFilterTree) : (where.trim() ? `高级 WHERE: ${where.trim()}` : ''),
-    [filterMode, appliedSimpleFilterTree, where]
-  )
-
   const sortSummary = useMemo(() => {
     const match = orderBy.match(/^`?([^`]+)`?\s+(ASC|DESC)$/i)
     if (!match) return ''
@@ -489,10 +471,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setAppliedSimpleFilterTree(cloneSimpleFilterGroup(emptyFilter))
     setWhereInput('')
     setWhere('')
-    setIsFilterModalOpen(false)
-    setDraftFilterMode('simple')
-    setDraftSimpleFilterTree(cloneSimpleFilterGroup(emptyFilter))
-    setDraftWhereInput('')
     setOrderBy('')
     setRowsPerPage(defaultRowsPerPage)
     setLastSql('')
@@ -877,12 +855,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   )
 
   useEffect(() => {
-    setDraftFilterMode(filterMode)
-    setDraftSimpleFilterTree(cloneSimpleFilterGroup(simpleFilterTree))
-    setDraftWhereInput(whereInput)
-  }, [filterMode, simpleFilterTree, whereInput])
-
-  useEffect(() => {
     return () => {
       if (clearUpdatedTimerRef.current !== null) {
         window.clearTimeout(clearUpdatedTimerRef.current)
@@ -969,10 +941,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setAppliedSimpleFilterTree(clonedTree)
   }, [])
 
-  const handleSimpleFilterChange = useCallback((id: string, field: SimpleFilterField, value: string) => {
-    setDraftSimpleFilterTree((prev) => updateConditionInTree(prev, id, (target) => ({ ...target, [field]: value })))
-  }, [])
-
   const getOperatorOptions = useCallback((columnName: string) => {
     const type = getFilterColumnType(columnName)
     const nullOptions = [
@@ -1020,41 +988,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     ]
   }, [getFilterColumnType])
 
-  const handleFilterColumnChange = useCallback((id: string, column: string) => {
-    setDraftSimpleFilterTree((prev) => updateConditionInTree(prev, id, (target) => {
-      const nextOperator = getOperatorOptions(column)[0]?.value as string || 'contains'
-      return { ...target, column, operator: nextOperator, value: '', secondValue: '' }
-    }))
-  }, [getOperatorOptions])
-
-  const syncFilterDraftFromApplied = useCallback(() => {
-    setDraftFilterMode(filterMode)
-    setDraftSimpleFilterTree(cloneSimpleFilterGroup(simpleFilterTree))
-    setDraftWhereInput(whereInput)
-  }, [filterMode, simpleFilterTree, whereInput])
-
-  const openFilterModal = useCallback(() => {
-    syncFilterDraftFromApplied()
-    setIsFilterModalOpen(true)
-  }, [syncFilterDraftFromApplied])
-
-  const closeFilterModal = useCallback(() => {
-    setIsFilterModalOpen(false)
-  }, [])
-
-  const handleDraftFilterModeChange = useCallback((mode: FilterMode) => {
-    setDraftFilterMode(mode)
-  }, [])
-
-  const handleGroupJoinChange = useCallback((groupId: string, join: 'AND' | 'OR') => {
-    setDraftSimpleFilterTree((prev) => updateGroupInTree(prev, groupId, (target) => ({ ...target, join })))
-  }, [])
-
-  const handleApplyFilterModal = useCallback(() => {
-    applyWhereFilter(draftFilterMode, draftSimpleFilterTree, draftWhereInput)
-    setIsFilterModalOpen(false)
-  }, [applyWhereFilter, draftFilterMode, draftSimpleFilterTree, draftWhereInput])
-
   const handleClearFilter = useCallback(() => {
     const emptyGroup = getDefaultSimpleFilterGroup()
     setPage(1)
@@ -1063,33 +996,8 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     setFilterMode('simple')
     setSimpleFilterTree(emptyGroup)
     setAppliedSimpleFilterTree(emptyGroup)
-    setDraftFilterMode('simple')
-    setDraftSimpleFilterTree(cloneSimpleFilterGroup(emptyGroup))
     setWhereInput('')
     setWhere('')
-    setDraftWhereInput('')
-  }, [])
-
-  const handleAddSimpleFilter = useCallback((groupId: string) => {
-    setDraftSimpleFilterTree((prev) => updateGroupInTree(prev, groupId, (target) => ({
-      ...target,
-      children: [...target.children, getDefaultSimpleFilter()],
-    })))
-  }, [])
-
-  const handleAddSimpleFilterGroup = useCallback((groupId: string) => {
-    setDraftSimpleFilterTree((prev) => updateGroupInTree(prev, groupId, (target) => ({
-      ...target,
-      children: [...target.children, getDefaultSimpleFilterGroup()],
-    })))
-  }, [])
-
-  const handleRemoveSimpleFilterNode = useCallback((nodeId: string) => {
-    setDraftSimpleFilterTree((prev) => removeNodeFromTree(prev, nodeId))
-  }, [])
-
-  const handleMoveFilterNode = useCallback((groupId: string, fromIndex: number, toIndex: number) => {
-    setDraftSimpleFilterTree((prev) => moveNodeInGroup(prev, groupId, fromIndex, toIndex))
   }, [])
 
   const openDeleteConfirm = useCallback((targetKeys: string[]) => {
@@ -1982,6 +1890,13 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
     () => new Map(Array.from(columnDetailsByName, ([name, detail]) => [name, detail.comment?.trim() || ''])),
     [columnDetailsByName]
   )
+  const filterColumns = useMemo(
+    () => (result?.columns || []).map((c) => {
+      const detail = columnDetailsByName.get(c.name)
+      return { name: c.name, type: detail?.columnType || detail?.dataType || '', comment: detail?.comment?.trim() || '' }
+    }),
+    [result?.columns, columnDetailsByName]
+  )
   const changeCount = pendingChanges.size + newRows.length + editingDirtyCells.size
   const detailRecord = detailRowKey ? rowsByKey.get(detailRowKey) ?? null : null
   const detailIndex = detailRowKey ? allRowKeys.indexOf(detailRowKey) : -1
@@ -2045,7 +1960,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
   return (
     <div ref={rootRef} className="db-data">
       <div className="db-toolbar">
-        <Button size="small" icon={<FilterOutlined />} className={filterWhere ? 'db-btn-active' : ''} onClick={openFilterModal}>筛选</Button>
         {result && result.columns.length > 0 && (
           <ColumnPicker columns={result.columns} comments={columnComments} visible={visibleColumnNames} onChange={setVisibleColumnNames} />
         )}
@@ -2075,32 +1989,34 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         </Tooltip>
       </div>
 
-      {(filterWhere || search || sortSummary) && (
-        <div className="db-chips">
-          {filterWhere && (
-            <span className="db-chip" title={filterWhere}>
-              <FilterOutlined />
-              <button type="button" className="db-chip-label" onClick={openFilterModal}>{filterSummary || filterWhere}</button>
-              <button type="button" className="db-chip-x" title="移除筛选" onClick={handleClearFilter}><CloseOutlined /></button>
-            </span>
+      {result && result.columns.length > 0 && (
+        <FilterBar
+          columns={filterColumns}
+          mode={filterMode}
+          tree={appliedSimpleFilterTree}
+          where={where}
+          filterSql={filterWhere}
+          getOperatorOptions={getOperatorOptions}
+          onApply={applyWhereFilter}
+          onClearAll={[filterWhere, search, sortSummary].filter(Boolean).length > 1 ? () => { handleClearFilter(); clearSearch(); if (sortSummary) clearSort() } : undefined}
+          extra={(
+            <>
+              {search && (
+                <span className="db-chip">
+                  <SearchOutlined />
+                  <span className="db-chip-label">包含“{search}”</span>
+                  <button type="button" className="db-chip-x" title="清除搜索" onClick={clearSearch}><CloseOutlined /></button>
+                </span>
+              )}
+              {sortSummary && (
+                <span className="db-chip" title={orderBy}>
+                  <span className="db-chip-label">排序：{sortSummary}</span>
+                  <button type="button" className="db-chip-x" title="移除排序" onClick={clearSort}><CloseOutlined /></button>
+                </span>
+              )}
+            </>
           )}
-          {search && (
-            <span className="db-chip">
-              <SearchOutlined />
-              <span className="db-chip-label">包含“{search}”</span>
-              <button type="button" className="db-chip-x" title="清除搜索" onClick={clearSearch}><CloseOutlined /></button>
-            </span>
-          )}
-          {sortSummary && (
-            <span className="db-chip" title={orderBy}>
-              <span className="db-chip-label">排序：{sortSummary}</span>
-              <button type="button" className="db-chip-x" title="移除排序" onClick={clearSort}><CloseOutlined /></button>
-            </span>
-          )}
-          {[filterWhere, search, sortSummary].filter(Boolean).length > 1 && (
-            <button type="button" className="db-link" onClick={() => { handleClearFilter(); clearSearch(); if (sortSummary) clearSort() }}>全部清除</button>
-          )}
-        </div>
+        />
       )}
 
       {error && <ErrorNotice key={error} error={error} fallbackTitle="操作失败" onClose={() => setError('')} className="db-notice" />}
@@ -2108,27 +2024,6 @@ export const TableData: React.FC<Props> = ({ tabId, connectionId, database, tabl
         <Alert type="warning" message="该表没有主键，已有数据为只读；可以新增行，修改或删除请使用 SQL。" className="db-notice" />
       )}
       <Toast open={!error && Boolean(successMessage)} message={successMessage} type="success" />
-
-      <FilterModal
-        open={isFilterModalOpen}
-        filterMode={draftFilterMode}
-        simpleFilterTree={draftSimpleFilterTree}
-        whereInput={draftWhereInput}
-        effectiveWhere={filterWhere}
-        columnOptions={simpleFilterColumnOptions}
-        onClose={closeFilterModal}
-        onApply={handleApplyFilterModal}
-        onFilterModeChange={handleDraftFilterModeChange}
-        onGroupJoinChange={handleGroupJoinChange}
-        onConditionColumnChange={handleFilterColumnChange}
-        onConditionChange={handleSimpleFilterChange}
-        onAddCondition={handleAddSimpleFilter}
-        onAddGroup={handleAddSimpleFilterGroup}
-        onRemoveNode={handleRemoveSimpleFilterNode}
-        onMoveNode={handleMoveFilterNode}
-        onWhereInputChange={setDraftWhereInput}
-        getOperatorOptions={getOperatorOptions}
-      />
 
       <Modal
         open={saveErrorModalOpen}
